@@ -1,0 +1,46 @@
+[versions]
+kafka = "4.3.0"
+fastutil = "8.5.16"
+micrometer = "1.15.0"
+jackson = "2.19.0"
+slf4j = "2.0.17"
+logback = "1.5.18"
+jspecify = "1.0.0"
+junit = "5.12.2"
+junit-platform = "1.12.2"
+testcontainers = "1.21.3"
+jqwik = "1.9.3"
+awaitility = "4.3.0"
+jol = "0.17"
+errorprone = "2.39.0"
+nullaway = "0.12.7"
+palantir-java-format = "2.68.0"
+spotless-plugin = "7.0.4"
+errorprone-plugin = "5.1.0"
+jmh-plugin = "0.7.3"
+
+[libraries]
+kafka-clients = { module = "org.apache.kafka:kafka-clients", version.ref = "kafka" }
+fastutil-core = { module = "it.unimi.dsi:fastutil-core", version.ref = "fastutil" }
+micrometer-core = { module = "io.micrometer:micrometer-core", version.ref = "micrometer" }
+micrometer-prometheus = { module = "io.micrometer:micrometer-registry-prometheus", version.ref = "micrometer" }
+jackson-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jackson" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
+
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
+testcontainers-kafka = { module = "org.testcontainers:kafka", version.ref = "testcontainers" }
+testcontainers-junit = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
+testcontainers-toxiproxy = { module = "org.testcontainers:toxiproxy", version.ref = "testcontainers" }
+jqwik = { module = "net.jqwik:jqwik", version.ref = "jqwik" }
+awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
+jol-core = { module = "org.openjdk.jol:jol-core", version.ref = "jol" }
+
+errorprone-core = { module = "com.google.errorprone:error_prone_core", version.ref = "errorprone" }
+nullaway = { module = "com.uber.nullaway:nullaway", version.ref = "nullaway" }
+
+# Plugin jars consumed by build-logic as implementation dependencies.
+spotless-plugin = { module = "com.diffplug.spotless:spotless-plugin-gradle", version.ref = "spotless-plugin" }
+errorprone-plugin = { module = "net.ltgt.gradle:gradle-errorprone-plugin", version.ref = "errorprone-plugin" }
