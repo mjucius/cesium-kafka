@@ -19,6 +19,14 @@ A ground-up, enterprise-grade rewrite of the Kafka delayed-message relay. Java 2
 >    Central / GHCR; §13's release workflow publishes a GitHub Release with distribution archives).
 >    **The runnable app is the v1 product surface**; the engine's programmatic API is
 >    internal-until-1.x (the store SPI module remains stable for implementers).
+> 3. **§8 config-schema naming reconciled to the authoritative `CesiumConfig` sketch** (M1 review):
+>    transaction settings live at `kafka.transactions.{timeout,commit-retry}` (producer-level
+>    concerns; the sketch has no top-level `transactions` component), relay fidelity at
+>    `route.relay.{timestamp,partitioning}` (per the sketch's `RouteConfig`), and per-client
+>    passthrough overlays are kebab-case (`kafka.tracker-consumer.properties`, matching every other
+>    key). `dispatch.max-pending-total` has no writable `AUTO` literal — leaving the key unset (or
+>    `0`) selects the heap-derived default. The §8 table below is updated accordingly; the loader
+>    suggests the relocated paths for the legacy top-level spellings.
 
 ## Design revisions
 
@@ -442,8 +450,13 @@ public sealed interface SchedulerStore extends AutoCloseable
   // Hot path (dispatch thread only).
   DueBatch pollDue(long nowMs, int maxBatch);   // never blocks; empty while recovering (I4);
                                                 // honors per-source-partition penalty deadlines
-  long nextDeadlineMs();                        // Long.MAX_VALUE when nothing pending
+  long nextDeadlineMs();                        // Long.MAX_VALUE when nothing pending; penalized
+                                                // entries contribute their penalty deadline (no
+                                                // zero-timeout hot-spin)
   long pendingCount(int partition);
+  /** §7.3/D22 penalty stamp: the engine stamps not-before deadlines after TRANSIENT fetch
+      outcomes (and clears with a past deadline on success); pollDue skips stamped partitions. */
+  default void penalizeSourcePartition(int sourcePartition, long notBeforeMs) {}
 
   // Engine-transaction lifecycle for an in-flight due batch.
   void onBatchCommitted(DueBatch batch);        // finalize: completed bits, frees, cursors
@@ -717,10 +730,10 @@ Key defaults (durations ISO-8601):
 | `dispatch.fetch.timeout` / `partition-time-floor` | `PT30S` / `PT2S` | §7 budgets |
 | `dispatch.fetch.penalty.backoff` / `backoff-max` | `PT0.05S` / `PT10S` | penalty box (§7) |
 | `dispatch.max-pending-per-partition` | 2,000,000 | pause/resume backpressure (ACTIVE only) |
-| `dispatch.max-pending-total` | `AUTO` (≈ 25% of Xmx ÷ 48 B) | global cap; `validate()` cross-checks vs heap |
-| `transactions.timeout` / `commit-retry` | `PT30S` / 5 | D9; in-doubt handling §3.8 |
+| `dispatch.max-pending-total` | unset / `0` ⇒ AUTO (≈ 25% of Xmx ÷ 64 B, post-approval revision 1) | global cap; `validate()` cross-checks vs heap; no writable `AUTO` literal (post-approval revision 3) |
+| `kafka.transactions.timeout` / `commit-retry` | `PT30S` / 5 | D9; in-doubt handling §3.8; housed under `kafka.` (post-approval revision 3) |
 | `kafka.group-protocol` | `classic` | `consumer` (KIP-848) tested option |
-| `relay.timestamp` / `partitioning` | `DISPATCH` / `BY_KEY` | §2.4 |
+| `route.relay.timestamp` / `partitioning` | `DISPATCH` / `BY_KEY` | §2.4; nested in `route` per the sketch (post-approval revision 3) |
 | `headers.stamp-provenance` | `true` | |
 | `store.type` | `kafka-tracker` | explicit always |
 | `index.chunk.entries` | 131072 | §5.2 |
@@ -729,7 +742,7 @@ Key defaults (durations ISO-8601):
 | `startup-checks.max-tolerated-outage` | `P7D` | checked against broker `offsets.retention.minutes`; WARN/FAIL configurable |
 | `observability.port` | 8081 | |
 
-**Kafka client passthrough:** `kafka.properties` (common) + `kafka.{ingestConsumer|trackerConsumer|seekConsumer|ingestProducer|dispatchProducer|admin}.properties` overlays. **Locked keys rejected with an explanation:** `group.id`, `group.instance.id`, `transactional.id`, `enable.auto.commit`, **`isolation.level` (every cesium consumer — read_committed; the rejection message explains the KIP-447 `require_stable` dependency)**, **`auto.offset.reset` (every cesium consumer — `none`; resets are explicit operator decisions per §3.6)**, `enable.idempotence`, serializers — the engine owns correctness-critical client config (fixes the PoC's `Properties(defaults)` misuse class by construction). Tuned defaults: producers `linger.ms=10/5`, `batch.size=256K`, `compression.type=lz4`, `buffer.memory=64M`; ingest consumer `max.poll.records=2000`, `max.partition.fetch.bytes=4M
+**Kafka client passthrough:** `kafka.properties` (common) + `kafka.{ingest-consumer|tracker-consumer|seek-consumer|ingest-producer|dispatch-producer|admin}.properties` overlays (kebab-case, post-approval revision 3). **Locked keys rejected with an explanation:** `group.id`, `group.instance.id`, `transactional.id`, `enable.auto.commit`, **`isolation.level` (every cesium consumer — read_committed; the rejection message explains the KIP-447 `require_stable` dependency)**, **`auto.offset.reset` (every cesium consumer — `none`; resets are explicit operator decisions per §3.6)**, `enable.idempotence`, serializers — the engine owns correctness-critical client config (fixes the PoC's `Properties(defaults)` misuse class by construction). Tuned defaults: producers `linger.ms=10/5`, `batch.size=256K`, `compression.type=lz4`, `buffer.memory=64M`; ingest consumer `max.poll.records=2000`, `max.partition.fetch.bytes=4M
 `; tracker consumer `max.poll.records=10000`, `CooperativeStickyAssignor`, `group.instance.id` set from `instanceId` (static membership default, D21); seek consumer `max.partition.fetch.bytes=8M`, `fetch.max.bytes=64M` (ops guide notes the decompression-factor interaction with the §5.4 heap budget).
 
 ---

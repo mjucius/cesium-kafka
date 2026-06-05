@@ -10,4 +10,6 @@ dependencies {
     implementation(libs.kafka.clients)
     implementation(libs.slf4j.api)
     implementation(libs.micrometer.core)
+
+    testImplementation(libs.jqwik)
 }

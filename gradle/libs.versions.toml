@@ -25,6 +25,7 @@ fastutil-core = { module = "it.unimi.dsi:fastutil-core", version.ref = "fastutil
 micrometer-core = { module = "io.micrometer:micrometer-core", version.ref = "micrometer" }
 micrometer-prometheus = { module = "io.micrometer:micrometer-registry-prometheus", version.ref = "micrometer" }
 jackson-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jackson" }
+jackson-jdk8 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jdk8", version.ref = "jackson" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
