@@ -780,10 +780,11 @@ Key defaults (durations ISO-8601):
 | `cesium_fetch_bytes_total` | counter | | decompressed payload volume; budget observability |
 | `cesium_fetch_penalized_partitions` | gauge | | penalty-box occupancy (§7) |
 | `cesium_header_errors_total` | counter | `type=malformed\|over_max\|conflict` | protocol violations |
+| `cesium_ingest_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-A rebalance churn; `lost` = fenced/unclean |
 | `cesium_dlq_records_total` | counter | `reason` | |
 | `cesium_retention_margin_seconds` | gauge | | **observed** earliest-available age − delay.max (honest under size/tier eviction); alert < 0 |
 | `cesium_tracker_invalid_records_total` | counter | | wire-format violations on tracker; tamper/foreign-writer canary |
-| `cesium_degraded` | gauge | `loop`, `cause` | park-and-degrade state (§3.8) |
+| `cesium_degraded` | gauge | `loop` | park-and-degrade state (§3.8); the triggering cause is logged, not tagged — a gauge's identity must be stable across cause changes (Micrometer registration) |
 | `cesium_lso_lag` | gauge | `partition` | HW − LSO: detects stuck-transaction stalls |
 | `cesium_index_bytes_estimate` | gauge | | capacity tracking vs global cap |
 | `cesium_loop_last_iteration_timestamp_seconds` | gauge | `loop` | feeds liveness |

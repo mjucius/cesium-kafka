@@ -29,6 +29,10 @@ public non-sealed interface TrackerBackedStore extends SchedulerStore {
      * and the source batch is reprocessed — at most one <em>committed</em> ADD per
      * {@code (partition, sourceOffset)} ever exists (design §3.1), which is what makes the record
      * key a sound compaction identity.
+     *
+     * <p>The encoding must preserve {@link ScheduledRef#clamped()}: the CLAMP marker is stamped on
+     * the relay at <em>dispatch</em> time, after the index has been rebuilt purely from these
+     * bytes, so the durable record is its only carrier (design §2.3).
      */
     TrackerRecordData encodeSchedule(ScheduledRef ref);
 
