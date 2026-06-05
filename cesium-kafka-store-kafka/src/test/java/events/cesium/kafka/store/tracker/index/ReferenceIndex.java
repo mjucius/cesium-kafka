@@ -21,6 +21,9 @@ import java.util.TreeMap;
  *       entries.
  *   <li>Penalties are keyed by partition and survive revoke/re-assign (they live in the index
  *       container, not the shard).
+ *   <li>Dispatch eligibility (the I4 recovery gate) is per shard, defaults to eligible, and dies
+ *       with the shard on revoke; an ineligible shard contributes nothing to {@code eligibleDue}
+ *       or {@code nextDeadlineMs} while its pending set stays fully visible.
  * </ul>
  */
 final class ReferenceIndex {
@@ -41,6 +44,7 @@ final class ReferenceIndex {
 
     static final class RefShard {
         final TreeMap<Long, RefEntry> pending = new TreeMap<>();
+        boolean dispatchEligible = true;
     }
 
     final TreeMap<Integer, RefShard> shards = new TreeMap<>();
@@ -75,13 +79,17 @@ final class ReferenceIndex {
     }
 
     /**
-     * Eligible due entries (penalty-respecting), sorted by EFFECTIVE deadline — the real index
-     * drains partitions by {@code max(shardDeadline, penaltyNotBefore)}, so an entry behind an
-     * expired penalty legally drains after younger entries of healthy partitions.
+     * Eligible due entries (penalty- and I4-respecting), sorted by EFFECTIVE deadline — the real
+     * index drains partitions by {@code max(shardDeadline, penaltyNotBefore)}, so an entry behind
+     * an expired penalty legally drains after younger entries of healthy partitions. A
+     * dispatch-ineligible (recovering) shard contributes nothing, however overdue.
      */
     List<RefEntry> eligibleDue(long nowMs) {
         List<RefEntry> due = new ArrayList<>();
         for (Map.Entry<Integer, RefShard> e : shards.entrySet()) {
+            if (!e.getValue().dispatchEligible) {
+                continue;
+            }
             if (penaltyNotBefore.getOrDefault(e.getKey(), 0L) > nowMs) {
                 continue;
             }
@@ -100,6 +108,9 @@ final class ReferenceIndex {
     long nextDeadlineMs() {
         long min = Long.MAX_VALUE;
         for (Map.Entry<Integer, RefShard> e : shards.entrySet()) {
+            if (!e.getValue().dispatchEligible) {
+                continue;
+            }
             long shardMin = Long.MAX_VALUE;
             for (RefEntry entry : e.getValue().pending.values()) {
                 shardMin = Math.min(shardMin, entry.dispatchAtMs);

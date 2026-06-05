@@ -12,14 +12,20 @@ package events.cesium.kafka.store.tracker.index;
  * <p><strong>Replay rules (design §3.5).</strong>
  *
  * <ul>
- *   <li><strong>R1 (ADD):</strong> a source offset above the log tail appends a new entry. A
- *       source offset at or below the tail is an anomaly (unique-committed-ADD makes it
- *       impossible in a healthy system) and is resolved by binary search: on a hit, ONLY
- *       {@code dispatchAtMs} is updated — the stored {@code trackerAddOffset} is never modified
- *       in place (invariant I5: the original offset remains a valid, conservative replay bound;
- *       increasing it could carry the cursor past other pending entries). On a miss the record is
- *       counted and dropped: inserting mid-log would corrupt the double sortedness that backs
- *       binary search, and the durable log — not this cache — is authoritative.
+ *   <li><strong>R1 (ADD):</strong> a source offset above every offset this shard has ever
+ *       appended (a per-shard high watermark that survives head advances, sweeps and the log
+ *       emptying — unlike the log tail, it never forgets) appends a new entry. A source offset at
+ *       or below the watermark is an anomaly (unique-committed-ADD plus Kafka's per-partition
+ *       ordering make it impossible in a healthy system) and is resolved by binary search over
+ *       the live log: on a hit, ONLY {@code dispatchAtMs} is updated — the stored
+ *       {@code trackerAddOffset} is never modified in place (invariant I5: the original offset
+ *       remains a valid, conservative replay bound; increasing it could carry the cursor past
+ *       other pending entries). On a miss the record is counted and dropped: inserting mid-log
+ *       would corrupt the double sortedness that backs binary search, the entry's durable truth
+ *       is already settled (a duplicate committed ADD is a forged-write/replay-bug signal, R12),
+ *       and the durable log — not this cache — is authoritative. The watermark dies with the
+ *       shard, so revoke→reassign recovery replays — which legitimately re-add lower offsets into
+ *       a fresh shard — are unaffected.
  *   <li><strong>R2 (COMPLETE):</strong> a completion for an unknown source offset is a silent
  *       no-op (expected whenever the ADD sits below the cursor, or the pair was asymmetrically
  *       compacted, or it is our own committed echo for an entry that already left the log).
@@ -50,6 +56,14 @@ public final class PartitionShard {
     private long inFlightCount;
     private long anomalies;
 
+    /**
+     * Highest source offset ever appended; never reset by head advances, sweeps or the log
+     * emptying (it dies with the shard). Gates the R1 anomaly path so a duplicate committed ADD
+     * arriving after its entry left the log is dropped and counted like any other duplicate,
+     * never silently resurrected as a fresh pending entry (which would re-dispatch).
+     */
+    private long maxSourceOffsetSeen = Long.MIN_VALUE;
+
     public PartitionShard() {
         this(DEFAULT_STALE_REBUILD_FLOOR, DEFAULT_COMPLETED_SWEEP_FLOOR);
     }
@@ -73,11 +87,11 @@ public final class PartitionShard {
      *     duplicate/out-of-order paths (R1), which are counted in {@link #anomalies()}
      */
     public boolean applyAdd(long sourceOffset, long dispatchAtMs, long trackerAddOffset) {
-        if (log.liveSize() > 0 && sourceOffset <= log.lastSourceOffset()) {
+        if (sourceOffset <= maxSourceOffsetSeen) {
             anomalies++;
             int slot = log.findBySourceOffset(sourceOffset);
             if (slot < 0) {
-                return false; // out-of-order non-duplicate: dropped, see class javadoc
+                return false; // duplicate of a departed entry, or out-of-order: dropped (javadoc)
             }
             long old = pool.dispatchAtMs(slot);
             if (dispatchAtMs == old) {
@@ -101,6 +115,7 @@ public final class PartitionShard {
         }
         int slot = pool.alloc(sourceOffset, dispatchAtMs, trackerAddOffset);
         log.append(slot);
+        maxSourceOffsetSeen = sourceOffset;
         heap.push(slot);
         pendingCount++;
         return true;
@@ -244,13 +259,26 @@ public final class PartitionShard {
 
     /**
      * Amortized housekeeping: a pending suspect rebuild (taking the deferred R1 repair off the
-     * next read), a heap rebuild above {@code max(staleRebuildFloor, 25% of heap)}, and a log
+     * next read), a heap rebuild above {@code max(staleRebuildFloor, 25% of heap)} stale entries
+     * OR above {@code max(staleRebuildFloor, 25% of allocated slots)} parked zombies, and a log
      * sweep above {@code max(completedSweepFloor, 50% of the live region)}. Heap work runs first
      * so swept slots are freed copy-free (immediately reusable) in the same pass.
+     *
+     * <p><strong>Why the independent zombie trigger:</strong> parked zombies are reclaimed only
+     * by a heap rebuild, but their stale heap copies are also skimmed away by ordinary drains
+     * ({@code peekPendingTop} decrements the stale estimate while the zombie stays parked), so a
+     * replay-style ADD+COMPLETE burst per recovery episode could otherwise accumulate up to a
+     * stale-floor's worth of permanently unreusable slots per episode, monotonic across episodes,
+     * without ever crossing the stale threshold. The zombie trigger bounds the parked backlog at
+     * the same amortized envelope as the stale backlog (design §5.4's capped completed-held
+     * budget) for one extra comparison per call.
      */
     public void maintenance() {
         heap.rebuildIfSuspect();
-        heap.maintain(staleRebuildFloor);
+        boolean rebuilt = heap.maintain(staleRebuildFloor);
+        if (!rebuilt && pool.zombieCount() > Math.max((long) staleRebuildFloor, pool.allocatedSlots() / 4L)) {
+            heap.rebuild(); // purges every stale copy, then reclaimZombies() recycles the parked slots
+        }
         log.maintain(completedSweepFloor);
     }
 

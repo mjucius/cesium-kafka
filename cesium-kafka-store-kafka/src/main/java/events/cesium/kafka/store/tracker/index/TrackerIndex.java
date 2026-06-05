@@ -20,6 +20,18 @@ import java.util.Arrays;
  * {@code max(shard.nextDeadlineMs(), penaltyNotBefore)} — a penalized-but-due entry must never
  * drive a zero poll timeout (see {@code SchedulerStore.nextDeadlineMs}).
  *
+ * <p><strong>Recovery gating (I4, design §4.2/§4.4 item 5).</strong> Each shard carries a
+ * {@link #setDispatchEligible(int, boolean) dispatch-eligibility} flag consulted by both
+ * selection loops: an ineligible shard contributes nothing to {@link #drainDue} or
+ * {@link #nextDeadlineMs}, however overdue its entries — the primitive M3 uses to keep a
+ * RECOVERING partition's replayed entries undrainable until its position reaches the replay
+ * barrier (dispatching mid-replay is the §3.6 duplicate vector: a COMPLETE tombstone between the
+ * cursor and the barrier may not have been applied yet). The replay-side methods —
+ * {@link #applyAdd}, {@link #applyComplete}, {@link #oldestPending}, {@link #pendingCount} — are
+ * deliberately ungated: replay must populate the shard and the cursor computation needs it. The
+ * flag is deliberately separate from the penalty box, whose replace-on-stamp/clear-by-past
+ * semantics are owned by the engine's §7 fetch-isolation logic.
+ *
  * <p><strong>Penalty box semantics</strong> (mirrors {@code SchedulerStore.penalizeSourcePartition}):
  * a new stamp always replaces the previous one; the engine clears a penalty by stamping a past
  * deadline (e.g. {@code 0}) — an expired stamp has no effect because only {@code max(deadline,
@@ -42,6 +54,7 @@ public final class TrackerIndex {
     // Dense parallel views of shardByPartition for iterator-free, allocation-free scans.
     private int[] partitionIds = new int[8];
     private PartitionShard[] shards = new PartitionShard[8];
+    private boolean[] dispatchEligible = new boolean[8];
     private int shardCount;
 
     private final IndexDueBatch batch = new IndexDueBatch();
@@ -60,7 +73,11 @@ public final class TrackerIndex {
         this.completedSweepFloor = completedSweepFloor;
     }
 
-    /** Creates an empty shard for {@code partition}; idempotent (re-assignment is a no-op). */
+    /**
+     * Creates an empty shard for {@code partition}; idempotent (re-assignment is a no-op). A
+     * fresh shard starts {@link #setDispatchEligible(int, boolean) dispatch-eligible}; gating it
+     * for recovery (I4) is the caller's responsibility (M3's {@code beginRecovery}).
+     */
     public void assignPartition(int partition) {
         if (shardByPartition.containsKey(partition)) {
             return;
@@ -70,13 +87,15 @@ public final class TrackerIndex {
         if (shardCount == shards.length) {
             partitionIds = Arrays.copyOf(partitionIds, shardCount * 2);
             shards = Arrays.copyOf(shards, shardCount * 2);
+            dispatchEligible = Arrays.copyOf(dispatchEligible, shardCount * 2);
         }
         partitionIds[shardCount] = partition;
         shards[shardCount] = shard;
+        dispatchEligible[shardCount] = true;
         shardCount++;
     }
 
-    /** Drops the shard in O(1); a subsequent {@link #assignPartition} starts clean. */
+    /** Drops the shard in O(1); a subsequent {@link #assignPartition} starts clean (and eligible). */
     public void revokePartition(int partition) {
         PartitionShard removed = shardByPartition.remove(partition);
         if (removed == null) {
@@ -87,6 +106,7 @@ public final class TrackerIndex {
                 shardCount--;
                 partitionIds[i] = partitionIds[shardCount];
                 shards[i] = shards[shardCount];
+                dispatchEligible[i] = dispatchEligible[shardCount];
                 shards[shardCount] = null;
                 break;
             }
@@ -100,6 +120,35 @@ public final class TrackerIndex {
 
     public boolean isAssigned(int partition) {
         return shardByPartition.containsKey(partition);
+    }
+
+    /**
+     * Gates or ungates {@code partition}'s entries for dispatch — the I4 recovery primitive (see
+     * class javadoc). While ineligible, the shard contributes nothing to {@link #drainDue} or
+     * {@link #nextDeadlineMs}; the replay-side methods stay ungated. M3's {@code beginRecovery}
+     * sets {@code false}; promotion to ACTIVE ({@code position >= barrier}, design §3.6 step 5)
+     * sets {@code true}. A fresh assignment starts eligible.
+     *
+     * @throws IllegalStateException if {@code partition} is not assigned
+     */
+    public void setDispatchEligible(int partition, boolean eligible) {
+        for (int i = 0; i < shardCount; i++) {
+            if (partitionIds[i] == partition) {
+                dispatchEligible[i] = eligible;
+                return;
+            }
+        }
+        throw new IllegalStateException("partition " + partition + " is not assigned");
+    }
+
+    /** Whether {@code partition}'s entries are dispatch-eligible; an unassigned partition is not. */
+    public boolean isDispatchEligible(int partition) {
+        for (int i = 0; i < shardCount; i++) {
+            if (partitionIds[i] == partition) {
+                return dispatchEligible[i];
+            }
+        }
+        return false;
     }
 
     public int assignedPartitionCount() {
@@ -117,10 +166,15 @@ public final class TrackerIndex {
     }
 
     /**
-     * Drains due entries across partitions in effective-deadline order, skipping penalized
-     * partitions, up to {@code maxBatch}. Each iteration re-selects the minimum-effective-
-     * deadline shard (O(owned partitions), see class javadoc) and pops one entry, so the batch is
-     * globally ordered by {@code dispatchAtMs} (ties across shards in unspecified order).
+     * Drains due entries across partitions in effective-deadline order, skipping penalized and
+     * dispatch-ineligible partitions, up to {@code maxBatch}. Each iteration re-selects the
+     * minimum-effective-deadline shard (O(owned partitions), see class javadoc) and pops one
+     * entry, so the batch is globally ordered by <em>effective</em> deadline —
+     * {@code max(dispatchAtMs, the partition's penalty stamp)} — which equals {@code dispatchAtMs}
+     * order only when no penalty stamps are involved (an entry behind an expired-but-nonzero
+     * stamp legally drains after younger entries of healthy partitions). Ties across shards
+     * surface in unspecified order; within a partition, entries surface in
+     * ({@code dispatchAtMs}, then arrival) order per the {@code SchedulerStore.pollDue} contract.
      *
      * @return the reused batch — valid until the next call; resolve via
      *     {@link #onBatchCommitted}/{@link #onBatchAborted} (or abandon after an I9 drop)
@@ -132,6 +186,9 @@ public final class TrackerIndex {
             long bestDeadline = Long.MAX_VALUE;
             int bestPartition = -1;
             for (int i = 0; i < shardCount; i++) {
+                if (!dispatchEligible[i]) {
+                    continue; // I4: a recovering shard contributes nothing, however overdue
+                }
                 long deadline = shards[i].nextDeadlineMs();
                 if (deadline == Long.MAX_VALUE) {
                     continue;
@@ -155,13 +212,18 @@ public final class TrackerIndex {
     }
 
     /**
-     * Minimum effective deadline over all assigned shards, or {@link Long#MAX_VALUE} when nothing
-     * is pending. A penalized partition contributes {@code max(itsDeadline, itsPenaltyNotBefore)}
-     * so a penalized-but-due entry never drives a zero poll timeout.
+     * Minimum effective deadline over all assigned, dispatch-eligible shards, or
+     * {@link Long#MAX_VALUE} when nothing is pending. A penalized partition contributes
+     * {@code max(itsDeadline, itsPenaltyNotBefore)} so a penalized-but-due entry never drives a
+     * zero poll timeout; an ineligible (recovering) shard contributes nothing, so an overdue
+     * mid-replay entry never drives one either.
      */
     public long nextDeadlineMs() {
         long min = Long.MAX_VALUE;
         for (int i = 0; i < shardCount; i++) {
+            if (!dispatchEligible[i]) {
+                continue; // I4: see drainDue
+            }
             long deadline = shards[i].nextDeadlineMs();
             if (deadline == Long.MAX_VALUE) {
                 continue;

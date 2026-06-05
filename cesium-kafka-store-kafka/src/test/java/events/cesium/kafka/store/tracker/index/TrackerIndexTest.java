@@ -89,6 +89,65 @@ class TrackerIndexTest {
         index.onBatchCommitted(batch);
     }
 
+    /**
+     * The I4 recovery gate (design §4.2 pollDue "empty while recovering"; §4.4 item 5): an
+     * ineligible shard's entries are undrainable and contribute no deadline, however overdue,
+     * while the replay-side methods stay fully ungated.
+     */
+    @Test
+    void ineligiblePartitionContributesNothingHoweverOverdue() {
+        TrackerIndex index = new TrackerIndex();
+        index.assignPartition(0);
+        index.assignPartition(1);
+        assertTrue(index.isDispatchEligible(0), "a fresh shard starts dispatch-eligible");
+
+        index.setDispatchEligible(0, false); // M3 beginRecovery
+        index.applyAdd(0, 0, 100, 0); // replay populates the gated shard with overdue entries
+        index.applyAdd(0, 1, 150, 1);
+        index.applyAdd(1, 0, 200, 0);
+        assertTrue(index.applyComplete(0, 1), "replay-side applyComplete stays ungated");
+        assertEquals(1, index.pendingCount(0), "pendingCount stays ungated (cursor math needs it)");
+        long[] visited = {0};
+        index.oldestPending(0, (slot, src, at, trk) -> {
+            visited[0]++;
+            return true;
+        });
+        assertEquals(1, visited[0], "oldestPending stays ungated (sidecar encoding needs it)");
+
+        assertEquals(200, index.nextDeadlineMs(), "recovering shard drives no (zero) poll timeout");
+        IndexDueBatch batch = index.drainDue(10_000, 10);
+        assertEquals(1, batch.size(), "a recovering partition contributes nothing, however overdue");
+        assertEquals(1, batch.sourcePartition(0));
+        index.onBatchCommitted(batch);
+        assertEquals(Long.MAX_VALUE, index.nextDeadlineMs(), "only the gated shard has entries left");
+
+        index.setDispatchEligible(0, true); // promotion: position >= barrier (design §3.6 step 5)
+        assertEquals(100, index.nextDeadlineMs());
+        IndexDueBatch promoted = index.drainDue(10_000, 10);
+        assertEquals(1, promoted.size());
+        assertEquals(0, promoted.sourcePartition(0));
+        index.onBatchCommitted(promoted);
+        assertEquals(0, index.totalPendingCount());
+    }
+
+    @Test
+    void eligibilityLifecycleFollowsTheShard() {
+        TrackerIndex index = new TrackerIndex();
+        assertFalse(index.isDispatchEligible(0), "an unassigned partition is not eligible");
+        assertThrows(IllegalStateException.class, () -> index.setDispatchEligible(0, true));
+
+        index.assignPartition(0);
+        index.setDispatchEligible(0, false);
+        assertFalse(index.isDispatchEligible(0));
+        index.assignPartition(0); // idempotent re-assignment must not reset the gate
+        assertFalse(index.isDispatchEligible(0));
+
+        index.revokePartition(0);
+        assertFalse(index.isDispatchEligible(0));
+        index.assignPartition(0);
+        assertTrue(index.isDispatchEligible(0), "a fresh shard after revoke starts eligible");
+    }
+
     @Test
     void revokeDropsStateAndReassignStartsClean() {
         TrackerIndex index = new TrackerIndex();

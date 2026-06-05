@@ -161,6 +161,156 @@ class PartitionShardTest {
         assertEquals(2, shard.freeSlotCount());
     }
 
+    /**
+     * The pollDue contract "(dispatchAtMs, then arrival)": a same-millisecond burst (the midnight
+     * thundering herd, design §7.1) drains in arrival == ascending-source-offset order, feeding
+     * the one-seek forward-scan fetch — and the order survives an abort/restore cycle.
+     */
+    @Test
+    void equalDeadlineEntriesDrainInArrivalOrder() {
+        PartitionShard shard = new PartitionShard();
+        for (int i = 0; i < 8; i++) {
+            shard.applyAdd(i, 1_000, i);
+        }
+        LongArrayList sources = new LongArrayList();
+        IntArrayList slots = new IntArrayList();
+        shard.drainDue(1_000, 16, (slot, src, at, trk) -> {
+            sources.add(src);
+            slots.add(slot);
+        });
+        assertEquals(LongArrayList.of(0, 1, 2, 3, 4, 5, 6, 7), sources, "(dispatchAtMs, then arrival)");
+
+        shard.restoreAfterAbort(slots.elements(), slots.size());
+        LongArrayList again = new LongArrayList();
+        IntArrayList slotsAgain = new IntArrayList();
+        shard.drainDue(1_000, 16, (slot, src, at, trk) -> {
+            again.add(src);
+            slotsAgain.add(slot);
+        });
+        assertEquals(sources, again, "arrival-order ties survive restore-after-abort");
+        shard.finalizeCommitted(slotsAgain.elements(), slotsAgain.size());
+    }
+
+    /**
+     * Independent zombie-pressure maintenance trigger: replay-style ADD+COMPLETE bursts complete
+     * entries pre-dispatch, so their slots exit the log with live heap copies (zombies); later
+     * drains skim the stale copies (draining the stale estimate toward zero) while the zombies
+     * stay parked. Without the zombie trigger nothing ever rebuilds in this pattern and parked
+     * slots accumulate monotonically across recovery episodes.
+     */
+    @Test
+    void zombiePressureTriggersRebuildAcrossRecoveryEpisodes() {
+        int staleFloor = 8;
+        PartitionShard shard = new PartitionShard(staleFloor, 1_000_000);
+        long src = 0;
+        long trk = 0;
+        for (int episode = 0; episode < 10; episode++) {
+            for (int i = 0; i < 6; i++) {
+                shard.applyAdd(src, 5_000 + src, trk++);
+                assertTrue(shard.applyComplete(src), "replay-style pre-dispatch complete");
+                src++;
+            }
+            // Live-phase drains skim the stale copies; the parked zombies remain.
+            drainSlots(shard, Long.MAX_VALUE - 1, 1_000);
+            assertEquals(0, shard.staleHeapEntries(), "stale debt fully skimmed by the drain");
+            shard.maintenance();
+            long bound = Math.max(staleFloor, shard.allocatedSlotCount() / 4);
+            assertTrue(
+                    shard.zombieSlotCount() <= bound,
+                    "parked zombies " + shard.zombieSlotCount() + " exceed the maintenance bound " + bound);
+        }
+        assertTrue(shard.heapRebuilds() >= 1, "zombie pressure must fire rebuilds");
+        assertTrue(
+                shard.allocatedSlotCount() <= 24,
+                "pool growth must stay bounded across episodes, got " + shard.allocatedSlotCount());
+    }
+
+    /**
+     * A duplicate ADD arriving after the arrival log has fully emptied must be dropped and
+     * counted exactly like the non-empty-log duplicate — never resurrected as a fresh pending
+     * entry (the high-watermark gate; a resurrected entry would re-dispatch).
+     */
+    @Test
+    void duplicateAddAfterLogEmptiesIsDroppedAndCounted() {
+        PartitionShard shard = new PartitionShard();
+        shard.applyAdd(0, 100, 0);
+        IntArrayList batch = drainSlots(shard, 100, 10);
+        shard.finalizeCommitted(batch.elements(), batch.size());
+        assertEquals(0, shard.logTotalSize(), "log fully emptied");
+
+        assertFalse(shard.applyAdd(0, 500, 1), "duplicate of a departed entry");
+        assertEquals(1, shard.anomalies(), "counted like the non-empty-log duplicate");
+        assertEquals(0, shard.pendingCount(), "never resurrected");
+        assertEquals(0, drainSlots(shard, Long.MAX_VALUE - 1, 10).size(), "nothing to re-dispatch");
+
+        assertTrue(shard.applyAdd(1, 600, 2), "the next genuinely-new offset still inserts");
+        assertEquals(1, shard.pendingCount());
+    }
+
+    /**
+     * Defensive branch: a COMPLETE landing on an IN_FLIGHT slot is impossible from a correct
+     * engine (our own echo is only readable after the commit that finalized the slot) — it must
+     * count an anomaly and never corrupt in-flight state, leaving both resolution paths intact.
+     */
+    @Test
+    void completeOnInFlightCountsAnomalyAndPreservesBothResolutionPaths() {
+        PartitionShard shard = new PartitionShard();
+        shard.applyAdd(0, 100, 0);
+        shard.applyAdd(1, 100, 1);
+        IntArrayList batch = drainSlots(shard, 100, 10);
+        assertEquals(2, batch.size());
+
+        assertFalse(shard.applyComplete(0), "complete-on-in-flight is rejected");
+        assertFalse(shard.applyComplete(1), "complete-on-in-flight is rejected");
+        assertEquals(2, shard.anomalies());
+        assertEquals(2, shard.inFlightCount(), "in-flight state untouched");
+        assertEquals(0, shard.pendingCount());
+
+        shard.finalizeSlot(batch.getInt(0)); // commit path still works
+        shard.restoreSlot(batch.getInt(1)); // abort path still works
+        assertEquals(0, shard.inFlightCount());
+        assertEquals(1, shard.pendingCount());
+        assertEquals(LongArrayList.of(1), pendingSources(shard));
+
+        IntArrayList redrained = drainSlots(shard, 100, 10);
+        assertEquals(1, redrained.size(), "restored entry re-dispatches");
+        shard.finalizeCommitted(redrained.elements(), redrained.size());
+        assertEquals(2, shard.freeSlotCount());
+    }
+
+    /**
+     * Defensive branch: a duplicate ADD landing on a COMPLETED-held slot (behind a far-future
+     * head pin) updates {@code dispatchAtMs} harmlessly, counts the anomaly, never resurrects the
+     * entry, and its stale heap copy is purged by the suspect rebuild on the next read.
+     */
+    @Test
+    void duplicateAddOnCompletedHeldSlotDoesNotResurrect() {
+        PartitionShard shard = new PartitionShard(1_000_000, 1_000_000);
+        shard.applyAdd(0, 100_000, 0); // far-future head pin
+        shard.applyAdd(1, 200, 1);
+        assertTrue(shard.applyComplete(1), "behind-head complete: held in log, heap copy resident");
+        assertEquals(1, shard.completedHeldInLog());
+        assertEquals(1, shard.pendingCount());
+
+        assertFalse(shard.applyAdd(1, 50, 2), "duplicate ADD on a COMPLETED-held slot");
+        assertEquals(1, shard.anomalies());
+        assertEquals(1, shard.pendingCount(), "no resurrection");
+
+        // The in-place update behind a resident copy marks the order suspect; the next read
+        // rebuilds, purging the held slot's stale copy.
+        assertEquals(100_000, shard.nextDeadlineMs(), "only the pinned head entry is pending");
+        assertEquals(1, shard.heapRebuilds(), "suspect rebuild fired on the read");
+        assertEquals(0, shard.staleHeapEntries());
+        assertEquals(1, shard.heapSize(), "stale copy of the completed slot purged");
+
+        assertEquals(0, drainSlots(shard, 200, 10).size(), "nothing due before the head pin");
+        IntArrayList batch = drainSlots(shard, 100_000, 10);
+        assertEquals(1, batch.size(), "a full drain surfaces only the pending head");
+        shard.finalizeCommitted(batch.elements(), batch.size());
+        assertEquals(0, shard.pendingCount());
+        assertEquals(0, shard.completedHeldInLog(), "the held slot left with the head advance");
+    }
+
     @Test
     void unknownCompleteIsSilentNoOpPerR2() {
         PartitionShard shard = new PartitionShard();

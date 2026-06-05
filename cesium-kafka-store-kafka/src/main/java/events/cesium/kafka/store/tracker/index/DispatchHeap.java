@@ -5,10 +5,20 @@ import it.unimi.dsi.fastutil.ints.IntHeaps;
 import java.util.BitSet;
 
 /**
- * Min-heap of slot ids ordered by the pool's <em>live</em> {@code dispatchAtMs} (design §5.2
- * item 2): a fastutil {@link IntHeapPriorityQueue} with an indirect primitive comparator, plus
- * lazy deletion and threshold/anomaly rebuilds. Extends the fastutil heap (rather than wrapping)
- * for direct access to the backing array, which makes rebuilds in-place and allocation-free.
+ * Min-heap of slot ids ordered by the pool's <em>live</em> ({@code dispatchAtMs}, then
+ * {@code sourceOffset}) (design §5.2 item 2): a fastutil {@link IntHeapPriorityQueue} with an
+ * indirect primitive comparator, plus lazy deletion and threshold/anomaly rebuilds. Extends the
+ * fastutil heap (rather than wrapping) for direct access to the backing array, which makes
+ * rebuilds in-place and allocation-free.
+ *
+ * <p><strong>Equal-deadline tie-break.</strong> {@code sourceOffset} is immutable for the life of
+ * a slot and arrival-ordered within a partition (the arrival log's double sortedness, design
+ * §5.2), so the tie-break makes the order total and deterministic over live slots and realizes
+ * the {@code SchedulerStore.pollDue} contract "({@code dispatchAtMs}, then arrival)" — a
+ * same-millisecond burst drains in source-offset order (ascending offsets feed §7.1's one-seek
+ * forward-scan fetch). Copies of the SAME slot still compare equal (same live values), so every
+ * soundness argument below — lazy deletion, rule (b), the suspect rebuild — carries over
+ * unchanged.
  *
  * <p><strong>Lazy deletion.</strong> Completion and dispatch never search the heap: a slot whose
  * state is no longer {@link EntryPool#PENDING} is simply discarded when it surfaces at the top
@@ -72,7 +82,10 @@ final class DispatchHeap extends IntHeapPriorityQueue {
     private final BitSet rebuildSeen = new BitSet();
 
     DispatchHeap(EntryPool pool) {
-        super(16, (a, b) -> Long.compare(pool.dispatchAtMs(a), pool.dispatchAtMs(b)));
+        super(16, (a, b) -> {
+            int byDeadline = Long.compare(pool.dispatchAtMs(a), pool.dispatchAtMs(b));
+            return byDeadline != 0 ? byDeadline : Long.compare(pool.sourceOffset(a), pool.sourceOffset(b));
+        });
         this.pool = pool;
     }
 

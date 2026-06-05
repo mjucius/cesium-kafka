@@ -13,8 +13,9 @@ import net.jqwik.api.Tuple;
 /**
  * Flagship M2 test: random operation sequences executed against the real {@link TrackerIndex}
  * and the naive {@link ReferenceIndex}, with full observable-equivalence checks after every op
- * (pending sets, drained timestamp-grouped multisets, oldestPending visitation order, I5
- * trackerAddOffset preservation, penalty-adjusted nextDeadlineMs).
+ * (pending sets, exact within-partition drain order with cross-partition ties as
+ * timestamp-grouped multisets, oldestPending visitation order, I5 trackerAddOffset preservation,
+ * penalty- and I4-eligibility-adjusted nextDeadlineMs).
  *
  * <p>Maintenance floors are set very low (8) so rebuilds and sweeps fire constantly inside the
  * generated sequences. Bugs found by this property during development are pinned as
@@ -23,7 +24,15 @@ import net.jqwik.api.Tuple;
 class TrackerIndexOracleTest {
 
     sealed interface Op
-            permits AddNew, DupAdd, CompleteKnown, CompleteUnknown, Drain, Penalize, Maintenance, RevokeAssign {}
+            permits AddNew,
+                    DupAdd,
+                    CompleteKnown,
+                    CompleteUnknown,
+                    Drain,
+                    Penalize,
+                    Maintenance,
+                    RevokeAssign,
+                    SetEligible {}
 
     record AddNew(int partitionSel, int delayMs) implements Op {}
 
@@ -40,6 +49,8 @@ class TrackerIndexOracleTest {
     record Maintenance() implements Op {}
 
     record RevokeAssign(int partitionSel) implements Op {}
+
+    record SetEligible(int partitionSel, boolean eligible) implements Op {}
 
     @Property(tries = 250)
     void indexMatchesReferenceModel(@ForAll("opSequences") List<Op> ops) {
@@ -66,6 +77,7 @@ class TrackerIndexOracleTest {
             case Penalize(int p, int delta) -> h.penalize(p, h.nowMs + delta);
             case Maintenance() -> h.maintenance();
             case RevokeAssign(int p) -> h.revokeAssign(p);
+            case SetEligible(int p, boolean eligible) -> h.setEligible(p, eligible);
         }
     }
 
@@ -90,6 +102,8 @@ class TrackerIndexOracleTest {
                 .as(Penalize::new);
         Arbitrary<Op> maintenance = Arbitraries.just(new Maintenance());
         Arbitrary<Op> revokeAssign = partition.map(RevokeAssign::new);
+        Arbitrary<Op> setEligible =
+                Combinators.combine(partition, Arbitraries.of(true, false)).as(SetEligible::new);
 
         return Arbitraries.frequencyOf(
                         Tuple.of(10, addNew),
@@ -99,7 +113,8 @@ class TrackerIndexOracleTest {
                         Tuple.of(5, drain),
                         Tuple.of(1, penalize),
                         Tuple.of(1, maintenance),
-                        Tuple.of(1, revokeAssign))
+                        Tuple.of(1, revokeAssign),
+                        Tuple.of(2, setEligible))
                 .list()
                 .ofMinSize(1)
                 .ofMaxSize(160);

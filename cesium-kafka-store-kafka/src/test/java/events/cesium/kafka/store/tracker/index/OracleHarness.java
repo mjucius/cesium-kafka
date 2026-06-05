@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Drives identical operation sequences against the real {@link TrackerIndex} and the naive
@@ -24,9 +26,13 @@ import java.util.List;
  *       in-flight bookkeeping between ops.
  * </ul>
  *
- * <p>Drain comparison is tie-tolerant: heap order among equal {@code dispatchAtMs} is
- * unspecified, so batches are compared as timestamp-grouped multisets, and a batch truncated by
- * {@code maxBatch} inside a tie group may contain any subset of that group.
+ * <p>Drain comparison: the batch must be globally ordered by effective deadline, and within each
+ * partition the exact ({@code dispatchAtMs}, then arrival) sequence of the {@code pollDue}
+ * contract is asserted (the drained entries of a partition are always a prefix of its due list in
+ * that order). Only ACROSS partitions are equal effective deadlines tie-tolerant — the API leaves
+ * cross-partition tie order unspecified — so tie groups are additionally compared as
+ * timestamp-grouped multisets, and a batch truncated by {@code maxBatch} inside a tie group may
+ * contain any subset of that group.
  */
 final class OracleHarness {
 
@@ -153,6 +159,7 @@ final class OracleHarness {
                     "drain not in effective-deadline order at index " + i);
         }
         boolean truncated = batch.size() < due.size();
+        verifyWithinPartitionOrder(batch, due, truncated);
         int ri = 0;
         int di = 0;
         while (ri < batch.size()) {
@@ -185,10 +192,66 @@ final class OracleHarness {
         }
     }
 
+    /**
+     * Exact within-partition order — the {@code pollDue} contract "({@code dispatchAtMs}, then
+     * arrival)". Within one partition the shard's heap pops in (dispatchAtMs, sourceOffset)
+     * order regardless of penalties or truncation, so the drained subsequence of every partition
+     * must be a prefix of that partition's due list in that order — and the full list when the
+     * batch was not truncated.
+     */
+    private void verifyWithinPartitionOrder(IndexDueBatch batch, List<ReferenceIndex.RefEntry> due, boolean truncated) {
+        Map<Integer, List<DrainedKey>> realByPartition = new TreeMap<>();
+        for (int i = 0; i < batch.size(); i++) {
+            realByPartition
+                    .computeIfAbsent(batch.sourcePartition(i), p -> new ArrayList<>())
+                    .add(new DrainedKey(
+                            batch.sourcePartition(i),
+                            batch.sourceOffset(i),
+                            batch.dispatchAtMs(i),
+                            batch.trackerOffset(i)));
+        }
+        Map<Integer, List<DrainedKey>> refByPartition = new TreeMap<>();
+        for (ReferenceIndex.RefEntry e : due) {
+            refByPartition
+                    .computeIfAbsent(e.partition, p -> new ArrayList<>())
+                    .add(new DrainedKey(e.partition, e.sourceOffset, e.dispatchAtMs, e.trackerAddOffset));
+        }
+        refByPartition.values().forEach(Collections::sort); // (dispatchAtMs, partition, sourceOffset)
+        for (Map.Entry<Integer, List<DrainedKey>> e : realByPartition.entrySet()) {
+            List<DrainedKey> realSeq = e.getValue();
+            List<DrainedKey> refSeq = refByPartition.get(e.getKey());
+            assertNotNull(refSeq, "drained entries for a partition with nothing due: " + e.getKey());
+            assertTrue(realSeq.size() <= refSeq.size(), "partition " + e.getKey() + " over-drained");
+            assertEquals(
+                    refSeq.subList(0, realSeq.size()),
+                    realSeq,
+                    "within-partition (dispatchAtMs, then arrival) order of partition " + e.getKey());
+        }
+        if (!truncated) {
+            assertEquals(
+                    refByPartition.keySet(),
+                    realByPartition.keySet(),
+                    "an untruncated drain must cover every partition with due entries");
+            for (Map.Entry<Integer, List<DrainedKey>> e : refByPartition.entrySet()) {
+                assertEquals(
+                        e.getValue().size(),
+                        realByPartition.get(e.getKey()).size(),
+                        "untruncated drain missed due entries of partition " + e.getKey());
+            }
+        }
+    }
+
     void penalize(int partitionSel, long notBeforeMs) {
         int p = Math.floorMod(partitionSel, partitions);
         real.penalizeSourcePartition(p, notBeforeMs);
         model.penaltyNotBefore.put(p, notBeforeMs);
+    }
+
+    /** Toggles the I4 dispatch-eligibility gate (M3: beginRecovery=false, ACTIVE promotion=true). */
+    void setEligible(int partitionSel, boolean eligible) {
+        int p = Math.floorMod(partitionSel, partitions);
+        real.setDispatchEligible(p, eligible);
+        model.shards.get(p).dispatchEligible = eligible;
     }
 
     void maintenance() {
@@ -233,6 +296,9 @@ final class OracleHarness {
 
     /** Drains everything far in the future and verifies the index empties out like the model. */
     void finalDrain() {
+        for (int p = 0; p < partitions; p++) {
+            setEligible(p, true); // every shard promoted to ACTIVE before the terminal drain
+        }
         drainAndResolve(30L * 24 * 3600 * 1000, Integer.MAX_VALUE, true);
         assertEquals(0, real.totalPendingCount(), "index should be empty after the final drain");
         assertEquals(0, real.totalInFlightCount(), "no in-flight after resolution");
