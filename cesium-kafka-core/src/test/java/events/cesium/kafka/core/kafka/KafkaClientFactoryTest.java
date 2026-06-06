@@ -149,6 +149,97 @@ class KafkaClientFactoryTest {
     }
 
     @Test
+    void dispatchNamingSchemesFollowDesign() {
+        KafkaClientFactory factory = new KafkaClientFactory(defaults());
+        assertEquals("cesium.orders-delay.dispatch", factory.dispatchGroupId());
+        assertEquals(Optional.of("cesium.orders-delay.dispatch.slot-0"), factory.dispatchGroupInstanceId());
+        assertEquals("cesium.orders-delay.dispatch.slot-0.0", factory.dispatchTransactionalId(0));
+        assertEquals("cesium.orders-delay.dispatch.slot-0.3", factory.dispatchTransactionalId(3));
+    }
+
+    @Test
+    void trackerConsumerLockedKeysAlwaysWin() {
+        KafkaConfig kafka = new KafkaConfig(
+                null,
+                Map.of("isolation.level", "read_uncommitted", "enable.auto.commit", "true"),
+                null,
+                null,
+                new KafkaConfig.ClientOverrides(Map.of(
+                        "auto.offset.reset", "earliest",
+                        "group.id", "evil",
+                        "group.instance.id", "evil-instance")),
+                null,
+                null,
+                null,
+                null);
+        Properties props =
+                new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null)).trackerConsumerProperties();
+        assertEquals("read_committed", props.getProperty("isolation.level"), "D17: locked on every cesium consumer");
+        assertEquals("none", props.getProperty("auto.offset.reset"), "D18: resets are explicit operator decisions");
+        assertEquals("false", props.getProperty("enable.auto.commit"));
+        assertEquals("cesium.orders-delay.dispatch", props.getProperty("group.id"));
+        assertEquals("cesium.orders-delay.dispatch.slot-0", props.getProperty("group.instance.id"), "D21");
+        assertEquals(
+                "org.apache.kafka.common.serialization.ByteArrayDeserializer", props.getProperty("key.deserializer"));
+        assertEquals(
+                "org.apache.kafka.common.serialization.ByteArrayDeserializer", props.getProperty("value.deserializer"));
+    }
+
+    @Test
+    void trackerConsumerTunedDefaultsAndAssignor() {
+        Properties props = new KafkaClientFactory(defaults()).trackerConsumerProperties();
+        assertEquals(KafkaClientFactory.TRACKER_MAX_POLL_RECORDS, props.getProperty("max.poll.records"));
+        assertEquals(
+                KafkaClientFactory.TRACKER_ASSIGNOR,
+                props.getProperty("partition.assignment.strategy"),
+                "classic protocol defaults to CooperativeStickyAssignor (§3.4.5)");
+
+        KafkaConfig kip848 =
+                new KafkaConfig(KafkaConfig.GroupProtocol.CONSUMER, null, null, null, null, null, null, null, null);
+        Properties consumerProtocol =
+                new KafkaClientFactory(config(new InstanceId("slot-0"), kip848, null)).trackerConsumerProperties();
+        assertEquals("consumer", consumerProtocol.getProperty("group.protocol"));
+        assertNull(
+                consumerProtocol.getProperty("partition.assignment.strategy"),
+                "KIP-848 assignors are broker-side; a classic assignor list is rejected by the client");
+    }
+
+    @Test
+    void trackerConsumerRandomInstanceIdDropsStaticMembership() {
+        Properties props = new KafkaClientFactory(config(new InstanceId(InstanceId.RANDOM_LITERAL), null, null))
+                .trackerConsumerProperties();
+        assertNull(props.getProperty("group.instance.id"), "D21: no static membership for random ids");
+    }
+
+    @Test
+    void dispatchProducerLockedKeysAndTunedDefaults() {
+        KafkaConfig kafka = new KafkaConfig(
+                null,
+                null,
+                new KafkaConfig.Transactions(Duration.ofSeconds(45), null),
+                null,
+                null,
+                null,
+                null,
+                new KafkaConfig.ClientOverrides(Map.of(
+                        "enable.idempotence", "false",
+                        "transactional.id", "evil",
+                        "transaction.timeout.ms", "1",
+                        "linger.ms", "5")),
+                null);
+        Properties props =
+                new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null)).dispatchProducerProperties(2);
+        assertEquals("true", props.getProperty("enable.idempotence"));
+        assertEquals("cesium.orders-delay.dispatch.slot-0.2", props.getProperty("transactional.id"));
+        assertEquals("org.apache.kafka.common.serialization.ByteArraySerializer", props.getProperty("key.serializer"));
+        assertEquals(
+                "org.apache.kafka.common.serialization.ByteArraySerializer", props.getProperty("value.serializer"));
+        assertEquals("45000", props.getProperty("transaction.timeout.ms"), "typed kafka.transactions.timeout (D9)");
+        assertEquals("5", props.getProperty("linger.ms"), "tuned defaults yield to the overlay");
+        assertEquals(KafkaClientFactory.PRODUCER_BATCH_SIZE, props.getProperty("batch.size"));
+    }
+
+    @Test
     void randomInstanceIdDropsStaticMembershipAndStaysUniquePerProcess() {
         CesiumConfig random = config(new InstanceId(InstanceId.RANDOM_LITERAL), null, null);
         KafkaClientFactory factory = new KafkaClientFactory(random);

@@ -781,6 +781,7 @@ Key defaults (durations ISO-8601):
 | `cesium_fetch_penalized_partitions` | gauge | | penalty-box occupancy (§7) |
 | `cesium_header_errors_total` | counter | `type=malformed\|over_max\|conflict` | protocol violations |
 | `cesium_ingest_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-A rebalance churn; `lost` = fenced/unclean |
+| `cesium_dispatch_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-B rebalance churn; `lost` = fenced/unclean |
 | `cesium_dlq_records_total` | counter | `reason` | |
 | `cesium_retention_margin_seconds` | gauge | | **observed** earliest-available age − delay.max (honest under size/tier eviction); alert < 0 |
 | `cesium_tracker_invalid_records_total` | counter | | wire-format violations on tracker; tamper/foreign-writer canary |

@@ -150,11 +150,40 @@ abstract class KafkaIT {
     // ------------------------------------------------------------------ verifier consumers
 
     /**
+     * Default grace window for {@link #readExactlyCommitted(String, int, Duration)}: long enough
+     * for synchronous happy-path scenarios that never re-dispatch. Scenarios that inject faults
+     * (crash points, penalty-box / retry backoff) must pass a wider grace via the four-arg overload
+     * so a duplicate from a delayed asynchronous re-dispatch cannot land after the verifier returns.
+     */
+    static final Duration DEFAULT_GRACE = Duration.ofSeconds(1);
+
+    /**
+     * Grace window covering an asynchronous re-dispatch through several consecutive penalty-box /
+     * retry backoffs (initial 50 ms doubling: 50/100/200/400/800/1600… ms). Scenarios whose
+     * worst-case re-dispatch latency is bounded by a handful of backoff cycles use this so a late
+     * duplicate is observed rather than slipping past a fixed one-second window.
+     */
+    static final Duration RETRY_GRACE = Duration.ofSeconds(6);
+
+    /**
      * The read_committed verifier: reads {@code topic} from the beginning until exactly
-     * {@code expected} committed records are visible, then keeps polling for a one-second grace
-     * window and asserts no extras arrived — "each exactly once" under read_committed.
+     * {@code expected} committed records are visible, then keeps polling for the
+     * {@link #DEFAULT_GRACE} window and asserts no extras arrived — "each exactly once" under
+     * read_committed.
      */
     static List<ConsumerRecord<byte[], byte[]>> readExactlyCommitted(String topic, int expected, Duration timeout) {
+        return readExactlyCommitted(topic, expected, timeout, DEFAULT_GRACE);
+    }
+
+    /**
+     * The read_committed verifier with an explicit grace window: reads {@code topic} from the
+     * beginning until exactly {@code expected} committed records are visible, then keeps polling for
+     * {@code grace} and asserts no extras arrived. Size the grace to the scenario's worst-case
+     * re-dispatch latency (penalty backoff-max + retry backoff-max) so a late duplicate from an
+     * asynchronous re-dispatch cannot commit after the verifier has already declared exactly-once.
+     */
+    static List<ConsumerRecord<byte[], byte[]>> readExactlyCommitted(
+            String topic, int expected, Duration timeout, Duration grace) {
         try (Consumer<byte[], byte[]> consumer = newAssignedConsumer(topic, "read_committed")) {
             List<ConsumerRecord<byte[], byte[]>> out = new ArrayList<>();
             await("exactly " + expected + " read_committed record(s) on " + topic)
@@ -164,7 +193,7 @@ abstract class KafkaIT {
                         consumer.poll(Duration.ofMillis(200)).forEach(out::add);
                         return out.size() >= expected;
                     });
-            long graceDeadline = System.nanoTime() + Duration.ofSeconds(1).toNanos();
+            long graceDeadline = System.nanoTime() + grace.toNanos();
             while (System.nanoTime() < graceDeadline) {
                 consumer.poll(Duration.ofMillis(100)).forEach(out::add);
             }

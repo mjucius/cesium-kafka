@@ -48,6 +48,26 @@ public final class CrashPoints {
     public static final String INGEST_DURING_COMMIT = "I-4";
 
     /**
+     * §3.9 D-1: before {@code beginTransaction} — after the payload fetch, before anything is
+     * produced. A crash here loses only in-memory state; replay rebuilds it.
+     */
+    public static final String DISPATCH_BEFORE_BEGIN = "D-1";
+
+    /**
+     * §3.9 D-2: after the destination + COMPLETE sends and the cursor offsets, before
+     * {@code commitTransaction}. A crash here aborts the transaction: the tombstones are
+     * invisible, replay shows the entries pending, and they re-dispatch as the single committed
+     * copy.
+     */
+    public static final String DISPATCH_AFTER_SENDS = "D-2";
+
+    /**
+     * §3.9 D-3: "during" {@code commitTransaction} — fired after the commit call returns but
+     * before any local bookkeeping (the dispatch analog of {@link #INGEST_DURING_COMMIT}).
+     */
+    public static final String DISPATCH_DURING_COMMIT = "D-3";
+
+    /**
      * The system property that must be {@code true} before {@link #install(Consumer)} will arm
      * the seam (e.g. {@code -Dcesium.testing.crashpoints=true} on the test JVM).
      */
