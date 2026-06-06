@@ -144,11 +144,7 @@ public final class KafkaClientFactory {
         // (mirrors transactions.timeout): the engine's rebalance-listener semantics and the §11
         // CI matrix key off the typed value, so an overlay must never silently flip the real
         // protocol while config.kafka().groupProtocol() reports otherwise.
-        if (config.kafka().groupProtocol() == KafkaConfig.GroupProtocol.CONSUMER) {
-            props.setProperty(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "consumer");
-        } else {
-            props.remove(ConsumerConfig.GROUP_PROTOCOL_CONFIG);
-        }
+        applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
         props.setProperty(ConsumerConfig.GROUP_ID_CONFIG, ingestGroupId());
         Optional<String> groupInstanceId = ingestGroupInstanceId();
@@ -254,14 +250,10 @@ public final class KafkaClientFactory {
         putAll(props, config.kafka().properties());
         putAll(props, config.kafka().trackerConsumer().properties());
         // The typed kafka.group-protocol knob outranks a raw group.protocol overlay (see the
-        // ingest consumer); under the consumer protocol a classic assignor list is rejected by
-        // the client, so the tuned default above is classic-only.
-        if (config.kafka().groupProtocol() == KafkaConfig.GroupProtocol.CONSUMER) {
-            props.setProperty(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "consumer");
-            props.remove(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG);
-        } else {
-            props.remove(ConsumerConfig.GROUP_PROTOCOL_CONFIG);
-        }
+        // ingest consumer); under the consumer protocol the classic-only client keys (the assignor
+        // list set as a tuned default above, plus any passthrough session/heartbeat timers) are
+        // stripped — they are broker-side under KIP-848 and the client rejects them otherwise.
+        applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
         props.setProperty(ConsumerConfig.GROUP_ID_CONFIG, dispatchGroupId());
         Optional<String> groupInstanceId = dispatchGroupInstanceId();
@@ -373,6 +365,30 @@ public final class KafkaClientFactory {
     /** Creates the group-less payload seek consumer (§7). The owning dispatch thread holds it (§6). */
     public Consumer<byte[], byte[]> newSeekConsumer() {
         return new KafkaConsumer<>(seekConsumerProperties());
+    }
+
+    /**
+     * Reconciles a group consumer's properties with the typed {@code kafka.group-protocol} knob
+     * (§3.4.5, D12), applied after the passthrough/overlay so a raw {@code group.protocol} can never
+     * silently flip the protocol the engine reports. Under {@code consumer} (KIP-848) the assignment
+     * is broker-side and the heartbeat/session timers are governed by the broker group config, so the
+     * classic-only client keys — {@code partition.assignment.strategy}, {@code session.timeout.ms},
+     * {@code heartbeat.interval.ms} — are <em>rejected</em> by kafka-clients 4.x
+     * ({@code "... cannot be set when group.protocol=CONSUMER"}). The engine strips them, exactly as
+     * it owns every other correctness-critical client key, so the §8 tuned defaults and the documented
+     * passthrough tuning (e.g. the K8s static-membership session window) that legitimately set them
+     * under the classic protocol do not break the consumer-protocol lane. Under {@code classic} the
+     * typed knob simply removes any overlaid {@code group.protocol}.
+     */
+    private void applyGroupProtocol(Properties props) {
+        if (config.kafka().groupProtocol() == KafkaConfig.GroupProtocol.CONSUMER) {
+            props.setProperty(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "consumer");
+            props.remove(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG);
+            props.remove(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG);
+            props.remove(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG);
+        } else {
+            props.remove(ConsumerConfig.GROUP_PROTOCOL_CONFIG);
+        }
     }
 
     private static void putAll(Properties props, Map<String, String> map) {

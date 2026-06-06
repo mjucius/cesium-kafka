@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import events.cesium.kafka.api.headers.CesiumHeaders;
+import events.cesium.kafka.core.config.KafkaConfig;
 import events.cesium.kafka.core.config.Role;
 import java.time.Duration;
 import java.util.List;
@@ -15,6 +16,7 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -41,11 +43,28 @@ class DispatchRestartRecoveryIT extends KafkaIT {
 
     @Test
     void killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnce() {
+        killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnce(KafkaConfig.GroupProtocol.CLASSIC);
+    }
+
+    /**
+     * KIP-848 variant (design §11.3-11, D12): the same restart-recovery body under
+     * {@code group.protocol=consumer}. Non-blocking nightly lane ({@code @Tag("kip848")}); proves the
+     * committed-cursor + sidecar replay and the {@code initTransactions()} in-doubt resolution are
+     * protocol-agnostic (the shard state machine is, per §3.4.5).
+     */
+    @Test
+    @Tag("kip848")
+    void killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnceUnderConsumerProtocol() {
+        killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnce(KafkaConfig.GroupProtocol.CONSUMER);
+    }
+
+    private void killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnce(KafkaConfig.GroupProtocol protocol) {
         String source = createTopic("src", 1);
         String destination = createTopic("dst", 1);
         String dlq = createTopic("dlq", 1);
         harness = EngineHarness.builder()
                 .roles(Role.INGEST, Role.DISPATCH)
+                .groupProtocol(protocol)
                 .source(source)
                 .destination(destination)
                 .dlq(dlq)

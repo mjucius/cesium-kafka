@@ -1,0 +1,130 @@
+name: Nightly
+
+# Design §13 nightly lane: the full integration matrix (heavy Toxiproxy / compaction /
+# multi-instance scenarios that the PR lane defers by tag), the non-blocking KIP-848
+# consumer-protocol variants (D12 — continue-on-error until the ADR-0006 promotion), and the
+# @Tag("soak") memory-ceiling / JOL-footprint lane (§11.2/§11.4). Scheduled + manually dispatchable.
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # 05:00 UTC daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel an in-flight nightly: each lane is signal we want to keep.
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  integration-full:
+    name: Integration — full matrix (classic, incl. @Tag("nightly"))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Reclaim any leaked containers before the run (self-hosted-runner safety; no-op on clean hosted)
+        # The cumulative-shutdown ceiling note: a worker OS-killed under memory contention skips Ryuk
+        # and leaks its broker container, starving the next run. GitHub-hosted ephemeral runners start
+        # with clean Docker, so this prunes nothing there; it protects a self-hosted runner. Never fatal.
+        run: docker system prune -f || true
+      # The full nightly matrix is split into THREE batched gradle invocations rather than one, so each
+      # batch forks a FRESH integrationTest worker JVM and per-worker memory never accumulates across all
+      # ~23 heavy classes (interrupted loop threads from kill(), fenced producers, dropped in-memory
+      # stores). forkEvery is unusable here — it restarts the shared static KRaft broker per class — so
+      # batching across invocations is the practical isolation lever. The three batches partition the
+      # matrix with no overlap and their union equals the original single `-PincludeNightly` run:
+      # untagged (PR-lane) classes + all 8 @Tag("nightly") classes, with @Tag("soak")/@Tag("kip848")
+      # still excluded. Batch A omits -PincludeNightly, so it runs exactly the untagged single-instance
+      # suite (already proven on the PR lane); batches B/C add -PincludeNightly and --tests to select
+      # only the heavy nightly classes (B = the multi-instance fencing/rebalance accumulators, C =
+      # single-instance compaction/degradation/backpressure). On a failure the failing batch's reports
+      # survive in the build dir and are uploaded by the always() step below.
+      - name: "Batch A — classic baseline + non-negotiable hazards (untagged single-instance suite)"
+        run: ./gradlew :cesium-kafka-it:integrationTest
+      - name: "Batch B — multi-instance fencing / rebalance (@Tag(\"nightly\"), fresh worker)"
+        run: >-
+          ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
+          --tests "events.cesium.kafka.it.ZombieFencingIT"
+          --tests "events.cesium.kafka.it.ZombieStaticIdFencingIT"
+          --tests "events.cesium.kafka.it.RebalanceScaleIT"
+          --tests "events.cesium.kafka.it.CooperativeRevocationIT"
+          --tests "events.cesium.kafka.it.PartitionsLostIT"
+      - name: "Batch C — compaction / degradation / backpressure (@Tag(\"nightly\"), fresh worker)"
+        run: >-
+          ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
+          --tests "events.cesium.kafka.it.CompactionIT"
+          --tests "events.cesium.kafka.it.DegradationIT"
+          --tests "events.cesium.kafka.it.BackpressureIT"
+      - name: Upload integration reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-integration-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+
+  integration-kip848:
+    name: Integration — KIP-848 (group.protocol=consumer, non-blocking, D12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Non-blocking per D12 / design §13: a KIP-848 incompatibility is a tracked finding
+    # (docs/failure-matrix-coverage.md, ADR-0006), never a release gate, until the promotion ADR.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: KIP-848 EOS-critical variants (@Tag("kip848"))
+        # -Pkip848Only runs ONLY the consumer-protocol variants, so a 848 failure can never mask a
+        # classic regression in the lane above. The variants build group.protocol=consumer harnesses
+        # themselves (EngineHarness.Builder.groupProtocol), so no extra system property is needed.
+        run: ./gradlew :cesium-kafka-it:integrationTest -Pkip848Only=true
+      - name: Upload KIP-848 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-kip848-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+
+  soak:
+    name: Soak — @Tag("soak") (store JOL footprint + 1M-entry memory ceilings, §11.2/§11.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Soak lane (the dedicated soakTest task includes ONLY @Tag("soak"); see java-conventions)
+        # Runs every module's soakTest task: the KafkaTrackerStore JOL footprint
+        # (ShardFootprintTest) and the published contract kit's 1M-entry memory-ceiling / O(log n)
+        # soak (TrackerBackedStoreContract). JMH macro benchmarks land with the benchmarks module
+        # (M8) and will be added here as a fourth lane.
+        run: ./gradlew soakTest
+      - name: Upload soak reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-soak-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore

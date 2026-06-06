@@ -34,8 +34,9 @@ jobs:
         run: ./gradlew build -PtestToolchain=${{ matrix.test-jvm }}
 
   integration:
-    name: Integration (Testcontainers, Kafka 4.x KRaft)
+    name: Integration (Testcontainers, Kafka 4.x KRaft) — representative lane
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -44,4 +45,13 @@ jobs:
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
       - name: Integration tests (representative lane)
+        # Design §13: the PR lane runs the representative classic-protocol suite. The java-conventions
+        # plugin excludes three tag families from every default lane:
+        #   @Tag("soak")    — nightly memory-ceiling / JOL lane (dedicated soakTest task)
+        #   @Tag("nightly") — heavy Toxiproxy / compaction / multi-instance fault-injection scenarios
+        #   @Tag("kip848")  — the non-blocking KIP-848 consumer-protocol variants (D12)
+        # so this lane keeps the M0–M5 EOS suite PLUS the two NON-NEGOTIABLE hazard tests — the LSO
+        # barrier (§11.3-4) and the I8 barrier-ordering (§11.3-5) — both of which are single-broker,
+        # deterministic, and fast enough for PR. The heavy lanes run nightly (nightly.yml); opt them
+        # back in locally with -PincludeNightly / -PincludeKip848 / -Pkip848Only.
         run: ./gradlew :cesium-kafka-it:integrationTest

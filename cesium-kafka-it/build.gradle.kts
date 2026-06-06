@@ -31,6 +31,14 @@ testing {
                     // a modern version skips the legacy pin; 1.44 = Engine 25+ (Jan 2024 floor).
                     // Overridable via -Dapi.version for older daemons.
                     systemProperty("api.version", System.getProperty("api.version") ?: "1.44")
+                    // The M6 fencing/rebalance scenarios (zombie fencing, cooperative revocation,
+                    // onPartitionsLost) stand up several in-JVM engine instances at once inside one
+                    // test worker — each owning a transactional producer with a 64 MiB buffer.memory
+                    // plus consumer fetch buffers — alongside verifier consumers; the Gradle default
+                    // 512 MiB worker heap is tight for that. 1 GiB gives the multi-instance suites
+                    // headroom; the dump flag makes any OOM diagnosable.
+                    maxHeapSize = "1024m"
+                    jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
                 }
             }
         }

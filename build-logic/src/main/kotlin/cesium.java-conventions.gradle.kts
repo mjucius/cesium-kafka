@@ -46,16 +46,39 @@ tasks.withType<JavaCompile>().configureEach {
 // CI lanes can run the test suites on a newer JVM than the compile toolchain
 // (e.g. ./gradlew build -PtestToolchain=25).
 val testToolchain = providers.gradleProperty("testToolchain")
+// Nightly-lane tag gates (design §13 / §11.3-11 / D12). A test task can opt the heavy lanes back
+// in via Gradle properties — nightly.yml sets them; the default PR lane leaves them unset:
+//   -PincludeNightly  the heavy Toxiproxy/compaction/multi-instance scenarios (@Tag("nightly"))
+//   -PincludeKip848   the KIP-848 consumer-protocol EOS variants (@Tag("kip848")), alongside the rest
+//   -Pkip848Only      run ONLY the @Tag("kip848") variants (the non-blocking, continue-on-error job)
+fun gradleFlag(name: String): Boolean =
+    providers.gradleProperty(name).map { it.equals("true", ignoreCase = true) }.getOrElse(false)
+
 tasks.withType<Test>().configureEach {
     // @Tag("soak") tests (design §11.2: large-entry-count memory ceilings, GC-delta
     // measurements) are nightly-lane signal, not PR-gating signal: they are excluded from every
-    // default lane and run only through the dedicated `soakTest` task below.
+    // default lane and run only through the dedicated `soakTest` task below. @Tag("nightly") (heavy
+    // Toxiproxy/compaction/multi-instance ITs) and @Tag("kip848") (the KIP-848 consumer-protocol EOS
+    // variants, non-blocking per D12) are likewise off the default lane unless explicitly opted in.
     val isSoakLane = name == "soakTest"
+    val includeNightly = gradleFlag("includeNightly")
+    val includeKip848 = gradleFlag("includeKip848")
+    val kip848Only = gradleFlag("kip848Only")
     useJUnitPlatform {
-        if (isSoakLane) {
-            includeTags("soak")
-        } else {
-            excludeTags("soak")
+        when {
+            isSoakLane -> includeTags("soak")
+            // The dedicated KIP-848 nightly job (continue-on-error): only the consumer-protocol
+            // variants run, so a 848 incompatibility never masks a classic regression.
+            kip848Only -> includeTags("kip848")
+            else -> {
+                excludeTags("soak")
+                if (!includeNightly) {
+                    excludeTags("nightly")
+                }
+                if (!includeKip848) {
+                    excludeTags("kip848")
+                }
+            }
         }
     }
     if (testToolchain.isPresent) {

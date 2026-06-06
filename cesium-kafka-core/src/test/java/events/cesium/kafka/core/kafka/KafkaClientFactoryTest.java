@@ -13,6 +13,7 @@ import events.cesium.kafka.core.config.KafkaConfig;
 import events.cesium.kafka.core.config.RouteConfig;
 import events.cesium.kafka.core.config.TopicRef;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
@@ -272,6 +273,51 @@ class KafkaClientFactoryTest {
         assertFalse(
                 new KafkaClientFactory(defaults()).ingestConsumerProperties().containsKey("group.protocol"),
                 "classic default leaves the client default untouched");
+    }
+
+    @Test
+    void groupProtocolConsumerStripsClassicOnlyConsumerKeys() {
+        // KIP-848: the assignor and the session/heartbeat timers are broker-side; kafka-clients 4.x
+        // throws ConfigException if they reach a group.protocol=consumer client. The engine strips a
+        // passthrough (or the §8 tuning / K8s static-membership window) that legitimately sets them
+        // under the classic protocol, so the consumer-protocol lane builds valid clients.
+        KafkaConfig kip848 = new KafkaConfig(
+                KafkaConfig.GroupProtocol.CONSUMER,
+                Map.of(
+                        "session.timeout.ms", "6000",
+                        "heartbeat.interval.ms", "1500",
+                        "partition.assignment.strategy", "org.apache.kafka.clients.consumer.CooperativeStickyAssignor"),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
+        KafkaClientFactory factory = new KafkaClientFactory(config(new InstanceId("slot-0"), kip848, null));
+        for (Properties props : List.of(factory.ingestConsumerProperties(), factory.trackerConsumerProperties())) {
+            assertEquals("consumer", props.getProperty("group.protocol"));
+            assertNull(props.getProperty("session.timeout.ms"), "session.timeout.ms is broker-side under KIP-848");
+            assertNull(
+                    props.getProperty("heartbeat.interval.ms"), "heartbeat.interval.ms is broker-side under KIP-848");
+            assertNull(props.getProperty("partition.assignment.strategy"), "assignors are broker-side under KIP-848");
+        }
+
+        // The classic protocol keeps them (the operator's tuning / K8s static-membership window).
+        KafkaConfig classic = new KafkaConfig(
+                null,
+                Map.of("session.timeout.ms", "6000", "heartbeat.interval.ms", "1500"),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
+        Properties classicProps =
+                new KafkaClientFactory(config(new InstanceId("slot-0"), classic, null)).trackerConsumerProperties();
+        assertEquals("6000", classicProps.getProperty("session.timeout.ms"));
+        assertEquals("1500", classicProps.getProperty("heartbeat.interval.ms"));
     }
 
     @Test

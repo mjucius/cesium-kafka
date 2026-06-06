@@ -31,6 +31,7 @@ import events.cesium.kafka.core.dispatch.DispatchLoop;
 import events.cesium.kafka.core.dispatch.DispatchLoopConfig;
 import events.cesium.kafka.core.dispatch.KafkaDispatchAdmin;
 import events.cesium.kafka.core.fetch.KafkaSeekFetcher;
+import events.cesium.kafka.core.fetch.SeekFetcher;
 import events.cesium.kafka.core.headers.DelayHeaderCodec;
 import events.cesium.kafka.core.headers.RelayRecordFactory;
 import events.cesium.kafka.core.ingest.IngestLoop;
@@ -55,6 +56,7 @@ import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.UnaryOperator;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -108,6 +110,16 @@ final class EngineHarness implements AutoCloseable {
     private final CesiumConfig config;
     private final Admin admin;
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
+    /**
+     * Optional wrapper around the real {@link KafkaSeekFetcher} (default identity). The M6
+     * penalty-box isolation scenario (§11.3-10) injects a decorator that deterministically stamps
+     * one source partition's fetch outcomes {@code TRANSIENT} — far more reliable than racing a
+     * Toxiproxy latency toxic, and the single-broker substrate cannot degrade one partition's leader
+     * in isolation anyway (R21 prefers deterministic injection). Set via the builder; unset for the
+     * 28 pre-M6 ITs, so their fetch path is exactly the production {@code KafkaSeekFetcher}.
+     */
+    private UnaryOperator<SeekFetcher> seekFetcherDecorator = UnaryOperator.identity();
 
     private LoopHandle ingest;
     private LoopHandle dispatch;
@@ -183,12 +195,12 @@ final class EngineHarness implements AutoCloseable {
                     clients.newTrackerConsumer(),
                     () -> clients.newDispatchProducer(0),
                     store,
-                    new KafkaSeekFetcher(
+                    seekFetcherDecorator.apply(new KafkaSeekFetcher(
                             sourceTopic(),
                             config.dispatch().fetch().partitionTimeFloor(),
                             clients.newSeekConsumer(),
                             meterRegistry,
-                            clock),
+                            clock)),
                     relayFactory(),
                     new KafkaDispatchAdmin(admin, trackerTopic(), dispatchGroupId()),
                     meterRegistry,
@@ -571,6 +583,8 @@ final class EngineHarness implements AutoCloseable {
         private static final String DEFAULT_STORE_MAX_PENDING = "100000";
 
         private String applicationId = KafkaIT.unique("app");
+        private InstanceId instanceId = InstanceId.of("it-1");
+        private KafkaConfig.GroupProtocol groupProtocol = KafkaConfig.GroupProtocol.CLASSIC;
         private Set<Role> roles = Set.of(Role.INGEST);
         private String sourceTopic;
         private String destinationTopic;
@@ -583,10 +597,75 @@ final class EngineHarness implements AutoCloseable {
         private CheckMode retentionCheck;
         private StartupChecks.SizeBasedRetention sizeBasedRetention;
         private Duration idleCursorInterval;
+        private long dispatchMaxPendingPerPartition = 10_000L;
+        private String bootstrapServers;
+        private Duration transactionTimeout;
+        private Duration drainMaxSlice;
+        private final Map<String, String> kafkaProperties = new HashMap<>();
         private final Map<String, String> storeProperties = new HashMap<>();
+        private UnaryOperator<SeekFetcher> seekFetcherDecorator = UnaryOperator.identity();
 
         Builder applicationId(String applicationId) {
             this.applicationId = applicationId;
+            return this;
+        }
+
+        /**
+         * The stable deployment-slot id (default {@code it-1}) that drives this instance's
+         * {@code transactional.id}s and static {@code group.instance.id}s. M6 multi-instance
+         * harnesses give each member a distinct id so two engines form one real consumer group with
+         * two static members under the same {@code applicationId} (design D10/D21).
+         */
+        Builder instanceId(String instanceId) {
+            this.instanceId = InstanceId.of(instanceId);
+            return this;
+        }
+
+        /**
+         * Selects the consumer group protocol both loops run under (default
+         * {@link KafkaConfig.GroupProtocol#CLASSIC}). The KIP-848 lane (design §3.4.5, §11.3-11,
+         * D12) passes {@link KafkaConfig.GroupProtocol#CONSUMER} so the same scenario body re-runs
+         * under {@code group.protocol=consumer}; {@link KafkaClientFactory} then sets
+         * {@code group.protocol=consumer} and drops the classic-only {@code CooperativeStickyAssignor}.
+         * Leaving it at the default keeps all 28 pre-M6 ITs and every classic scenario byte-identical.
+         */
+        Builder groupProtocol(KafkaConfig.GroupProtocol groupProtocol) {
+            this.groupProtocol = Objects.requireNonNull(groupProtocol, "groupProtocol");
+            return this;
+        }
+
+        /**
+         * Overrides the bootstrap brokers (default {@link KafkaIT#bootstrap()}). M6 fault-injection
+         * harnesses point an instance at a dedicated proxied broker, or at a per-instance Toxiproxy
+         * endpoint, so a single member's client&#8596;broker link can be cut while the rest of the
+         * group keeps heartbeating. Resolved lazily, so an instance that sets it never triggers the
+         * shared {@link KafkaIT} broker's static startup.
+         */
+        Builder bootstrapServers(String bootstrapServers) {
+            this.bootstrapServers = bootstrapServers;
+            return this;
+        }
+
+        /**
+         * One common {@code kafka.properties} passthrough entry applied to every client (e.g. a
+         * shorter {@code session.timeout.ms}/{@code heartbeat.interval.ms} so a killed static member
+         * is evicted in seconds rather than the 45 s production default). Locked correctness keys are
+         * still re-asserted by {@link KafkaClientFactory}; passthrough cannot override them.
+         */
+        Builder kafkaProperty(String key, String value) {
+            this.kafkaProperties.put(key, value);
+            return this;
+        }
+
+        /**
+         * Wraps the real {@link KafkaSeekFetcher} this instance builds (default: no wrapping). The
+         * §11.3-10 penalty-box isolation scenario injects a decorator that stamps a chosen source
+         * partition's fetch outcomes {@code TRANSIENT} so the loop penalty-boxes exactly that
+         * partition while healthy partitions keep dispatching — the deterministic substrate the
+         * single-broker cluster cannot provide by degrading one partition's leader (R21).
+         */
+        Builder seekFetcherDecorator(UnaryOperator<SeekFetcher> decorator) {
+            this.seekFetcherDecorator = Objects.requireNonNull(decorator, "decorator");
             return this;
         }
 
@@ -652,9 +731,46 @@ final class EngineHarness implements AutoCloseable {
             return this;
         }
 
+        /**
+         * The §5.3 per-ACTIVE-shard backpressure high-water mark ({@code
+         * dispatch.max-pending-per-partition}); intake pauses above it and resumes below half. The
+         * IT default (10,000) sits far above any normal IT load; the backpressure scenario shrinks
+         * it to a handful so a tiny synthetic backlog trips the pause without producing 10k records.
+         */
+        Builder maxPendingPerPartition(long highWater) {
+            this.dispatchMaxPendingPerPartition = highWater;
+            return this;
+        }
+
         /** One {@code store.properties} entry (e.g. a tiny sidecar budget for overflow tests). */
         Builder storeProperty(String key, String value) {
             this.storeProperties.put(key, value);
+            return this;
+        }
+
+        /**
+         * Raises the typed {@code kafka.transactions.timeout} (D9 default 30 s; the locked key that
+         * {@link KafkaClientFactory} re-asserts over any passthrough, so it cannot be set via
+         * {@link #kafkaProperty}). The §11.3-5 I8 barrier-ordering scenario deliberately stalls a
+         * dispatch transaction at the post-{@code sendOffsetsToTransaction}/pre-{@code commit} seam
+         * across a failover; without a longer timeout the broker would auto-abort the dangling
+         * transaction before the test releases it, collapsing the "predecessor commits after takeover
+         * begins" interleaving the test must exercise.
+         */
+        Builder transactionTimeout(Duration timeout) {
+            this.transactionTimeout = timeout;
+            return this;
+        }
+
+        /**
+         * Shrinks the §6 drain {@code max-slice} (default 1 min). The validator requires
+         * {@code max-slice <= max.poll.interval.ms / 3} (R2); a scenario that lowers
+         * {@code max.poll.interval.ms} to evict a deliberately stalled member in seconds (the §11.3-5
+         * I8 failover) must lower the slice in step so the assembled config stays valid. Smaller slices
+         * only make the loop interleave polls more often — no transactional behavior changes.
+         */
+        Builder drainMaxSlice(Duration slice) {
+            this.drainMaxSlice = slice;
             return this;
         }
 
@@ -665,14 +781,18 @@ final class EngineHarness implements AutoCloseable {
             Map<String, String> storeProps = new HashMap<>();
             storeProps.put(KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY, DEFAULT_STORE_MAX_PENDING);
             storeProps.putAll(storeProperties);
+            Map<String, String> commonKafkaProps = new HashMap<>(kafkaProperties);
+            commonKafkaProps.put(
+                    AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
+                    bootstrapServers != null ? bootstrapServers : KafkaIT.bootstrap());
             CesiumConfig config = new CesiumConfig(
                     applicationId,
-                    InstanceId.of("it-1"),
+                    instanceId,
                     roles,
                     new KafkaConfig(
-                            null,
-                            Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KafkaIT.bootstrap()),
-                            null,
+                            groupProtocol,
+                            commonKafkaProps,
+                            transactionTimeout == null ? null : new KafkaConfig.Transactions(transactionTimeout, null),
                             null,
                             null,
                             null,
@@ -690,11 +810,24 @@ final class EngineHarness implements AutoCloseable {
                     new StoreConfig(null, storeProps),
                     null,
                     // Small per-partition pending cap keeps the heap-budget check trivially green
-                    // in CI JVMs of any size; IT loads never approach it.
-                    new DispatchConfig(null, null, null, null, idleCursorInterval, null, null, null, 10_000L, null),
+                    // in CI JVMs of any size; IT loads never approach it (overridable for the §5.3
+                    // backpressure scenario via Builder.maxPendingPerPartition).
+                    new DispatchConfig(
+                            null,
+                            null,
+                            drainMaxSlice == null ? null : new DispatchConfig.Drain(drainMaxSlice),
+                            null,
+                            idleCursorInterval,
+                            null,
+                            null,
+                            null,
+                            dispatchMaxPendingPerPartition,
+                            null),
                     null,
                     new StartupChecks(retentionCheck, sizeBasedRetention, null, null, null));
-            return new EngineHarness(config);
+            EngineHarness harness = new EngineHarness(config);
+            harness.seekFetcherDecorator = seekFetcherDecorator;
+            return harness;
         }
     }
 }
