@@ -10,3 +10,15 @@ dependencies {
     api(libs.junit.jupiter)
     api(libs.jqwik)
 }
+
+// Published-surface Javadoc gate — see cesium-kafka-api/build.gradle.kts for the rationale. The
+// store-testkit is the stable surface store implementers subclass, so its Javadoc well-formedness
+// is validated with -Werror (reference/syntax/html), excluding the noisy "missing" group.
+tasks.javadoc {
+    (options as StandardJavadocDocletOptions).apply {
+        addBooleanOption("Xdoclint:all,-missing", true)
+        addBooleanOption("Werror", true)
+        encoding = "UTF-8"
+    }
+}
+tasks.named("check") { dependsOn(tasks.javadoc) }

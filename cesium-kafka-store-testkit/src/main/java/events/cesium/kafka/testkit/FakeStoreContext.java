@@ -42,6 +42,7 @@ public final class FakeStoreContext implements StoreContext {
         this.registry = registry;
     }
 
+    /** A fresh builder seeded with the conventional default route, clock, and meter registry. */
     public static Builder builder() {
         return new Builder();
     }
@@ -128,16 +129,19 @@ public final class FakeStoreContext implements StoreContext {
             return this;
         }
 
+        /** Sets the injectable clock the store reads for due/now decisions. */
         public Builder clock(MutableClock clock) {
             this.clock = clock;
             return this;
         }
 
+        /** Sets the meter registry the store records into (a {@code SimpleMeterRegistry} by default). */
         public Builder meterRegistry(MeterRegistry registry) {
             this.registry = registry;
             return this;
         }
 
+        /** Builds the context, synthesizing a default {@link RouteDescriptor} when none was set. */
         public FakeStoreContext build() {
             RouteDescriptor resolved = route != null
                     ? route
@@ -161,6 +165,7 @@ public final class FakeStoreContext implements StoreContext {
 
         private final Map<String, String> values;
 
+        /** Wraps a defensive copy of {@code values} as a {@link ConfigView}. */
         public MapConfigView(Map<String, String> values) {
             this.values = Map.copyOf(values);
         }

@@ -150,6 +150,7 @@ public final class TrackerEventScript {
         return false;
     }
 
+    /** The single source partition this script's ops belong to. */
     public int partition() {
         return partition;
     }

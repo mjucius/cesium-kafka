@@ -10,9 +10,11 @@
  * cheap and non-blocking — they read cached health atomics and scrape the in-memory registry, never
  * calling Kafka synchronously.
  *
- * <p><strong>Kafka client metrics.</strong> Each loop owns its Kafka clients on its own thread and
- * self-registers their {@code KafkaClientMetrics} binders into the shared registry; this server only
- * scrapes whatever is registered, so it stays decoupled from client ownership and thread confinement.
+ * <p><strong>Client and JVM metrics.</strong> In v1 no {@code KafkaClientMetrics}, JVM, or process
+ * binders are wired: this server scrapes only the engine's own {@code cesium_*} meters from the
+ * shared registry. Obtain {@code kafka_*} / JVM / process series from a JMX-to-Prometheus exporter
+ * sidecar instead (see {@code docs/operations.md} §13). The handler stays decoupled from client
+ * ownership and thread confinement — it renders whatever meters are registered.
  */
 @org.jspecify.annotations.NullMarked
 package events.cesium.kafka.app.metrics;

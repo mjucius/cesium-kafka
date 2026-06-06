@@ -42,6 +42,7 @@ public final class ArrayDueBatch implements DueBatch {
         this.size = size;
     }
 
+    /** A fresh builder; entries are appended in iteration order. */
     public static Builder builder() {
         return new Builder();
     }
@@ -130,6 +131,7 @@ public final class ArrayDueBatch implements DueBatch {
 
         private Builder() {}
 
+        /** Appends one entry; returns {@code this} for chaining. */
         public Builder add(int partition, long sourceOffset, long dispatchAtMs, long trackerOffset, boolean clamped) {
             if (size == partitions.length) {
                 int cap = size * 2;
@@ -148,6 +150,7 @@ public final class ArrayDueBatch implements DueBatch {
             return this;
         }
 
+        /** Builds an immutable batch over the entries added so far. */
         public ArrayDueBatch build() {
             return new ArrayDueBatch(partitions, sourceOffsets, dispatchAts, trackerOffsets, clampedFlags, size);
         }

@@ -1,5 +1,8 @@
 # cesium-kafka
 
+[![CI](https://github.com/mjucius/cesium-kafka/actions/workflows/ci.yml/badge.svg)](https://github.com/mjucius/cesium-kafka/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Kafka delayed-message relay: consume a source topic, deliver each record to a destination topic
 **at the time the producer asked for** — with exactly-once delivery.
 
@@ -15,9 +18,21 @@ non-`cesium-*` headers are preserved byte-for-byte.
 
 ## Status
 
-🚧 **Pre-release, under active development.** This is a ground-up rewrite of an earlier
-proof-of-concept; see [docs/design.md](docs/design.md) for the complete design (architecture,
-exactly-once transaction/fencing analysis, failure matrix, store SPI).
+**v1.0** — a ground-up rewrite of an earlier proof-of-concept. See the
+[CHANGELOG](CHANGELOG.md) for the release notes and [docs/design.md](docs/design.md) for the complete
+design (architecture, exactly-once transaction/fencing analysis, failure matrix, store SPI).
+
+What is supported, and how stable, in v1:
+
+- The **runnable application** is the supported product surface. Releases are **repo-only**: each
+  tagged release publishes the distribution archives (`distTar`/`distZip`) on its
+  [GitHub Release](https://github.com/mjucius/cesium-kafka/releases) — there is no Maven Central
+  artifact or published container image in v1 (build the image from the included `Dockerfile`). See
+  [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md).
+- The **store SPI** (`cesium-kafka-api`) and its **contract test kit** (`cesium-kafka-store-testkit`)
+  are a **stable, semver-governed surface** for store implementers — start at
+  [docs/store-spi.md](docs/store-spi.md).
+- The engine's programmatic API (`cesium-kafka-core`) is **internal-until-1.x**.
 
 ## Design highlights
 
@@ -116,6 +131,37 @@ KIP-447 group-metadata fencing. A `read_uncommitted` consumer will observe abort
 "duplicates" prevented by fencing) and is the wrong tool for verifying delivery. Delivery is
 **at-or-after** the requested instant (never before; bounded lateness). See
 [docs/design.md](docs/design.md) for the full transaction/fencing analysis and failure matrix.
+
+## Documentation
+
+The [design document](docs/design.md) is the deep, implementation-ready reference. The guides below
+extract and refine it into focused, audience-targeted entry points.
+
+**Run and operate it**
+
+| Doc | What it covers |
+|---|---|
+| [Configuration](docs/configuration.md) | Full key reference, locked keys + rationale, the env-mapping grammar |
+| [Operations](docs/operations.md) | Topic bootstrap/sizing worksheet, the tracker disk formula, ACLs, K8s rollout, JVM/GC, alert rules, runbooks |
+| [Header protocol](docs/header-protocol.md) | Normative (RFC 2119) producer/consumer header contract incl. the DLQ JSON shape |
+| [Migration from the PoC](docs/migration-from-poc.md) | Header renames, tracker-format break, behavioral diffs from the old proof-of-concept |
+
+**Understand the guarantees**
+
+| Doc | What it covers |
+|---|---|
+| [Architecture](docs/architecture.md) | Topology, the two-group rationale, the shard state machine, cursor v2, diagrams |
+| [Delivery semantics](docs/delivery-semantics.md) | Invariants I1–I9, the replay-barrier proof, the `read_committed` requirement, store-archetype guarantees |
+| [Performance](docs/performance.md) | Measured (M8) hot-path/throughput/latency numbers, the honest replay-cost formula, sizing & tuning |
+| [Failure-matrix coverage](docs/failure-matrix-coverage.md) | Each failure-matrix scenario mapped to the test that proves it |
+
+**Extend it / decisions**
+
+| Doc | What it covers |
+|---|---|
+| [Store SPI guide](docs/store-spi.md) | Implementers' guide: archetype flowchart, ordering/cursor contracts, the contract test kit, packaging |
+| [Architecture Decision Records](docs/adr/) | ADRs 0001–0017 — the load-bearing decisions, in Status/Context/Decision/Consequences form |
+| [Design document](docs/design.md) | The full design: invariants, the complete failure matrix, the proofs |
 
 ## Building
 

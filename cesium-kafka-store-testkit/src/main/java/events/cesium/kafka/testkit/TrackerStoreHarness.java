@@ -94,6 +94,7 @@ public final class TrackerStoreHarness {
         return new TrackerStoreHarness(freshStore, logs, new HashMap<>(lastCommitted));
     }
 
+    /** The store under test, for assertions a test makes directly against the SPI. */
     public TrackerBackedStore store() {
         return store;
     }
@@ -104,6 +105,7 @@ public final class TrackerStoreHarness {
         recover(partition);
     }
 
+    /** Assigns and recovers each of {@code partitions} (a batch {@link #startPartition}). */
     public void startPartitions(int... partitions) {
         for (int partition : partitions) {
             startPartition(partition);

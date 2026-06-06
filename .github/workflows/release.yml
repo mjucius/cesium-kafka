@@ -1,0 +1,106 @@
+name: Release
+
+# Tag-driven release (design §13, as superseded by ADR-0017 / the repo-only publishing decision).
+#
+# REPO-ONLY PUBLISHING for v1.0. This workflow builds, verifies, and publishes a GitHub Release with
+# the application distribution archives (distTar/distZip) ONLY. There is deliberately:
+#   * NO Maven Central / Sonatype publish of api/core/store-kafka/testkit, and
+#   * NO container image push to GHCR or any other registry.
+# Both are OUT OF SCOPE for v1.0 by owner decision (the runnable APP is the supported product; the
+# engine programmatic API stays internal-until-1.x). See docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md.
+# How they WOULD be added later (1.x), if/when the decision is revisited:
+#   * Maven Central: add the `maven-publish` + `signing` plugins to api/core/store-kafka/testkit,
+#     a `publishToSonatype` step here gated on OIDC/Sonatype credentials (secrets), and POM metadata.
+#   * GHCR image: a `docker/build-push-action` step using the existing multi-stage Dockerfile, with
+#     `packages: write` added to the permissions block below and a `ghcr.io/<owner>/cesium-kafka` tag.
+# Neither requires changes to the build's correctness posture; they are purely additive jobs/steps.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# contents: write is required to create the GitHub Release and upload the archive assets.
+# No `packages: write` — there is no image push in v1 (see the header note).
+permissions:
+  contents: write
+
+concurrency:
+  # Never cancel an in-flight release: a tag build is a one-shot artifact we want to complete.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, verify, and publish GitHub Release (repo-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the changelog/release-notes generation has the prior tags.
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Derive version from tag
+        id: version
+        # Tag `v1.0.0` -> project version `1.0.0`, threaded into every Gradle invocation via
+        # -PcesiumVersion (the property the java-conventions plugin reads; gradle.properties default
+        # is the -SNAPSHOT dev version). This stamps the dist archive names and the /info build-info.
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing cesium-kafka $version (tag $tag)"
+
+      # Full build + unit tests on the release version across the whole repo.
+      - name: Build + unit tests
+        run: ./gradlew build -PcesiumVersion=${{ steps.version.outputs.version }}
+
+      # The representative integration lane. Per ci.yml / design §13 this single lane already runs the
+      # M0–M5 EOS suite PLUS the two NON-NEGOTIABLE hazard tests — the LSO replay barrier (§11.3-4) and
+      # the I8 barrier-ordering test (§11.3-5), both single-broker, deterministic, and fast. The heavy
+      # @Tag("nightly")/@Tag("soak")/@Tag("kip848") lanes are nightly signal, not a release gate.
+      - name: Integration tests (representative lane, incl. the two hazard tests)
+        run: ./gradlew :cesium-kafka-it:integrationTest -PcesiumVersion=${{ steps.version.outputs.version }}
+
+      - name: Build distribution archives (distTar + distZip)
+        run: >-
+          ./gradlew :cesium-kafka-app:distTar :cesium-kafka-app:distZip
+          -PcesiumVersion=${{ steps.version.outputs.version }}
+
+      - name: Extract the CHANGELOG section for this version
+        id: changelog
+        # Pull the body under `## [<version>]` up to (but not including) the next `## [` header, so the
+        # Release body is the curated Keep-a-Changelog entry. Fall back to a pointer if the tag has no
+        # matching section yet (e.g. a pre-release cut before CHANGELOG.md is updated).
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" {capture=1; next}
+            capture && /^## \[/ {exit}
+            capture {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG.md section for $version; falling back to a pointer."
+            printf 'See the [CHANGELOG](CHANGELOG.md) for the full notes.\n' > release-notes.md
+          fi
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+
+      - name: Create the GitHub Release with the distribution archives
+        uses: softprops/action-gh-release@v2
+        with:
+          name: cesium-kafka ${{ steps.version.outputs.version }}
+          # Curated CHANGELOG section first; GitHub appends the auto-generated commit/PR list below it.
+          body_path: release-notes.md
+          generate_release_notes: true
+          # A missing archive must fail the release loudly rather than ship an empty Release.
+          fail_on_unmatched_files: true
+          files: |
+            cesium-kafka-app/build/distributions/*.tar
+            cesium-kafka-app/build/distributions/*.zip

@@ -1,6 +1,9 @@
 # Contributing to cesium-kafka
 
-Thanks for your interest! This project is in pre-release development; expect churn until v1.0.
+Thanks for your interest! As of 1.0 the **runnable app** (`cesium-kafka-app`) is the supported
+product. The store SPI (`cesium-kafka-api`) and its contract test kit (`cesium-kafka-store-testkit`)
+are **semver-governed from 1.0**; the engine's programmatic API (`cesium-kafka-core`) remains
+**internal-until-1.x** and may change between minor releases. See the README "Status" section.
 
 ## Building
 

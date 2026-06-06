@@ -1,0 +1,119 @@
+cesium-kafka
+Copyright 2026 The cesium-kafka authors
+
+This product is licensed under the MIT License (see the LICENSE file).
+
+This product includes third-party software. The distribution archives
+(cesium-kafka-app distTar/distZip) bundle the runtime dependencies listed
+below; the license names and copyright lines are reproduced here for
+attribution. Each dependency is governed by its own license, a copy of which
+ships with that dependency's artifact.
+
+The list below mirrors the bundled jars and can be cross-checked against
+`./gradlew :cesium-kafka-app:installDist` then
+`ls cesium-kafka-app/build/install/*/lib/`. (cesium-kafka's own modules are the
+MIT-licensed product itself, not third-party software.)
+
+-------------------------------------------------------------------------------
+Apache Kafka clients (org.apache.kafka:kafka-clients)
+License: Apache License, Version 2.0
+Copyright 2010-2026 The Apache Software Foundation
+
+  This product includes software developed at
+  The Apache Software Foundation (https://www.apache.org/).
+
+-------------------------------------------------------------------------------
+fastutil (it.unimi.dsi:fastutil-core)
+License: Apache License, Version 2.0
+Copyright (C) 2002-2026 Sebastiano Vigna
+
+-------------------------------------------------------------------------------
+Micrometer (io.micrometer:micrometer-core,
+            io.micrometer:micrometer-registry-prometheus,
+            io.micrometer:micrometer-commons,
+            io.micrometer:micrometer-observation)
+License: Apache License, Version 2.0
+Copyright (c) 2017-2026 VMware, Inc. and/or its affiliates
+
+-------------------------------------------------------------------------------
+Prometheus Java client (io.prometheus:prometheus-metrics-core,
+                         io.prometheus:prometheus-metrics-model,
+                         io.prometheus:prometheus-metrics-config,
+                         io.prometheus:prometheus-metrics-exposition-formats,
+                         io.prometheus:prometheus-metrics-exposition-textformats,
+                         io.prometheus:prometheus-metrics-tracer-common)
+License: Apache License, Version 2.0
+Copyright 2012-2026 The Prometheus Authors
+(transitive via micrometer-registry-prometheus)
+
+-------------------------------------------------------------------------------
+HdrHistogram (org.hdrhistogram:HdrHistogram)
+License: BSD 2-Clause License (also released to the public domain, CC0 1.0)
+Copyright (c) 2012-2026 Gil Tene, Michael Barker, Matt Warren, and contributors
+(transitive via micrometer-core)
+
+-------------------------------------------------------------------------------
+LatencyUtils (org.latencyutils:LatencyUtils)
+License: Public Domain, per Creative Commons CC0 1.0
+Copyright (c) 2012-2026 Gil Tene
+(transitive via micrometer-core)
+
+-------------------------------------------------------------------------------
+Jackson (com.fasterxml.jackson.dataformat:jackson-dataformat-yaml,
+         com.fasterxml.jackson.datatype:jackson-datatype-jdk8,
+         and the transitive com.fasterxml.jackson.core artifacts)
+License: Apache License, Version 2.0
+Copyright (c) 2007-2026 FasterXML, LLC
+
+-------------------------------------------------------------------------------
+SnakeYAML (org.yaml:snakeyaml)
+License: Apache License, Version 2.0
+Copyright (c) 2008-2026 Andrey Somov and SnakeYAML contributors
+(transitive via jackson-dataformat-yaml)
+
+-------------------------------------------------------------------------------
+Kafka compression codecs (bundled transitively via kafka-clients)
+
+lz4-java (at.yawk.lz4:lz4-java) — Apache License, Version 2.0
+  Copyright 2011-2026 Adrien Grand and the lz4-java contributors
+  (a maintained republish by Jonas Konrad of the upstream org.lz4:lz4-java)
+
+snappy-java (org.xerial.snappy:snappy-java) — Apache License, Version 2.0
+  Copyright 2011-2026 Taro L. Saito and the snappy-java contributors
+
+zstd-jni (com.github.luben:zstd-jni) — BSD 2-Clause License
+  Copyright (c) 2015-present, Luben Karavelov. All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES HOWEVER CAUSED AND
+  ON ANY THEORY OF LIABILITY ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+SLF4J (org.slf4j:slf4j-api)
+License: MIT License
+Copyright (c) 2004-2026 QOS.ch Sarl (Switzerland)
+
+-------------------------------------------------------------------------------
+Logback (ch.qos.logback:logback-classic, ch.qos.logback:logback-core)
+License: dual-licensed under the Eclipse Public License v1.0
+         and the GNU Lesser General Public License version 2.1
+Copyright (C) 1999-2026 QOS.ch Sarl (Switzerland)
+
+-------------------------------------------------------------------------------
+Build-time only (not redistributed in the runtime distribution)
+
+JSpecify annotations (org.jspecify:jspecify) — Apache License, Version 2.0,
+Copyright The JSpecify Authors — are a compile-only dependency used for
+nullness annotations and are not bundled in the distribution archives.
