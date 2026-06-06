@@ -1,0 +1,95 @@
+# =============================================================================
+# cesium-kafka — 5-minute quickstart (design §12)
+# =============================================================================
+# A single-broker KRaft Kafka, a one-shot topic/offset bootstrap, and cesium
+# itself built from the repo-root Dockerfile.
+#
+#   docker compose -f config/docker-compose.yaml up --build
+#
+# Then, from the host (see README "Quickstart"):
+#   echo "hello" | kcat -b localhost:9092 -t orders -P -H cesium-delay-ms=30000 -k k1
+#   kcat -b localhost:9092 -t orders-delayed -C -o beginning \
+#        -X isolation.level=read_committed                # blocks; arrives ~30 s later (Ctrl-C to stop)
+#   curl -s localhost:8081/health/ready                   # 200 once started
+#   curl -s localhost:8081/metrics | grep '^cesium_'
+#
+# Brokers advertise two listeners: INTERNAL (kafka:29092) for the in-network
+# services and EXTERNAL (localhost:9092) for tools running on the host.
+# =============================================================================
+
+services:
+  kafka:
+    image: apache/kafka:4.3.0
+    container_name: cesium-kafka-broker
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "CONTROLLER://:9093,INTERNAL://:29092,EXTERNAL://:9092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:29092,EXTERNAL://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      # Single broker: every internal topic (incl. the transaction state log, which
+      # EOS depends on) must be satisfiable at replication factor 1.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      # cesium provisions the tracker topic itself (route.tracker.bootstrap=CREATE)
+      # and topic-init creates the user topics, so leave auto-create off.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # One-shot: create the user topics, then seed group A's first-run offsets.
+  # auto.offset.reset is locked to 'none' (design D18/§3.6), so a brand-new ingest
+  # group has no committed position and the ingest loop would fail-fast on first
+  # poll. Seeding committed offsets to earliest is the documented explicit-operator
+  # step. (The tracker topic and group B's first-run seek are self-sufficient.)
+  topic-init:
+    image: apache/kafka:4.3.0
+    container_name: cesium-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic orders         --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic orders-delayed --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic orders-dlq     --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:29092 \
+          --group cesium.orders-delay.ingest --topic orders --reset-offsets --to-earliest --execute
+        echo "init complete: topics created and ingest group cesium.orders-delay.ingest seeded to earliest"
+
+  cesium:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: cesium-kafka:local
+    container_name: cesium-kafka-app
+    depends_on:
+      kafka:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8081"
+    # Heap is sized from this limit by -XX:MaxRAMPercentage (Dockerfile); 1 GiB is
+    # ample for the quickstart's tiny index (design §5.4).
+    mem_limit: 1g
+    environment:
+      # The mounted config defaults bootstrap.servers to localhost:9092 (host-friendly);
+      # override it to the in-network listener for the containerised app.
+      CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS: "kafka:29092"
+    volumes:
+      - ./cesium-example.yaml:/etc/cesium/cesium.yaml:ro

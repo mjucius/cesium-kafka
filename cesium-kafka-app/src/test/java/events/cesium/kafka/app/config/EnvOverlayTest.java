@@ -148,6 +148,20 @@ class EnvOverlayTest {
     }
 
     @Test
+    void reservedConfigPathEnvIsNotTreatedAsAnOverride() {
+        // CESIUM_CONFIG names the config FILE (the --config fallback); it shares the CESIUM_ prefix
+        // but is not a config-override path. The container sets it by default, so the loader must skip
+        // it rather than reject 'config' as an unknown key (regression: the docker quickstart).
+        Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
+        CesiumConfig config = LoaderTestSupport.loader(
+                        Map.of(CesiumConfigLoader.CONFIG_PATH_ENV, file.toString(), "CESIUM_ROLES", "ingest"))
+                .load(file)
+                .config();
+        assertEquals("orders", config.route().source().topic());
+        assertEquals(Set.of(Role.INGEST), config.roles());
+    }
+
+    @Test
     void envVarsOutsideThePrefixAreIgnored() {
         Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
         CesiumConfig config = LoaderTestSupport.loader(Map.of("PATH", "/usr/bin", "CESIUM", "not-prefixed"))

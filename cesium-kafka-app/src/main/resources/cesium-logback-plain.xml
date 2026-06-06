@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Plain (default) logging profile (design §9): a one-line console encoder. %X renders the MDC
+  context (applicationId/loop/partition/txn). Included by logback.xml when LOG_FORMAT is unset or
+  "plain".
+-->
+<included>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} - %msg %X%n</pattern>
+        </encoder>
+    </appender>
+</included>

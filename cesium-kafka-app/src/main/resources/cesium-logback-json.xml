@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  JSON logging profile (design §9), activated by LOG_FORMAT=json: the compact one-line JSON encoder.
+  Included by logback.xml when LOG_FORMAT is "json".
+-->
+<included>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="events.cesium.kafka.app.logging.CompactJsonEncoder"/>
+    </appender>
+</included>

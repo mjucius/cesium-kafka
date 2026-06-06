@@ -1,0 +1,132 @@
+# =============================================================================
+# cesium-kafka — example configuration (design §8)
+# =============================================================================
+# A complete, commented configuration for the delayed-message relay. Every key
+# shown here is OPTIONAL except the four marked "required"; the documented §8
+# defaults materialise for anything you omit. Precedence is
+# defaults < this file < environment < -D system properties, so you can mount
+# this file read-only and override per-deployment values from the environment:
+#
+#   CESIUM_ROUTE__SOURCE__TOPIC=orders            # '__' separates path segments
+#   CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS=kafka:9092
+#   -Dcesium.instance-id=cesium-0
+#
+# Secrets stay out of the file via ${env:VAR} interpolation inside any value.
+# Unknown keys (here or under the CESIUM_ prefix) are startup errors (exit 78).
+# =============================================================================
+
+# Required. Namespaces consumer groups, transactional ids, metric tags, and the
+# default internal tracker topic name (cesium.<application-id>.tracker).
+application-id: orders-delay
+
+# Required. The stable deployment-slot id (e.g. a StatefulSet ordinal). Keeps
+# transactional.ids and group.instance.id stable across restarts so a restarted
+# slot immediately fences its own dangling transaction (design D10/D21). Set the
+# literal 'random' to explicitly opt in to non-stable, per-process ids.
+# In containers, override per replica: CESIUM_INSTANCE_ID=cesium-0
+instance-id: cesium-0
+
+# Which loops this process runs. Default [ingest, dispatch] (both). Split the
+# halves onto separate fleets by giving each fleet a single role.
+roles: [ingest, dispatch]
+
+kafka:
+  # classic (default) or consumer (KIP-848). classic is the v1 default.
+  group-protocol: classic
+  # Common client passthrough applied to every cesium client. Correctness-
+  # critical keys (group.id, transactional.id, isolation.level, auto.offset.reset,
+  # enable.idempotence, ...) are locked by the engine and rejected here.
+  properties:
+    # The brokers cesium connects to. Override in containers via
+    # CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS.
+    bootstrap.servers: localhost:9092
+  # Transaction settings (design D9, §3.8).
+  transactions:
+    timeout: PT30S
+    commit-retry: 5
+  # Per-client overlays (layered over kafka.properties) are available but unused
+  # here — e.g. kafka.tracker-consumer.properties, kafka.admin.properties.
+
+route:
+  # Required. The user-owned topic records are consumed from.
+  source:
+    topic: orders
+  # Required. The user-owned topic records are relayed to (at their due time).
+  destination:
+    topic: orders-delayed
+  # Internal scheduler-state topic. bootstrap: CREATE (default) provisions it with
+  # the §2.1 configs (compaction-only, tombstone-retention floor) mirroring the
+  # source partition count; FAIL requires a pre-provisioned topic. Leave 'topic'
+  # blank to use the default name cesium.<application-id>.tracker.
+  tracker:
+    bootstrap: CREATE
+    # topic: cesium.orders-delay.tracker
+    # acl-principal: User:cesium     # exclusive tracker write access (R12)
+  # Dead-letter topic. Required whenever any policy routes to DLQ (the defaults do).
+  dlq:
+    topic: orders-dlq
+  # Relay fidelity (design §2.4).
+  relay:
+    timestamp: DISPATCH      # DISPATCH (default) | SOURCE
+    partitioning: BY_KEY     # BY_KEY (default) | SOURCE_PARTITION
+
+delay:
+  # Maximum accepted delay. Drives the tracker tombstone-retention floor and the
+  # disk worksheet — raising it past the P1D default is a worksheet-reviewed
+  # decision (design §5.4, §12). PT1H is comfortable for the quickstart.
+  max: PT1H
+  on-over-max: DLQ           # DLQ (default) | CLAMP | FAIL
+  on-malformed-header: DLQ   # DLQ (default) | RELAY_IMMEDIATE | FAIL
+
+headers:
+  stamp-provenance: true            # stamp cesium-relayed-at / cesium-source-* on relay
+  accept-binary-long-values: false  # canonical ASCII-decimal header values (design D1)
+
+store:
+  # The ServiceLoader-registered scheduler store. kafka-tracker (default) is the
+  # in-memory index durably backed by the tracker topic.
+  type: kafka-tracker
+  properties:
+    # Store-side per-partition pending cap. Sized small for the quickstart so the
+    # worst-case index footprint (partitions x cap x ~64 B) trivially fits a small
+    # container heap (design §5.3). Production routes raise this toward 2,000,000.
+    max-pending-per-partition: 100000
+
+ingest:
+  workers: 1        # ingest threads, each owning a source consumer + txn producer
+  max-batch: 2000   # = source consumer max.poll.records
+
+dispatch:
+  workers: 1        # dispatch threads, each owning tracker consumer + producer + seek consumer
+  batch:
+    max-entries: 10000
+    max-bytes: 33554432        # 32 MiB decompressed payload budget per dispatch txn
+  drain:
+    max-slice: PT1M            # time-sliced drain; capped at max.poll.interval.ms / 3 (design §6)
+  coalesce: PT0S               # off: never early, never deliberately late
+  idle-cursor-interval: PT30S  # cursor advancement cadence for quiet partitions (§3.5)
+  cursor:
+    sidecar-max-bytes: 3072    # validated <= broker offset.metadata.max.bytes at startup
+  fetch:
+    timeout: PT30S
+    partition-time-floor: PT2S
+    penalty:
+      backoff: PT0.05S
+      backoff-max: PT10S
+  on-unfetchable-payload: DLQ  # DLQ (default) | DROP | FAIL
+  # Pause/resume backpressure high-water mark per ACTIVE shard. Quickstart-sized
+  # (see store.properties.max-pending-per-partition above); production default is
+  # 2,000,000.
+  max-pending-per-partition: 100000
+  # max-pending-total: 0       # 0 = AUTO (heap-derived, ~25% of Xmx / 64 B)
+
+observability:
+  # HTTP port for /metrics, /health/live, /health/ready, /info (design §9).
+  port: 8081
+
+startup-checks:
+  retention: FAIL                  # source retention.ms vs delay.max + margin: FAIL | WARN | SKIP
+  size-based-retention: FAIL       # FAIL when size/tier eviction is detected; ACKNOWLEDGED to proceed (R13)
+  max-tolerated-outage: P7D        # checked against broker offsets.retention.minutes (design D18, R6)
+  outage-check: FAIL               # FAIL | WARN
+  heap-budget: FAIL                # worst-case index footprint vs heap budget: FAIL | WARN

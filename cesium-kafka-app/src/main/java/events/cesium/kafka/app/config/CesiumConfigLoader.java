@@ -52,6 +52,15 @@ public final class CesiumConfigLoader {
     /** BSD {@code sysexits.h} EX_CONFIG: the process exit code for configuration errors (§8). */
     public static final int EX_CONFIG = 78;
 
+    /**
+     * Reserved meta-variable: the env var that names the config <em>file</em> ({@code --config}
+     * fallback, see {@code CesiumApp}). It shares the {@code CESIUM_} prefix of the override grammar
+     * but is not a config key, so the env overlay must skip it — otherwise the documented
+     * {@code CESIUM_CONFIG=/etc/cesium/cesium.yaml} (e.g. the container default) would be misread as
+     * an override of an unknown key {@code config} and fail startup with EX_CONFIG.
+     */
+    public static final String CONFIG_PATH_ENV = "CESIUM_CONFIG";
+
     private static final String ENV_PREFIX = "CESIUM_";
     private static final String ENV_SEPARATOR = "__";
     private static final String SYSPROP_PREFIX = "cesium.";
@@ -148,6 +157,8 @@ public final class CesiumConfigLoader {
     private void applyEnvironmentOverlay(ObjectNode tree, List<Finding> findings) {
         environment.entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(ENV_PREFIX))
+                // Skip the reserved config-file selector — it is not a CESIUM_ override path.
+                .filter(entry -> !entry.getKey().equals(CONFIG_PATH_ENV))
                 .sorted(Map.Entry.comparingByKey()) // deterministic finding order
                 .forEach(entry -> {
                     String name = entry.getKey();

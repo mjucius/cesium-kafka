@@ -16,6 +16,10 @@ testing {
                 implementation(project(":cesium-kafka-store-testkit"))
                 implementation(libs.kafka.clients)
                 implementation(libs.micrometer.core)
+                // The app integration test wires the production ObservabilityServer over a real
+                // PrometheusMeterRegistry (the same registry the engine feeds); the app declares
+                // micrometer-prometheus as `implementation`, so it is not transitive to consumers.
+                implementation(libs.micrometer.prometheus)
                 implementation(libs.testcontainers.kafka)
                 implementation(libs.testcontainers.junit)
                 implementation(libs.testcontainers.toxiproxy)

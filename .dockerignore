@@ -1,0 +1,24 @@
+# Keep the build context small and the image reproducible: never ship host build
+# state or VCS metadata into the Docker build (the image rebuilds from source).
+.git/
+.github/
+**/build/
+**/.gradle/
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE / OS / Java scratch
+.idea/
+.vscode/
+*.iml
+.DS_Store
+*.class
+*.hprof
+hs_err_pid*
+replay_pid*
+.jqwik-database
+
+# Docs and local config are not needed to build the dist.
+docs/
+*.md
