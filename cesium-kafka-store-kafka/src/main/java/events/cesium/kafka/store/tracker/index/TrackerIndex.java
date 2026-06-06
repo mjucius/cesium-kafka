@@ -1,5 +1,6 @@
 package events.cesium.kafka.store.tracker.index;
 
+import events.cesium.kafka.api.store.DueBatch;
 import it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import java.util.Arrays;
@@ -41,7 +42,13 @@ import java.util.Arrays;
  * <p><strong>Lifecycle.</strong> {@link #revokePartition}/{@link #lostPartition} drop the shard
  * reference in O(1) — pending entries are durable in the tracker topic; memory is a cache.
  * Resolving a batch whose partition was dropped meanwhile (the I9 drop path) is a silent no-op
- * for those entries.
+ * for those entries <em>while the partition remains unassigned</em>; once the partition is
+ * re-assigned (the I9 procedure re-recovers immediately), the new shard carries a fresh
+ * drain-generation stamp and resolving a stale batch is detected per entry — counted as an
+ * anomaly and skipped, never dereferenced against the new shard's pool (whose slot ids may
+ * collide with the abandoned batch's). The engine is still obliged to abandon batches across
+ * drops (see {@link IndexDueBatch}); the stamp turns that obligation's violation into a metric
+ * instead of silent corruption.
  *
  * <p><strong>Threading/allocation.</strong> Single dispatch thread; all hot paths allocate
  * nothing in steady state (the returned {@link IndexDueBatch} is reused across drains).
@@ -63,6 +70,9 @@ public final class TrackerIndex {
     private final int staleRebuildFloor;
     private final int completedSweepFloor;
 
+    /** Source of the per-shard drain-generation stamps (see {@link PartitionShard#epoch()}). */
+    private long nextShardEpoch = 1;
+
     public TrackerIndex() {
         this(PartitionShard.DEFAULT_STALE_REBUILD_FLOOR, PartitionShard.DEFAULT_COMPLETED_SWEEP_FLOOR);
     }
@@ -83,6 +93,7 @@ public final class TrackerIndex {
             return;
         }
         PartitionShard shard = new PartitionShard(staleRebuildFloor, completedSweepFloor);
+        shard.epoch(nextShardEpoch++);
         shardByPartition.put(partition, shard);
         if (shardCount == shards.length) {
             partitionIds = Arrays.copyOf(partitionIds, shardCount * 2);
@@ -155,9 +166,15 @@ public final class TrackerIndex {
         return shardCount;
     }
 
-    /** Routes an ADD to the owning shard; see {@link PartitionShard#applyAdd}. */
+    /** Unclamped variant of {@link #applyAdd(int, long, long, long, boolean)}. */
     public boolean applyAdd(int partition, long sourceOffset, long dispatchAtMs, long trackerAddOffset) {
-        return requireShard(partition).applyAdd(sourceOffset, dispatchAtMs, trackerAddOffset);
+        return applyAdd(partition, sourceOffset, dispatchAtMs, trackerAddOffset, false);
+    }
+
+    /** Routes an ADD to the owning shard; see {@link PartitionShard#applyAdd(long, long, long, boolean)}. */
+    public boolean applyAdd(
+            int partition, long sourceOffset, long dispatchAtMs, long trackerAddOffset, boolean clamped) {
+        return requireShard(partition).applyAdd(sourceOffset, dispatchAtMs, trackerAddOffset, clamped);
     }
 
     /** Routes a COMPLETE to the owning shard; see {@link PartitionShard#applyComplete}. */
@@ -204,6 +221,7 @@ public final class TrackerIndex {
                 break;
             }
             sink.partition = bestPartition;
+            sink.shard = best;
             if (best.drainDue(nowMs, 1, sink) == 0) {
                 break; // unreachable with a consistent shard; defensive against infinite loops
             }
@@ -244,22 +262,71 @@ public final class TrackerIndex {
         penaltyNotBefore.put(sourcePartition, notBeforeMs);
     }
 
-    /** Finalizes a committed batch: every entry {@code IN_FLIGHT → COMPLETED}, heads advance, departing slots free. */
+    /**
+     * Finalizes a committed batch: every entry {@code IN_FLIGHT → COMPLETED}, heads advance,
+     * departing slots free. Entries of partitions dropped since the drain are silent no-ops;
+     * entries whose shard was dropped <em>and re-assigned</em> since the drain fail the
+     * drain-generation check and are counted + skipped (see the class javadoc).
+     */
     public void onBatchCommitted(IndexDueBatch committed) {
         for (int i = 0; i < committed.size(); i++) {
             PartitionShard shard = shardByPartition.get(committed.sourcePartition(i));
+            if (shard == null) {
+                continue;
+            }
+            if (shard.epoch() != committed.shardEpoch(i)) {
+                shard.noteStaleResolution();
+                continue;
+            }
+            shard.finalizeSlot(committed.slotId(i));
+        }
+    }
+
+    /**
+     * Restores a definitively aborted batch: every entry {@code IN_FLIGHT → PENDING}, re-pushed.
+     * Dropped and stale-generation entries are handled exactly like
+     * {@link #onBatchCommitted(IndexDueBatch)}.
+     */
+    public void onBatchAborted(IndexDueBatch aborted) {
+        for (int i = 0; i < aborted.size(); i++) {
+            PartitionShard shard = shardByPartition.get(aborted.sourcePartition(i));
+            if (shard == null) {
+                continue;
+            }
+            if (shard.epoch() != aborted.shardEpoch(i)) {
+                shard.noteStaleResolution();
+                continue;
+            }
+            shard.restoreSlot(aborted.slotId(i));
+        }
+    }
+
+    /**
+     * Finalizes a committed engine-synthesized batch view (truncate-and-carry-over, §3.2/§7):
+     * entries are resolved by {@code (partition, sourceOffset)} via ring binary search instead of
+     * slot ids, since foreign views carry none. Entries of dropped partitions are silent no-ops;
+     * absent or not-in-flight entries are counted + skipped per
+     * {@link PartitionShard#finalizeBySourceOffset}.
+     */
+    public void onForeignBatchCommitted(DueBatch committed) {
+        for (int i = 0; i < committed.size(); i++) {
+            PartitionShard shard = shardByPartition.get(committed.sourcePartition(i));
             if (shard != null) {
-                shard.finalizeSlot(committed.slotId(i));
+                shard.finalizeBySourceOffset(committed.sourceOffset(i));
             }
         }
     }
 
-    /** Restores a definitively aborted batch: every entry {@code IN_FLIGHT → PENDING}, re-pushed. */
-    public void onBatchAborted(IndexDueBatch aborted) {
+    /**
+     * Restores an aborted (or carried-over) engine-synthesized batch view; the by-identity
+     * counterpart of {@link #onBatchAborted(IndexDueBatch)} — see
+     * {@link #onForeignBatchCommitted}.
+     */
+    public void onForeignBatchAborted(DueBatch aborted) {
         for (int i = 0; i < aborted.size(); i++) {
             PartitionShard shard = shardByPartition.get(aborted.sourcePartition(i));
             if (shard != null) {
-                shard.restoreSlot(aborted.slotId(i));
+                shard.restoreBySourceOffset(aborted.sourceOffset(i));
             }
         }
     }
@@ -267,6 +334,14 @@ public final class TrackerIndex {
     /** Visits a partition's pending entries oldest-first; see {@link PartitionShard#oldestPending}. */
     public void oldestPending(int partition, PendingVisitor visitor) {
         requireShard(partition).oldestPending(visitor);
+    }
+
+    /**
+     * Visits a partition's pending <em>and in-flight</em> entries oldest-first — the cursor
+     * computation's input; see {@link PartitionShard#oldestUnsettled}.
+     */
+    public void oldestUnsettled(int partition, PendingVisitor visitor) {
+        requireShard(partition).oldestUnsettled(visitor);
     }
 
     public long pendingCount(int partition) {
@@ -369,9 +444,19 @@ public final class TrackerIndex {
     private final class BatchSink implements DueEntrySink {
         int partition;
 
+        @SuppressWarnings("NullAway.Init") // assigned in drainDue immediately before every drain call
+        PartitionShard shard;
+
         @Override
         public void accept(int slotId, long sourceOffset, long dispatchAtMs, long trackerAddOffset) {
-            batch.add(partition, sourceOffset, dispatchAtMs, trackerAddOffset, slotId);
+            batch.add(
+                    partition,
+                    sourceOffset,
+                    dispatchAtMs,
+                    trackerAddOffset,
+                    slotId,
+                    shard.epoch(),
+                    shard.clamped(slotId));
         }
     }
 }

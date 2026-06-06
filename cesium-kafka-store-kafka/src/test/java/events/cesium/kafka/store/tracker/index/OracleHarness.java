@@ -75,18 +75,26 @@ final class OracleHarness {
     }
 
     void addNew(int partitionSel, long dispatchAtMs) {
+        addNew(partitionSel, dispatchAtMs, false);
+    }
+
+    void addNew(int partitionSel, long dispatchAtMs, boolean clamped) {
         int p = Math.floorMod(partitionSel, partitions);
         long src = nextSourceOffset[p];
         nextSourceOffset[p] += 2; // even offsets; odd ones are reserved for unknown completes
         long trk = nextTrackerOffset[p]++;
-        boolean realNew = real.applyAdd(p, src, dispatchAtMs, trk);
-        boolean modelNew = model.applyAdd(p, src, dispatchAtMs, trk);
+        boolean realNew = real.applyAdd(p, src, dispatchAtMs, trk, clamped);
+        boolean modelNew = model.applyAdd(p, src, dispatchAtMs, trk, clamped);
         assertEquals(modelNew, realNew, "applyAdd(new) insertion disagreement");
         assertTrue(realNew, "fresh offsets must insert");
     }
 
     /** Duplicate ADD (R1) against a currently-pending entry; no-op when none pending. */
     void dupAdd(int partitionSel, int entrySel, long newDispatchAtMs) {
+        dupAdd(partitionSel, entrySel, newDispatchAtMs, false);
+    }
+
+    void dupAdd(int partitionSel, int entrySel, long newDispatchAtMs, boolean clamped) {
         int p = Math.floorMod(partitionSel, partitions);
         List<ReferenceIndex.RefEntry> pending = model.pendingByTrackerOffset(p);
         if (pending.isEmpty()) {
@@ -94,8 +102,8 @@ final class OracleHarness {
         }
         ReferenceIndex.RefEntry target = pending.get(Math.floorMod(entrySel, pending.size()));
         long trk = nextTrackerOffset[p]++; // the duplicate record consumes a tracker offset...
-        real.applyAdd(p, target.sourceOffset, newDispatchAtMs, trk);
-        model.applyAdd(p, target.sourceOffset, newDispatchAtMs, trk); // ...but I5 keeps the original
+        real.applyAdd(p, target.sourceOffset, newDispatchAtMs, trk, clamped);
+        model.applyAdd(p, target.sourceOffset, newDispatchAtMs, trk, clamped); // ...but I5 keeps the original
     }
 
     void completeKnown(int partitionSel, int entrySel) {
@@ -134,6 +142,7 @@ final class OracleHarness {
             assertNotNull(e, "real drained an entry the model does not consider pending");
             assertEquals(e.dispatchAtMs, batch.dispatchAtMs(i), "drained dispatchAtMs");
             assertEquals(e.trackerAddOffset, batch.trackerOffset(i), "drained trackerAddOffset (I5)");
+            assertEquals(e.clamped, batch.clamped(i), "drained clamped pass-through");
         }
         if (commit) {
             real.onBatchCommitted(batch);
@@ -141,7 +150,8 @@ final class OracleHarness {
             real.onBatchAborted(batch);
             for (int i = 0; i < batch.size(); i++) {
                 int p = batch.sourcePartition(i);
-                model.applyAdd(p, batch.sourceOffset(i), batch.dispatchAtMs(i), batch.trackerOffset(i));
+                model.applyAdd(
+                        p, batch.sourceOffset(i), batch.dispatchAtMs(i), batch.trackerOffset(i), batch.clamped(i));
             }
         }
     }
@@ -276,9 +286,12 @@ final class OracleHarness {
             assertEquals(model.pendingCount(p), real.pendingCount(p), "pending count of partition " + p);
             List<ReferenceIndex.RefEntry> expected = model.pendingByTrackerOffset(p);
             List<DrainedKey> visited = new ArrayList<>();
+            List<Boolean> visitedClamped = new ArrayList<>();
             int fp = p;
+            PartitionShard shard = real.shard(p);
             real.oldestPending(p, (slotId, src, at, trk) -> {
                 visited.add(new DrainedKey(fp, src, at, trk));
+                visitedClamped.add(shard.clamped(slotId));
                 return true;
             });
             assertEquals(expected.size(), visited.size(), "oldestPending size of partition " + p);
@@ -290,6 +303,7 @@ final class OracleHarness {
                 assertEquals(e.trackerAddOffset, k.trackerAddOffset(), "visitation order / I5 at " + i);
                 assertEquals(e.sourceOffset, k.sourceOffset(), "visited sourceOffset at " + i);
                 assertEquals(e.dispatchAtMs, k.dispatchAtMs(), "visited dispatchAtMs at " + i);
+                assertEquals(e.clamped, visitedClamped.get(i), "visited clamped pass-through at " + i);
             }
         }
     }

@@ -21,6 +21,8 @@ public final class IndexDueBatch implements DueBatch {
     private long[] dispatchAts = new long[16];
     private long[] trackerOffsets = new long[16];
     private int[] slotIds = new int[16];
+    private long[] shardEpochs = new long[16];
+    private boolean[] clampedFlags = new boolean[16];
     private int size;
 
     IndexDueBatch() {}
@@ -29,7 +31,14 @@ public final class IndexDueBatch implements DueBatch {
         size = 0;
     }
 
-    void add(int partition, long sourceOffset, long dispatchAtMs, long trackerOffset, int slotId) {
+    void add(
+            int partition,
+            long sourceOffset,
+            long dispatchAtMs,
+            long trackerOffset,
+            int slotId,
+            long shardEpoch,
+            boolean clamped) {
         if (size == partitions.length) {
             grow();
         }
@@ -38,6 +47,8 @@ public final class IndexDueBatch implements DueBatch {
         dispatchAts[size] = dispatchAtMs;
         trackerOffsets[size] = trackerOffset;
         slotIds[size] = slotId;
+        shardEpochs[size] = shardEpoch;
+        clampedFlags[size] = clamped;
         size++;
     }
 
@@ -48,6 +59,8 @@ public final class IndexDueBatch implements DueBatch {
         dispatchAts = Arrays.copyOf(dispatchAts, cap);
         trackerOffsets = Arrays.copyOf(trackerOffsets, cap);
         slotIds = Arrays.copyOf(slotIds, cap);
+        shardEpochs = Arrays.copyOf(shardEpochs, cap);
+        clampedFlags = Arrays.copyOf(clampedFlags, cap);
     }
 
     @Override
@@ -75,8 +88,23 @@ public final class IndexDueBatch implements DueBatch {
         return trackerOffsets[i];
     }
 
+    @Override
+    public boolean clamped(int i) {
+        return clampedFlags[i];
+    }
+
     /** Pool slot id of entry {@code i} — the in-flight handle for batch resolution. */
     public int slotId(int i) {
         return slotIds[i];
+    }
+
+    /**
+     * Drain-generation stamp of the shard entry {@code i} was popped from; resolution compares it
+     * against the current shard's stamp so a batch abandoned across an I9 drop-and-re-recover can
+     * never dereference its slot ids against a fresh incarnation's pool (see
+     * {@code PartitionShard#epoch()}).
+     */
+    long shardEpoch(int i) {
+        return shardEpochs[i];
     }
 }

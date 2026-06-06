@@ -12,8 +12,17 @@ import org.jspecify.annotations.Nullable;
  * should bind these ids so a recreated source or tracker topic is detected as a fail-fast rather
  * than silently delivering wrong payloads or replaying into an empty log (design §3.6, R11/R17).
  *
+ * <p>The <em>cluster id</em> (from {@code Admin.describeCluster()}) completes the identity
+ * triple the design binds in every committed metadata blob ({@code {clusterId, sourceTopicId,
+ * trackerTopicId}}, design §3.5/R17): a tracker-backed store persists it in the cursor sidecar so
+ * a cursor committed against a different cluster is a fail-fast, mirroring the engine's own
+ * group-A identity blob.
+ *
  * @param applicationId the route's application id; namespaces consumer groups, transactional ids,
  *     and default internal topic names
+ * @param clusterId the Kafka cluster id the route's topics live on, from
+ *     {@code Admin.describeCluster()}; identity material for store-persisted cursor blobs
+ *     (design §3.5, R17)
  * @param sourceTopic name of the user-owned source topic records are consumed from
  * @param sourceTopicId Kafka topic id of the source topic at configure time
  * @param destinationTopic name of the user-owned destination topic records are relayed to
@@ -30,6 +39,7 @@ import org.jspecify.annotations.Nullable;
  */
 public record RouteDescriptor(
         String applicationId,
+        String clusterId,
         String sourceTopic,
         Uuid sourceTopicId,
         String destinationTopic,

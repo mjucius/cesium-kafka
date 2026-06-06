@@ -3,6 +3,7 @@ package events.cesium.kafka.store.tracker.index;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.LongBigArrayBigList;
 import java.util.Arrays;
+import java.util.BitSet;
 
 /**
  * Slot storage for one partition shard (design §5.2 item 1, revision 1).
@@ -50,12 +51,19 @@ final class EntryPool {
     /** Chunked per-slot metadata: bits 0-1 state, bits 2-7 saturating heap-copy count. */
     private byte[][] meta = new byte[1][];
 
+    /**
+     * Per-slot CLAMP marker (1 bit/slot, design §2.3): pass-through schedule payload carried from
+     * the tracker ADD's flags byte to the {@code DueBatch} so the dispatch-time relay can stamp
+     * {@code cesium-clamped: true}. Never consulted by ordering or lifecycle logic.
+     */
+    private final BitSet clamped = new BitSet();
+
     private final IntArrayList freeStack = new IntArrayList();
     private final IntArrayList zombies = new IntArrayList();
     private int slotCount;
 
     /** Allocates a slot in state {@link #PENDING} with zero heap copies. */
-    int alloc(long srcOffset, long atMs, long trkAddOffset) {
+    int alloc(long srcOffset, long atMs, long trkAddOffset, boolean clampedFlag) {
         final int slot;
         if (!freeStack.isEmpty()) {
             slot = freeStack.popInt();
@@ -73,6 +81,7 @@ final class EntryPool {
             ensureMetaCapacity(slot);
         }
         metaSet(slot, PENDING);
+        clamped.set(slot, clampedFlag);
         return slot;
     }
 
@@ -122,6 +131,14 @@ final class EntryPool {
 
     long trackerAddOffset(int slot) {
         return trackerAddOffset.getLong(slot);
+    }
+
+    boolean clamped(int slot) {
+        return clamped.get(slot);
+    }
+
+    void setClamped(int slot, boolean clampedFlag) {
+        clamped.set(slot, clampedFlag);
     }
 
     byte state(int slot) {

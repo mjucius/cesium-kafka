@@ -33,12 +33,14 @@ final class ReferenceIndex {
         final long sourceOffset;
         long dispatchAtMs;
         final long trackerAddOffset;
+        boolean clamped;
 
-        RefEntry(int partition, long sourceOffset, long dispatchAtMs, long trackerAddOffset) {
+        RefEntry(int partition, long sourceOffset, long dispatchAtMs, long trackerAddOffset, boolean clamped) {
             this.partition = partition;
             this.sourceOffset = sourceOffset;
             this.dispatchAtMs = dispatchAtMs;
             this.trackerAddOffset = trackerAddOffset;
+            this.clamped = clamped;
         }
     }
 
@@ -58,14 +60,17 @@ final class ReferenceIndex {
         shards.remove(partition);
     }
 
-    boolean applyAdd(int partition, long sourceOffset, long dispatchAtMs, long trackerAddOffset) {
+    boolean applyAdd(int partition, long sourceOffset, long dispatchAtMs, long trackerAddOffset, boolean clamped) {
         RefShard shard = shards.get(partition);
         RefEntry existing = shard.pending.get(sourceOffset);
         if (existing != null) {
-            existing.dispatchAtMs = dispatchAtMs; // R1: trackerAddOffset KEPT (I5)
+            // R1: the schedule value (dispatchAtMs + clamped, one wire value) updates;
+            // trackerAddOffset KEPT (I5). Clamped is pass-through state, never ordering-relevant.
+            existing.dispatchAtMs = dispatchAtMs;
+            existing.clamped = clamped;
             return false;
         }
-        shard.pending.put(sourceOffset, new RefEntry(partition, sourceOffset, dispatchAtMs, trackerAddOffset));
+        shard.pending.put(sourceOffset, new RefEntry(partition, sourceOffset, dispatchAtMs, trackerAddOffset, clamped));
         return true;
     }
 

@@ -35,6 +35,66 @@ class TrackerIndexTest {
     }
 
     @Test
+    void staleBatchResolutionAfterDropAndReassignIsCountedAndSkipped() {
+        // The I9 procedure drops a partition and immediately re-recovers it: the abandoned
+        // batch's slot ids would otherwise dereference against the NEW shard's pool (where they
+        // can collide). The drain-generation stamp detects the stale resolution per entry --
+        // counted as an anomaly, never applied, never thrown.
+        TrackerIndex index = new TrackerIndex();
+        index.assignPartition(0);
+        index.applyAdd(0, 100, 1_000, 0);
+        IndexDueBatch abandoned = index.drainDue(1_000, 10);
+        assertEquals(1, abandoned.size());
+
+        index.revokePartition(0); // in-doubt commit: drop ...
+        index.assignPartition(0); // ... and re-recover immediately
+        index.applyAdd(0, 100, 1_000, 0); // replay rebuilds the entry: same slot id, new shard
+        assertEquals(1, index.pendingCount(0));
+        long anomaliesBefore = index.anomalies();
+
+        // An engine BUG resolves the abandoned batch anyway (the DueBatch contract forbids it).
+        index.onBatchCommitted(abandoned);
+        assertEquals(1, index.pendingCount(0), "the new generation's entry must not be completed");
+        assertEquals(anomaliesBefore + 1, index.anomalies(), "the stale resolution is counted");
+
+        index.onBatchAborted(abandoned); // the restore path is equally guarded
+        assertEquals(1, index.pendingCount(0));
+        assertEquals(anomaliesBefore + 2, index.anomalies());
+
+        // The rebuilt entry still drains and resolves normally in its own generation.
+        IndexDueBatch fresh = index.drainDue(1_000, 10);
+        assertEquals(1, fresh.size());
+        index.onBatchCommitted(fresh);
+        assertEquals(0, index.pendingCount(0));
+    }
+
+    @Test
+    void foreignBatchViewsResolveInFlightEntriesByIdentity() {
+        // Truncate-and-carry-over (design section 3.2 / section 7): the engine settles a
+        // sub-batch view and restores the remainder -- both foreign views resolved by
+        // (partition, sourceOffset) ring lookup; absent or not-in-flight entries count + skip.
+        TrackerIndex index = new TrackerIndex();
+        index.assignPartition(0);
+        index.applyAdd(0, 100, 1_000, 0);
+        index.applyAdd(0, 101, 1_000, 1);
+        IndexDueBatch drained = index.drainDue(1_000, 10);
+        assertEquals(2, drained.size());
+
+        ForeignView settled = new ForeignView(0, 100);
+        ForeignView carryOver = new ForeignView(0, 101);
+        index.onForeignBatchCommitted(settled);
+        index.onForeignBatchAborted(carryOver);
+        assertEquals(1, index.pendingCount(0), "the carry-over entry returned to pending");
+        assertEquals(0, index.inFlightCount(0));
+        assertEquals(0, index.anomalies());
+
+        // Re-resolving an already-settled identity is the stale shape: counted, not applied.
+        index.onForeignBatchCommitted(settled);
+        assertEquals(1, index.anomalies());
+        assertEquals(1, index.pendingCount(0));
+    }
+
+    @Test
     void penalizedPartitionIsSkippedAndDrivesNextDeadline() {
         TrackerIndex index = new TrackerIndex();
         index.assignPartition(0);
@@ -251,5 +311,33 @@ class TrackerIndexTest {
         index.maintenance();
         assertTrue(index.heapRebuilds() >= 1);
         assertTrue(index.estimatedRetainedBytes() > 0);
+    }
+
+    /** A one-entry engine-synthesized batch view referencing an entry by identity. */
+    private record ForeignView(int partition, long sourceOffset) implements events.cesium.kafka.api.store.DueBatch {
+        @Override
+        public int size() {
+            return 1;
+        }
+
+        @Override
+        public int sourcePartition(int i) {
+            return partition;
+        }
+
+        @Override
+        public long sourceOffset(int i) {
+            return sourceOffset;
+        }
+
+        @Override
+        public long dispatchAtMs(int i) {
+            return 0;
+        }
+
+        @Override
+        public long trackerOffset(int i) {
+            return -1;
+        }
     }
 }

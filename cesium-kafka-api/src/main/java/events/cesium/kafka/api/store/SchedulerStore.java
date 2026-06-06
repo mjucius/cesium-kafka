@@ -101,6 +101,11 @@ public sealed interface SchedulerStore extends AutoCloseable permits TrackerBack
      *       the loop.
      *   <li>Within a partition, entries surface in due order ({@code dispatchAtMs}, then
      *       arrival); the engine documents delivery as "at or after the requested time".
+     *   <li><strong>Across partitions, entries surface in non-decreasing <em>effective
+     *       deadline</em> order</strong> — {@code max(dispatchAtMs, the source partition's
+     *       penalty not-before)}, which collapses to {@code dispatchAtMs} order when no penalty
+     *       stamps are involved. The engine's poll-timeout and due-order design relies on this
+     *       (design §5.5, D-12). Cross-partition <em>ties</em> are unspecified.
      * </ul>
      *
      * @param nowMs current time, epoch milliseconds, from the engine's clock
@@ -145,7 +150,12 @@ public sealed interface SchedulerStore extends AutoCloseable permits TrackerBack
      */
     default void penalizeSourcePartition(int sourcePartition, long notBeforeMs) {}
 
-    /** Number of pending (not yet resolved) entries for {@code partition}; feeds backpressure and gauges. */
+    /**
+     * Number of pending (not yet resolved) entries for {@code partition}; feeds backpressure and
+     * gauges. Returns {@code 0} for partitions not currently owned (never assigned, or already
+     * revoked/lost) — dropped in-memory state is not an error, it is the §5.1 "memory is a cache"
+     * posture, and the engine's gauges may race a rebalance.
+     */
     long pendingCount(int partition);
 
     /**
@@ -153,12 +163,27 @@ public sealed interface SchedulerStore extends AutoCloseable permits TrackerBack
      * the batch: mark entries completed, advance cursors/ring heads, free slots. After this call
      * the batch's entries must never resurface from {@link #pollDue} or recovery from the cursor
      * this store subsequently reports.
+     *
+     * <p><strong>Sub-batch views (truncate-and-carry-over).</strong> {@code batch} is either the
+     * instance returned by {@link #pollDue} or an engine-synthesized view of a <em>subset</em> of
+     * it: under the §7 byte budget (D8) or the D-8 TRANSIENT fetch exclusion the transaction
+     * settles only the fetched entries, which the engine commits as a sub-batch view while
+     * restoring the carry-over remainder via {@link #onBatchAborted}. Views reference entries by
+     * {@code (sourcePartition, sourceOffset)}; across the views of one drained batch, every
+     * drained entry is resolved exactly once.
      */
     void onBatchCommitted(DueBatch batch);
 
     /**
      * The engine's transaction containing {@code batch} aborted <em>definitively</em>. Restore the
      * entries to pending — they remain due and will be re-polled.
+     *
+     * <p><strong>Also the carry-over path of a truncated batch.</strong> Entries drained by
+     * {@link #pollDue} but excluded from the transaction — the §7 byte-budget truncation (D8) or
+     * the D-8 TRANSIENT fetch exclusion — are returned to pending through this callback, possibly
+     * as an engine-synthesized sub-batch view while the settled remainder commits via
+     * {@link #onBatchCommitted}. Views reference entries by
+     * {@code (sourcePartition, sourceOffset)}.
      *
      * <p><strong>Never called after an in-doubt commit (I9).</strong> When a
      * {@code commitTransaction} outcome is ambiguous, the broker may have committed; restoring the

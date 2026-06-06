@@ -34,9 +34,9 @@ class TrackerIndexOracleTest {
                     RevokeAssign,
                     SetEligible {}
 
-    record AddNew(int partitionSel, int delayMs) implements Op {}
+    record AddNew(int partitionSel, int delayMs, boolean clamped) implements Op {}
 
-    record DupAdd(int partitionSel, int entrySel, int delayMs) implements Op {}
+    record DupAdd(int partitionSel, int entrySel, int delayMs, boolean clamped) implements Op {}
 
     record CompleteKnown(int partitionSel, int entrySel) implements Op {}
 
@@ -69,8 +69,8 @@ class TrackerIndexOracleTest {
 
     private static void apply(OracleHarness h, Op op) {
         switch (op) {
-            case AddNew(int p, int delay) -> h.addNew(p, h.nowMs + delay);
-            case DupAdd(int p, int sel, int delay) -> h.dupAdd(p, sel, h.nowMs + delay);
+            case AddNew(int p, int delay, boolean clamped) -> h.addNew(p, h.nowMs + delay, clamped);
+            case DupAdd(int p, int sel, int delay, boolean clamped) -> h.dupAdd(p, sel, h.nowMs + delay, clamped);
             case CompleteKnown(int p, int sel) -> h.completeKnown(p, sel);
             case CompleteUnknown(int p, int sel) -> h.completeUnknown(p, sel);
             case Drain(int advance, int max, boolean commit) -> h.drainAndResolve(advance, max, commit);
@@ -87,9 +87,11 @@ class TrackerIndexOracleTest {
         Arbitrary<Integer> selector = Arbitraries.integers().between(0, 1 << 16);
         // Narrow delay range on purpose: dispatchAtMs collisions exercise tie handling.
         Arbitrary<Integer> delay = Arbitraries.integers().between(-100, 400);
+        Arbitrary<Boolean> clamped = Arbitraries.of(true, false);
 
-        Arbitrary<Op> addNew = Combinators.combine(partition, delay).as(AddNew::new);
-        Arbitrary<Op> dupAdd = Combinators.combine(partition, selector, delay).as(DupAdd::new);
+        Arbitrary<Op> addNew = Combinators.combine(partition, delay, clamped).as(AddNew::new);
+        Arbitrary<Op> dupAdd =
+                Combinators.combine(partition, selector, delay, clamped).as(DupAdd::new);
         Arbitrary<Op> completeKnown = Combinators.combine(partition, selector).as(CompleteKnown::new);
         Arbitrary<Op> completeUnknown = Combinators.combine(partition, selector).as(CompleteUnknown::new);
         Arbitrary<Op> drain = Combinators.combine(

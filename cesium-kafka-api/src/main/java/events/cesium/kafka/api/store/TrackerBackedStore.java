@@ -1,6 +1,7 @@
 package events.cesium.kafka.api.store;
 
 import java.util.List;
+import org.apache.kafka.common.header.Headers;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -46,11 +47,20 @@ public non-sealed interface TrackerBackedStore extends SchedulerStore {
      * <p><strong>Per-reason grouping (engine obligation).</strong> One dispatch transaction
      * legitimately settles entries with different completion reasons — §3.2 mixes
      * {@code FOUND → DISPATCHED} relays with {@code GONE → PAYLOAD_MISSING_DLQ} loss notices
-     * (D-9). The engine groups the in-flight batch by reason and calls this method once per
-     * group, each call receiving a sub-batch view whose entries all completed for {@code reason};
-     * the concatenation of the calls' results covers the full batch.
-     * {@link SchedulerStore#onBatchCommitted} and {@link SchedulerStore#onBatchAborted} still
-     * receive the <em>full</em> in-flight batch, never the per-reason views.
+     * (D-9). The engine groups the transaction's settled entries by reason and calls this method
+     * once per group, each call receiving a sub-batch view whose entries all completed for
+     * {@code reason}; the concatenation of the calls' results covers the settled set.
+     * {@link SchedulerStore#onBatchCommitted} and {@link SchedulerStore#onBatchAborted} receive
+     * the transaction's resolution batches (the full drained batch, or the engine's
+     * settled/carry-over split views under §3.2/§7 truncate-and-carry-over) — never the
+     * per-reason views.
+     *
+     * <p><strong>Identity-only encoding (store obligation).</strong> A completion record must be
+     * derivable from the entry's {@code (sourcePartition, sourceOffset)} identity alone — the
+     * compaction-key identity (design §2.2). The engine (and the published contract kit)
+     * legitimately synthesizes completion views whose {@code dispatchAtMs} and
+     * {@code trackerOffset} carry placeholder values ({@code 0} / {@code -1}); an encoding that
+     * consulted those fields would emit tombstones that fail to apply.
      *
      * @param dispatched the in-flight entries being settled with {@code reason} — the full batch
      *     when the reasons are homogeneous, otherwise the engine's per-reason sub-batch view
@@ -84,6 +94,19 @@ public non-sealed interface TrackerBackedStore extends SchedulerStore {
      * live records through this same callback — recovery and live tailing are one code path, so
      * recovery correctness is exercised continuously.
      *
+     * <p><strong>Tracker offsets are not dense.</strong> Every cesium tracker write is
+     * transactional (I1), so transaction control records (commit/abort markers) and the records
+     * of aborted transactions occupy offsets that a {@code read_committed} consumer never
+     * delivers through this callback. The store must never assume consecutive
+     * {@code trackerOffset} values, and must not derive its replay position from delivered
+     * records alone — the engine reports the consumer position separately via
+     * {@link #onTrackerPosition} (which is how recovery reaches a barrier whose preceding offsets
+     * are control records).
+     *
+     * <p>The engine calls the {@link #onTrackerRecord(int, long, byte[], byte[], Headers)
+     * headers-carrying variant}; this overload exists as the delegation target for stores that do
+     * not consult record headers.
+     *
      * <p>The store applies the replay rules (design §3.5, invariant I7):
      *
      * <ul>
@@ -112,9 +135,60 @@ public non-sealed interface TrackerBackedStore extends SchedulerStore {
     void onTrackerRecord(int partition, long trackerOffset, byte[] key, byte @Nullable [] value);
 
     /**
-     * Whether {@code partition} is still replaying toward its barrier. The engine flips the shard
-     * ACTIVE — making its entries dispatch-eligible — when the consumer position reaches the
-     * barrier (design §3.6 step 5).
+     * Applies one tracker record <em>with its headers</em> (dispatch thread). This is the variant
+     * the engine calls: record headers are part of the store-owned wire format (the v1 format
+     * carries the completion reason in a header, D15), and a headers-blind callback cannot
+     * distinguish a legitimate completion tombstone from the R12 forged-tombstone shape (a
+     * reason-less tombstone — the data-loss primitive §2.2's count-and-skip posture exists for).
+     *
+     * <p>The default delegates to the {@linkplain #onTrackerRecord(int, long, byte[], byte[])
+     * headers-blind overload} so stores written against that signature keep working unchanged
+     * (additive SPI evolution, design §4.5). Stores that enforce header-dependent validation
+     * override this variant.
+     *
+     * @param partition the tracker partition the record arrived on
+     * @param trackerOffset the record's own tracker offset (not dense — see the headers-blind
+     *     overload)
+     * @param key the record key (store-owned wire format)
+     * @param value the record value, or {@code null} for a completion tombstone
+     * @param headers the record's headers, as delivered by the engine's tracker consumer
+     */
+    default void onTrackerRecord(
+            int partition, long trackerOffset, byte[] key, byte @Nullable [] value, Headers headers) {
+        onTrackerRecord(partition, trackerOffset, key, value);
+    }
+
+    /**
+     * Reports the engine's tracker-consumer position for {@code partition} (dispatch thread).
+     *
+     * <p>Tracker offsets are not dense (see {@link #onTrackerRecord(int, long, byte[], byte[])}):
+     * the offsets immediately below the §3.6 replay barrier are almost always the previous
+     * transaction's commit marker, which is never delivered as a record. A store that derived its
+     * replay position from delivered records alone would therefore stall strictly below the
+     * barrier and wedge an idle partition in recovery forever (the I4 gate never lifts). The
+     * engine closes the gap by reporting {@code consumer.position(partition)} — which advances
+     * past control records and aborted batches — after every poll that may have moved it, and
+     * after the replay stream for a recovering partition reaches the barrier.
+     *
+     * <p>The store should treat the reported position as a high-water mark (combine with its
+     * record-derived position via {@code max}; the engine may report positions out of order with
+     * record delivery), promote the shard ACTIVE when the position reaches the barrier (design
+     * §3.6 step 5), and use it as the live position of the all-encoded committed cursor (§3.5).
+     *
+     * <p>The default is a no-op for additive-evolution compatibility (design §4.5), but a
+     * tracker-backed store that ignores this hook cannot recover idle partitions on a real
+     * transactional log — the contract kit models control-record gaps and fails such stores.
+     *
+     * @param partition the tracker partition the position belongs to
+     * @param position the consumer's next-fetch offset for the partition
+     */
+    default void onTrackerPosition(int partition, long position) {}
+
+    /**
+     * Whether {@code partition} is still replaying toward its barrier. The engine drives
+     * promotion by streaming records through {@link #onTrackerRecord} and reporting the consumer
+     * position through {@link #onTrackerPosition}; the store flips the shard ACTIVE — making its
+     * entries dispatch-eligible — when its position reaches the barrier (design §3.6 step 5).
      */
     boolean isRecovering(int partition);
 
@@ -132,8 +206,20 @@ public non-sealed interface TrackerBackedStore extends SchedulerStore {
      * tracker ADD offset of the first non-encoded pending entry (the min-pending overflow
      * fallback).
      *
+     * <p><strong>Sub-batch commits (truncate-and-carry-over).</strong> {@code inFlight} is the
+     * set of entries the next transaction actually settles with tombstones — under the §7
+     * decompressed-byte budget (D8) or the D-8 TRANSIENT fetch exclusion it is a <em>strict
+     * subset</em> of the entries drained by the last {@link SchedulerStore#pollDue}. The store
+     * must treat as complete exactly the entries of the <em>given</em> batch: a drained entry NOT
+     * in {@code inFlight} (the carry-over) is still pending durable truth at the moment this
+     * cursor commits — it must be encoded into the sidecar or bound the overflow cut exactly like
+     * a pending entry, whether the engine has already restored it via
+     * {@link SchedulerStore#onBatchAborted} or still holds it in flight. Deriving the
+     * as-if-complete set from in-flight state instead of this parameter durably loses carry-over
+     * entries on the first crash after such a commit.
+     *
      * @param partition the partition to compute the cursor for
-     * @param inFlight the batch about to commit; its entries are treated as complete
+     * @param inFlight the batch about to commit; exactly its entries are treated as complete
      */
     TrackerCursor committedCursor(int partition, DueBatch inFlight);
 }

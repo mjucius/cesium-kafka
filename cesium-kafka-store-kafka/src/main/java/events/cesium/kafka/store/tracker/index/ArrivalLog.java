@@ -154,6 +154,25 @@ final class ArrivalLog {
         }
     }
 
+    /**
+     * Visits pending <em>and in-flight</em> entries from the head in {@code trackerAddOffset}
+     * order — the cursor-computation order of design §3.5 once in-flight entries must be
+     * classified against the committing batch rather than blanket-skipped (an in-flight entry
+     * outside the committing batch is still pending durable truth). Completed slots are skipped.
+     */
+    void forEachUnsettled(PendingVisitor visitor) {
+        long size = log.size64();
+        for (long i = head; i < size; i++) {
+            int slot = log.getInt(i);
+            byte state = pool.state(slot);
+            if ((state == EntryPool.PENDING || state == EntryPool.IN_FLIGHT)
+                    && !visitor.visit(
+                            slot, pool.sourceOffset(slot), pool.dispatchAtMs(slot), pool.trackerAddOffset(slot))) {
+                return;
+            }
+        }
+    }
+
     long completedHeld() {
         return completedHeld;
     }

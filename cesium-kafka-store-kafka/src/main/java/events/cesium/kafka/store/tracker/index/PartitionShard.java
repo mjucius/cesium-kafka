@@ -57,6 +57,15 @@ public final class PartitionShard {
     private long anomalies;
 
     /**
+     * Drain-generation stamp set by {@link TrackerIndex#assignPartition}: every shard incarnation
+     * gets a fresh value, and {@link TrackerIndex#drainDue} stamps it into each drained entry so
+     * batch resolution can detect a batch drained from a <em>previous</em> incarnation of the
+     * partition (the I9 drop-and-re-recover path) instead of dereferencing its slot ids against
+     * this shard's pool. {@code 0} for shards constructed outside a {@code TrackerIndex}.
+     */
+    private long epoch;
+
+    /**
      * Highest source offset ever appended; never reset by head advances, sweeps or the log
      * emptying (it dies with the shard). Gates the R1 anomaly path so a duplicate committed ADD
      * arriving after its entry left the log is dropped and counted like any other duplicate,
@@ -80,19 +89,30 @@ public final class PartitionShard {
         this.completedSweepFloor = completedSweepFloor;
     }
 
+    /** Unclamped variant of {@link #applyAdd(long, long, long, boolean)}. */
+    public boolean applyAdd(long sourceOffset, long dispatchAtMs, long trackerAddOffset) {
+        return applyAdd(sourceOffset, dispatchAtMs, trackerAddOffset, false);
+    }
+
     /**
      * Applies an ADD record (live tail or replay — same code path, design §1.2).
      *
+     * @param clamped the ADD's CLAMP marker (wire-format flag bit 0, design §2.3) — pass-through
+     *     schedule payload surfaced on the drained {@code DueBatch}; never ordering-relevant
      * @return {@code true} if a new entry was inserted; {@code false} for the anomalous
      *     duplicate/out-of-order paths (R1), which are counted in {@link #anomalies()}
      */
-    public boolean applyAdd(long sourceOffset, long dispatchAtMs, long trackerAddOffset) {
+    public boolean applyAdd(long sourceOffset, long dispatchAtMs, long trackerAddOffset, boolean clamped) {
         if (sourceOffset <= maxSourceOffsetSeen) {
             anomalies++;
             int slot = log.findBySourceOffset(sourceOffset);
             if (slot < 0) {
                 return false; // duplicate of a departed entry, or out-of-order: dropped (javadoc)
             }
+            // The clamp marker travels with dispatchAtMs (they are one schedule value on the
+            // wire): a duplicate ADD updates both. Unlike trackerAddOffset (I5) the bit has no
+            // replay-position meaning, and unlike dispatchAtMs it has no heap-order effect.
+            pool.setClamped(slot, clamped);
             long old = pool.dispatchAtMs(slot);
             if (dispatchAtMs == old) {
                 return false; // value unchanged — nothing to reorder
@@ -113,7 +133,7 @@ public final class PartitionShard {
             // trackerAddOffset deliberately NOT touched (I5).
             return false;
         }
-        int slot = pool.alloc(sourceOffset, dispatchAtMs, trackerAddOffset);
+        int slot = pool.alloc(sourceOffset, dispatchAtMs, trackerAddOffset, clamped);
         log.append(slot);
         maxSourceOffsetSeen = sourceOffset;
         heap.push(slot);
@@ -230,12 +250,61 @@ public final class PartitionShard {
     }
 
     /**
+     * Finalizes the in-flight entry for {@code sourceOffset} after a committed engine-synthesized
+     * batch view (truncate-and-carry-over, design §3.2/§7): foreign views carry no slot ids, so
+     * the entry is resolved by binary search over the live log (D6). An absent or
+     * not-in-flight entry is counted as an anomaly and skipped — it signals a stale batch
+     * resolved after an I9 drop, which the engine is obliged to abandon.
+     *
+     * @return {@code true} if an in-flight entry was finalized
+     */
+    public boolean finalizeBySourceOffset(long sourceOffset) {
+        int slot = log.liveSize() == 0 ? -1 : log.findBySourceOffset(sourceOffset);
+        if (slot < 0 || pool.state(slot) != EntryPool.IN_FLIGHT) {
+            anomalies++;
+            return false;
+        }
+        finalizeSlot(slot);
+        return true;
+    }
+
+    /**
+     * Restores the in-flight entry for {@code sourceOffset} to pending after a definitively
+     * aborted (or carried-over, design §3.2/§7) engine-synthesized batch view; the by-identity
+     * counterpart of {@link #restoreSlot}. Absent or not-in-flight entries are counted as
+     * anomalies and skipped, exactly like {@link #finalizeBySourceOffset}.
+     *
+     * @return {@code true} if an in-flight entry was restored
+     */
+    public boolean restoreBySourceOffset(long sourceOffset) {
+        int slot = log.liveSize() == 0 ? -1 : log.findBySourceOffset(sourceOffset);
+        if (slot < 0 || pool.state(slot) != EntryPool.IN_FLIGHT) {
+            anomalies++;
+            return false;
+        }
+        restoreSlot(slot);
+        return true;
+    }
+
+    /**
      * Visits pending entries from the log head in {@code trackerAddOffset} order — the greedy
      * sidecar-encoding order for the M3 cursor computation. Amortized O(1) per visit (skipped
      * completed slots are bounded by the sweep threshold).
      */
     public void oldestPending(PendingVisitor visitor) {
         log.forEachPending(visitor);
+    }
+
+    /**
+     * Visits pending <em>and in-flight</em> entries from the log head in {@code trackerAddOffset}
+     * order — the cursor-computation input once in-flight entries must be classified against the
+     * committing batch (an in-flight entry the transaction does <em>not</em> settle is still
+     * pending durable truth and must reach the sidecar encoder; design §3.5,
+     * {@code TrackerBackedStore.committedCursor}). Same amortized cost as
+     * {@link #oldestPending}.
+     */
+    public void oldestUnsettled(PendingVisitor visitor) {
+        log.forEachUnsettled(visitor);
     }
 
     /**
@@ -255,6 +324,16 @@ public final class PartitionShard {
 
     public long inFlightCount() {
         return inFlightCount;
+    }
+
+    /**
+     * The CLAMP marker of a live slot (design §2.3) — valid for any slot id surfaced by
+     * {@link #drainDue} or {@link #oldestPending} while the slot remains log-resident. Callers
+     * read it alongside the sink/visitor callback (the slot id is the handle), keeping those
+     * functional interfaces stable.
+     */
+    public boolean clamped(int slotId) {
+        return pool.clamped(slotId);
     }
 
     /**
@@ -294,7 +373,10 @@ public final class PartitionShard {
                 + (pool.freeCount() + pool.zombieCount()) * 4L;
     }
 
-    /** Anomalous-record count: duplicate ADDs (R1), out-of-order drops, impossible completes. */
+    /**
+     * Anomalous-event count: duplicate ADDs (R1), out-of-order drops, impossible completes, and
+     * stale-batch resolutions (foreign-view misses and post-I9-drop epoch mismatches).
+     */
     public long anomalies() {
         return anomalies;
     }
@@ -315,7 +397,22 @@ public final class PartitionShard {
         return log.completedHeld();
     }
 
-    // Test observability (package-private; not part of the M3 surface).
+    // Intra-package wiring (TrackerIndex) and test observability; not part of the M3 surface.
+
+    /** The drain-generation stamp; see the field javadoc. */
+    long epoch() {
+        return epoch;
+    }
+
+    /** Stamped once by {@link TrackerIndex#assignPartition}; never changes for a shard's lifetime. */
+    void epoch(long epoch) {
+        this.epoch = epoch;
+    }
+
+    /** Counts a stale-batch resolution attempt detected by the epoch check (see {@link #epoch()}). */
+    void noteStaleResolution() {
+        anomalies++;
+    }
 
     int allocatedSlotCount() {
         return pool.allocatedSlots();

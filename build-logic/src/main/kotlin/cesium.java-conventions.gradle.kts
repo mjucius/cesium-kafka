@@ -47,7 +47,17 @@ tasks.withType<JavaCompile>().configureEach {
 // (e.g. ./gradlew build -PtestToolchain=25).
 val testToolchain = providers.gradleProperty("testToolchain")
 tasks.withType<Test>().configureEach {
-    useJUnitPlatform()
+    // @Tag("soak") tests (design §11.2: large-entry-count memory ceilings, GC-delta
+    // measurements) are nightly-lane signal, not PR-gating signal: they are excluded from every
+    // default lane and run only through the dedicated `soakTest` task below.
+    val isSoakLane = name == "soakTest"
+    useJUnitPlatform {
+        if (isSoakLane) {
+            includeTags("soak")
+        } else {
+            excludeTags("soak")
+        }
+    }
     if (testToolchain.isPresent) {
         javaLauncher = javaToolchains.launcherFor {
             languageVersion = JavaLanguageVersion.of(testToolchain.get().toInt())
@@ -58,6 +68,16 @@ tasks.withType<Test>().configureEach {
         showExceptions = true
         showCauses = true
     }
+}
+
+// The nightly soak lane (design §11.2): runs only the @Tag("soak") tests of the default test
+// source set. `./gradlew soakTest`.
+tasks.register<Test>("soakTest") {
+    description = "Runs @Tag(\"soak\") tests (nightly lane, design §11.2)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    shouldRunAfter(tasks.test)
 }
 
 spotless {
