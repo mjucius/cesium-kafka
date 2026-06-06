@@ -45,3 +45,7 @@ nullaway = { module = "com.uber.nullaway:nullaway", version.ref = "nullaway" }
 # Plugin jars consumed by build-logic as implementation dependencies.
 spotless-plugin = { module = "com.diffplug.spotless:spotless-plugin-gradle", version.ref = "spotless-plugin" }
 errorprone-plugin = { module = "net.ltgt.gradle:gradle-errorprone-plugin", version.ref = "errorprone-plugin" }
+
+[plugins]
+# Applied only by the cesium-kafka-benchmarks module (M8); version pinned by the jmh-plugin entry above.
+jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }

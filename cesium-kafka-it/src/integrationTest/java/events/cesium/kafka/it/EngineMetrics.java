@@ -44,4 +44,16 @@ final class EngineMetrics {
         Counter counter = registry.find(name).tags(tags).counter();
         return counter == null ? 0.0 : counter.count();
     }
+
+    /**
+     * The total count across every tagged child of a counter (e.g. {@code cesium.ingest.records}
+     * summed over all {@code outcome} tags), or {@code 0.0} when none is registered yet. The §11.4
+     * macro perf throughput tests read this to total a loop's processed-record count regardless of
+     * how the engine partitions it by outcome tag.
+     */
+    static double counterSum(MeterRegistry registry, String name) {
+        return registry.find(name).counters().stream()
+                .mapToDouble(Counter::count)
+                .sum();
+    }
 }

@@ -32,6 +32,9 @@ exactly-once transaction/fencing analysis, failure matrix, store SPI).
   the flagship implementation, database-backed stores can plug in.
 - **No silent failure modes**: every fault path ends in a retry, an explicit DLQ record, a degraded
   health flag + alert, or a fail-fast with a runbook entry.
+- **Measured, not projected**: [docs/performance.md](docs/performance.md) has the M8 performance &
+  sizing numbers — JMH hot-path benchmarks, macro throughput/latency, the memory worksheet, and the
+  honest replay-cost formula, with every miss recorded against its target rather than fudged.
 
 ## Requirements
 

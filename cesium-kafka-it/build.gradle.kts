@@ -49,4 +49,44 @@ testing {
     }
 }
 
+// The macro/soak performance lane (design §11.4). The @Tag("nightly") perf ITs (ingest/dispatch/
+// burst/large-payload/heterogeneous-replay) run on the ordinary `integrationTest` task with
+// -PincludeNightly=true (nightly.yml's perf batch). The @Tag("soak") SoakPerfIT is NEVER on that
+// lane — it runs only through this dedicated `soakPerf` task, which the java-conventions plugin
+// configures to includeTags("soak") on the integrationTest source set. The full 100M/24h/ZGC run is
+// a manual dedicated-host invocation (see SoakPerfIT javadoc for the exact command + JVM flags).
+tasks.register<Test>("soakPerf") {
+    description = "Runs @Tag(\"soak\") macro/soak performance ITs against real Kafka (design §11.4)."
+    group = "verification"
+    val integrationTest = sourceSets["integrationTest"]
+    testClassesDirs = integrationTest.output.classesDirs
+    classpath = integrationTest.runtimeClasspath
+    // Same Docker-API and heap settings the integrationTest task uses (the suite block above only
+    // configures its own task, not this standalone one).
+    systemProperty("api.version", providers.systemProperty("api.version").getOrElse("1.44"))
+    // Heap is set HERE (Gradle emits -Xmx/-Xms on the forked test-worker command line), and a
+    // command-line -Xmx/-Xms WINS over anything in JAVA_TOOL_OPTIONS. So the dedicated-host command
+    // must size the worker through these knobs, NOT through `JAVA_TOOL_OPTIONS=-Xmx12g` (which the
+    // hardcoded default below would silently clobber — and a JAVA_TOOL_OPTIONS -Xms12g left larger
+    // than the clobbered -Xmx would make the worker refuse to start). `JAVA_TOOL_OPTIONS` carries
+    // only the non-conflicting GC / pre-touch / JFR flags (-XX:+UseZGC, -XX:+AlwaysPreTouch,
+    // -XX:StartFlightRecording, ...); -Xmx via -Dsoak.maxHeap and -Xms via -Dsoak.minHeap. The CI
+    // scaled soak passes neither and keeps the 1536m default (ample for the few-hundred-k run).
+    maxHeapSize = providers.systemProperty("soak.maxHeap").getOrElse("1536m")
+    providers.systemProperty("soak.minHeap").orNull?.let { minHeapSize = it }
+    jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
+    // Forward the documented soak.* sizing knobs (SoakPerfIT reads them via Integer.getInteger /
+    // System.getProperty) into the forked test JVM, so the dedicated-host command can scale the run
+    // up: `-Dsoak.total=100000000 -Dsoak.windowMs=86400000 ...`. Read through `providers.systemProperty`
+    // so each is a proper configuration-cache input (a raw System.getProperty read would be cached and
+    // ignore the override).
+    for (knob in listOf("soak.total", "soak.windowMs", "soak.partitions", "soak.timeoutMin")) {
+        val value = providers.systemProperty(knob).orNull
+        if (value != null) {
+            systemProperty(knob, value)
+        }
+    }
+    shouldRunAfter(tasks.named("integrationTest"))
+}
+
 // Integration tests are run explicitly (CI integration job / nightly matrix), not as part of `check`.

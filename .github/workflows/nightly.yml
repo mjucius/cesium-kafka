@@ -73,6 +73,54 @@ jobs:
             **/build/test-results/
           if-no-files-found: ignore
 
+  macro-perf:
+    name: Macro perf — §11.4 ingest/dispatch/burst/large-payload/heterogeneous-replay (fresh worker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Reclaim any leaked containers before the run
+        run: docker system prune -f || true
+      # The design §11.4 MACRO performance ITs against a real broker + EngineHarness. They are
+      # @Tag("nightly"), so they need -PincludeNightly=true and never run on the PR lane. Each *PerfIT
+      # closes its engine instance(s) in tearDown (the M6 SIGKILL-cascade lesson). Measured numbers are
+      # logged to the test output and archived in the reports artifact; the headline targets vs measured
+      # reality live in docs/performance.md. Sizes are CI-scaled here; a dedicated host scales them up
+      # via -Dperf.*.
+      #
+      # SPLIT INTO TWO gradle invocations rather than one, mirroring integration-full's isolation lever:
+      # forkEvery is unusable (it restarts the shared static KRaft broker per class), so batching across
+      # invocations is the practical way to fork a FRESH integrationTest worker JVM and stop per-worker
+      # memory accumulating. Batch 1 = the two STAGING-HEAVY classes (Dispatch/Burst each stage 50k–100k
+      # resident entries with raised STAGE_HIGH_WATER + store cap); batch 2 = the remainder
+      # (Ingest/LargePayload/HeterogeneousReplay, incl. LargePayload's ~32 MiB of 1 MiB payloads). Their
+      # union equals the original single batch with no overlap.
+      - name: 'Macro perf — staging-heavy (Dispatch/Burst, @Tag("nightly"), fresh worker)'
+        run: >-
+          ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
+          --tests "events.cesium.kafka.it.DispatchThroughputPerfIT"
+          --tests "events.cesium.kafka.it.BurstPerfIT"
+      - name: 'Macro perf — ingest / large-payload / replay (@Tag("nightly"), fresh worker)'
+        run: >-
+          ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
+          --tests "events.cesium.kafka.it.IngestThroughputPerfIT"
+          --tests "events.cesium.kafka.it.LargePayloadPerfIT"
+          --tests "events.cesium.kafka.it.HeterogeneousReplayPerfIT"
+      - name: Upload macro-perf reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macro-perf-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+
   integration-kip848:
     name: Integration — KIP-848 (group.protocol=consumer, non-blocking, D12)
     runs-on: ubuntu-latest
@@ -116,9 +164,17 @@ jobs:
       - name: Soak lane (the dedicated soakTest task includes ONLY @Tag("soak"); see java-conventions)
         # Runs every module's soakTest task: the KafkaTrackerStore JOL footprint
         # (ShardFootprintTest) and the published contract kit's 1M-entry memory-ceiling / O(log n)
-        # soak (TrackerBackedStoreContract). JMH macro benchmarks land with the benchmarks module
-        # (M8) and will be added here as a fourth lane.
+        # soak (TrackerBackedStoreContract). The JMH hot-path micro-benchmarks run in the dedicated
+        # `benchmarks` job below (M8).
         run: ./gradlew soakTest
+      - name: Reclaim any leaked containers before the broker-backed soak perf
+        run: docker system prune -f || true
+      - name: Scaled soak perf IT (@Tag("soak"), broker-backed, exactly-once + never-early invariant)
+        # The design §11.4 soak invariant checker against a real broker (cesium-kafka-it:soakPerf), at
+        # the SCALED-DOWN default (a few hundred k entries over a couple of minutes) so it fits a CI
+        # box and proves the harness + invariant checker. The full 100M/12GB/ZGC/24h run is a manual
+        # dedicated-host lane (the exact command + JVM flags are in SoakPerfIT's javadoc).
+        run: ./gradlew :cesium-kafka-it:soakPerf
       - name: Upload soak reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -128,3 +184,53 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
           if-no-files-found: ignore
+
+  benchmarks:
+    name: Benchmarks — JMH hot-path micro-benchmarks (§11.4, non-gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # NON-GATING (design §15 risk #9: "targets are PROJECTIONS until measured"). A JMH number is
+    # noisy on shared CI hardware, so a perf blip must never fail the nightly. We archive the JSON
+    # per run; the >10% regression gate is ASPIRATIONAL in v1 (see the comparison step below) and is
+    # deliberately not allowed to block CI.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run JMH hot-path benchmarks (design §11.4 table)
+        # Micro-benchmarks only (no broker): index insert, drainDue, replay apply, ring binary-search
+        # complete, sidecar encode/decode. Writes results/jmh/results.json + human.txt under the
+        # module's build dir. The JMH task is never wired into build/check (run on demand / nightly).
+        run: ./gradlew :cesium-kafka-benchmarks:jmh
+      - name: Regression gate vs committed baseline (ASPIRATIONAL — reports only, never fails the job)
+        # How the >10% regression gate WOULD work once CI hardware is stable enough to trust:
+        #   * cesium-kafka-benchmarks/results/baseline.json is the committed reference run (the
+        #     measured numbers from a known-good commit on the canonical runner).
+        #   * For each benchmark, compare this run's primaryMetric.score against the baseline's; a
+        #     drop > 10% (throughput) / rise > 10% (SingleShotTime per-op latency) is a regression.
+        #   * Promote a new baseline deliberately (committed in the same PR that justifies the change).
+        # In v1 this step only PRINTS the comparison — it does not fail. Flipping it to a hard gate is
+        # a follow-up once we have a dedicated, low-variance runner (otherwise it flakes; risk #9/#20).
+        run: |
+          BASELINE=cesium-kafka-benchmarks/results/baseline.json
+          CURRENT=cesium-kafka-benchmarks/build/results/jmh/results.json
+          if [ -f "$BASELINE" ] && [ -f "$CURRENT" ]; then
+            echo "Comparing $CURRENT against committed baseline $BASELINE (report-only, threshold 10%):"
+            python3 cesium-kafka-benchmarks/results/compare.py "$BASELINE" "$CURRENT" || true
+          else
+            echo "No committed baseline yet (or no results) — skipping comparison. Commit this run's"
+            echo "results.json as results/baseline.json to seed the gate."
+          fi
+      - name: Archive JMH results (JSON + human-readable)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-jmh-results
+          path: |
+            cesium-kafka-benchmarks/build/results/jmh/results.json
+            cesium-kafka-benchmarks/build/results/jmh/human.txt
+          if-no-files-found: warn

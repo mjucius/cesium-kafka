@@ -27,5 +27,7 @@ include(
     "cesium-kafka-store-testkit",
     "cesium-kafka-app",
     "cesium-kafka-it",
+    "cesium-kafka-benchmarks",
 )
-// cesium-kafka-benchmarks (JMH + JOL) is added at milestone M8.
+// cesium-kafka-benchmarks (JMH hot-path micro-benchmarks, design §11.4): added at milestone M8.
+// Run on demand — `./gradlew :cesium-kafka-benchmarks:jmh` — never wired into build/check.

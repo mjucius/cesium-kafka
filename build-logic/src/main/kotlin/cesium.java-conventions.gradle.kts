@@ -60,7 +60,10 @@ tasks.withType<Test>().configureEach {
     // default lane and run only through the dedicated `soakTest` task below. @Tag("nightly") (heavy
     // Toxiproxy/compaction/multi-instance ITs) and @Tag("kip848") (the KIP-848 consumer-protocol EOS
     // variants, non-blocking per D12) are likewise off the default lane unless explicitly opted in.
-    val isSoakLane = name == "soakTest"
+    // `soakTest` (every module's store/contract soak) and `soakPerf` (the cesium-kafka-it macro/soak
+    // perf lane, §11.4) are the two soak-only task names: they include the @Tag("soak") tests of their
+    // source set and exclude nothing else, so the heavy perf/soak ITs run ONLY through them.
+    val isSoakLane = name == "soakTest" || name == "soakPerf"
     val includeNightly = gradleFlag("includeNightly")
     val includeKip848 = gradleFlag("includeKip848")
     val kip848Only = gradleFlag("kip848Only")

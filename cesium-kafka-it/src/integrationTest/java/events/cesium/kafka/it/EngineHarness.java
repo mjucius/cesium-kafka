@@ -601,6 +601,7 @@ final class EngineHarness implements AutoCloseable {
         private String bootstrapServers;
         private Duration transactionTimeout;
         private Duration drainMaxSlice;
+        private Long batchMaxBytes;
         private final Map<String, String> kafkaProperties = new HashMap<>();
         private final Map<String, String> storeProperties = new HashMap<>();
         private UnaryOperator<SeekFetcher> seekFetcherDecorator = UnaryOperator.identity();
@@ -774,6 +775,19 @@ final class EngineHarness implements AutoCloseable {
             return this;
         }
 
+        /**
+         * Shrinks the §7.2 per-transaction decompressed-payload byte budget
+         * ({@code dispatch.batch.max-bytes}; default 32 MiB). The §11.4 large-payload macro test
+         * (R8) sets a small budget so a backlog of multi-megabyte due records provably
+         * <em>truncates-and-carries-over</em> across several dispatch transactions — the fetch path
+         * never materializes the whole backlog at once — rather than fetching everything into one
+         * oversized batch. Behaviour-only: smaller batches change nothing transactional.
+         */
+        Builder batchMaxBytes(long maxBytes) {
+            this.batchMaxBytes = maxBytes;
+            return this;
+        }
+
         EngineHarness build() {
             Objects.requireNonNull(sourceTopic, "source topic");
             Objects.requireNonNull(destinationTopic, "destination topic");
@@ -814,7 +828,7 @@ final class EngineHarness implements AutoCloseable {
                     // backpressure scenario via Builder.maxPendingPerPartition).
                     new DispatchConfig(
                             null,
-                            null,
+                            batchMaxBytes == null ? null : new DispatchConfig.Batch(null, batchMaxBytes),
                             drainMaxSlice == null ? null : new DispatchConfig.Drain(drainMaxSlice),
                             null,
                             idleCursorInterval,
