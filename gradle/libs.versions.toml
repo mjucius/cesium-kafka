@@ -18,7 +18,7 @@ jol = "0.17"
 errorprone = "2.39.0"
 nullaway = "0.12.7"
 palantir-java-format = "2.68.0"
-spotless-plugin = "7.0.4"
+spotless-plugin = "8.6.0"
 errorprone-plugin = "5.1.0"
 jmh-plugin = "0.7.3"
 
