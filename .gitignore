@@ -1,6 +1,9 @@
 # Gradle
 .gradle/
 build/
+# Stray Gradle build dirs produced when building inside an isolated worktree
+# (the rootDir-aliased build directory), e.g. build-logic/.iso-<name>-build/
+.iso-*-build/
 !gradle/wrapper/gradle-wrapper.jar
 
 # IDE
