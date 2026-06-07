@@ -391,7 +391,7 @@ Legend: ✔ = no loss, no duplicate under `read_committed` destination consumers
 
 ---
 
-## 4. Store SPI (module `cesium-kafka-api`, package `events.cesium.kafka.api.store`)
+## 4. Store SPI (module `cesium-kafka-api`, package `com.jucius.cesium.kafka.api.store`)
 
 ### 4.1 Boundary and design forces
 
@@ -796,7 +796,7 @@ Operations runbook ties alerts to remedies: cursor age vs tombstone retention, p
 
 ## 10. Project / Module Layout
 
-Gradle (Kotlin DSL), version catalog (`gradle/libs.versions.toml`), convention plugins via included `build-logic`, Java toolchain 21 (CI also tests latest LTS). Group id `events.cesium`; package root `events.cesium.kafka`. Dependencies minimal: kafka-clients 4.x, slf4j (+logback in app), micrometer-core, jackson-dataformat-yaml (app); **no Spring**. Test-only: Testcontainers, Toxiproxy module (deterministic fault injection, §11.3), jqwik, awaitility, JOL. JPMS: `Automatic-Module-Name` only (kafka-clients is not module-safe).
+Gradle (Kotlin DSL), version catalog (`gradle/libs.versions.toml`), convention plugins via included `build-logic`, Java toolchain 21 (CI also tests latest LTS). Group id `com.jucius.cesium`; package root `com.jucius.cesium.kafka`. Dependencies minimal: kafka-clients 4.x, slf4j (+logback in app), micrometer-core, jackson-dataformat-yaml (app); **no Spring**. Test-only: Testcontainers, Toxiproxy module (deterministic fault injection, §11.3), jqwik, awaitility, JOL. JPMS: `Automatic-Module-Name` only (kafka-clients is not module-safe).
 
 ```
 cesium-kafka/
@@ -804,19 +804,19 @@ cesium-kafka/
 ├── build-logic/                       # cesium.java-conventions, publish-, test- (jvm-test-suite),
 │                                      # quality-conventions (spotless palantir-java-format, errorprone+nullaway)
 ├── cesium-kafka-api/                  # SPI (§4), header constants, ScheduledRef/DueBatch/TrackerCursor/ConfigView. Published.
-│   └── events.cesium.kafka.api.{store,headers,config}
+│   └── com.jucius.cesium.kafka.api.{store,headers,config}
 ├── cesium-kafka-core/                 # engine: loops, txn manager + error taxonomy, cursor/barrier orchestration,
 │   │                                  # policies, header codec, penalty box, admin validation (parity, retention,
 │   │                                  # topic-ID identity, offsets-retention), shard state machine. Published.
-│   └── events.cesium.kafka.core.{engine,ingest,dispatch,fetch,admin,config}
+│   └── com.jucius.cesium.kafka.core.{engine,ingest,dispatch,fetch,admin,config}
 ├── cesium-kafka-store-kafka/          # KafkaTrackerStore: tracker wire format, sidecar codec, packed index (§5). Published.
-│   └── events.cesium.kafka.store.tracker
+│   └── com.jucius.cesium.kafka.store.tracker
 ├── cesium-kafka-store-testkit/        # SPI contract kit + fixtures (MutableClock, FakeStoreContext,
 │   │                                  # TrackerEventScript incl. pre-compacted-log scripts, jqwik arbitraries). Published.
-│   └── events.cesium.kafka.testkit
+│   └── com.jucius.cesium.kafka.testkit
 ├── cesium-kafka-app/                  # main(), YAML config, lifecycle, health/metrics HTTP, distTar/Zip,
 │   │                                  # Dockerfile (distroless)
-│   └── events.cesium.kafka.app
+│   └── com.jucius.cesium.kafka.app
 ├── cesium-kafka-benchmarks/           # JMH + JOL footprint tests (not CI-gating; nightly)
 ├── cesium-kafka-it/                   # Testcontainers integration (separate-JVM process model for kill tests),
 │                                      # EOS/fencing/LSO/barrier-ordering scenarios, soak, macro perf
@@ -879,7 +879,7 @@ JUnit 5 abstract classes; implementers subclass with a factory. `TrackerBackedSt
 
 Macro (CI-sized; dedicated-env in parens): ingest ≥ 20 k rec/s (100 k); sustained dispatch incl. re-fetch ≥ 10 k rec/s (50 k); `dispatch_lag` p99 ≤ 250 ms for idle arrivals; 100 k simultaneous-due burst drains within `burst/batch-throughput` ± 20% **with group-B membership stability asserted (no rebalance during the drain — R2)**; replay of a heterogeneous-delay log (10 M pending + 50 M completions since the oldest pin) within the published formula's prediction ± 30% (dedicated; replaces the unconditioned "10 M in 60 s" claim); **large-payload run (1 MB records) asserting the fetch-path heap budget** (R8); soak: 100 M pending, 12 GB heap, ZGC, 24 h — no OOM, stable accuracy, GC pause p99 < 5 ms.
 
-**Macro measured (M8; design §15 risk #9 — "targets are PROJECTIONS until measured"; honest per the deliverable, misses flagged, none dropped).** Captured by the `*PerfIT` macro suite (`cesium-kafka-it`, package `events.cesium.kafka.it`, all `@Tag("nightly")`/`@Tag("soak")` — never on the PR lane) against a real Testcontainers `apache/kafka:4.3.0` KRaft broker with the engine in-JVM, on an Apple M3 dev box, 2026-06-06; CI-sized counts (50 k–100 k); the dedicated 100 M/12 GB/ZGC/24 h soak is a manual lane (exact command + JVM flags in `SoakPerfIT`'s javadoc). The numbers are read off the engine's own §9 meters / the broker, not synthetic tallies; per-run figures are logged and archived in the macro-perf reports artifact (`nightly.yml` `macro-perf` job).
+**Macro measured (M8; design §15 risk #9 — "targets are PROJECTIONS until measured"; honest per the deliverable, misses flagged, none dropped).** Captured by the `*PerfIT` macro suite (`cesium-kafka-it`, package `com.jucius.cesium.kafka.it`, all `@Tag("nightly")`/`@Tag("soak")` — never on the PR lane) against a real Testcontainers `apache/kafka:4.3.0` KRaft broker with the engine in-JVM, on an Apple M3 dev box, 2026-06-06; CI-sized counts (50 k–100 k); the dedicated 100 M/12 GB/ZGC/24 h soak is a manual lane (exact command + JVM flags in `SoakPerfIT`'s javadoc). The numbers are read off the engine's own §9 meters / the broker, not synthetic tallies; per-run figures are logged and archived in the macro-perf reports artifact (`nightly.yml` `macro-perf` job).
 
 | Macro metric | Target (CI / dedicated) | Measured (M3 dev box) | Test | Verdict |
 |---|---|---|---|---|
@@ -967,7 +967,7 @@ Dependency notes: M2/M3 can proceed in parallel with M4 after M1; M5 depends on 
 
 ## Open questions for the project owner
 
-1. Publish to Maven Central from day one, and confirm `events.cesium` group-id/domain ownership.
+1. Publish to Maven Central from day one, and confirm `com.jucius.cesium` group-id/domain ownership.
 2. Embeddable-library mode commitment: core is multi-engine by construction — is the programmatic API a supported v1 surface or internal-until-1.x?
 3. Cancellation API scope for 1.x (tracker `CANCEL 0x02` reserved; ring/index already supports it). The tracker write-ACL is now a v1 requirement regardless; a cancellation API would additionally need an authenticated front door (it must not be "produce to the internal topic").
 4. Minimum supported broker version statement: design recommends 4.0+ (KIP-890 v2, 848 testing); is a 3.x-broker support floor required (changes ops-guide guidance and the transactions-v2 posture)?

@@ -3,7 +3,7 @@
   cesium-kafka logging (design §9).
 
   Default: a plain one-line console encoder. Set LOG_FORMAT=json (env var or -DLOG_FORMAT=json) to
-  switch to the compact one-line JSON encoder (events.cesium.kafka.app.logging.CompactJsonEncoder).
+  switch to the compact one-line JSON encoder (com.jucius.cesium.kafka.app.logging.CompactJsonEncoder).
   The selection is a profile include keyed off the LOG_FORMAT value — no Janino/<if> dependency.
   LOG_LEVEL (default INFO) sets the root level. Both profiles carry the MDC context keys
   (applicationId/loop/partition/txn) and never log payloads.

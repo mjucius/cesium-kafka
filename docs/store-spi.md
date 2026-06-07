@@ -11,7 +11,7 @@ checklist, and how to prove your store with the kit.
 For the guarantees a store must preserve, see [`delivery-semantics.md`](delivery-semantics.md); for
 the architecture, [`architecture.md`](architecture.md); for the full design,
 [`design.md` §4](design.md#4-store-spi-module-cesium-kafka-api-package-eventscesiumkafkaapistore). All
-types below live in package `events.cesium.kafka.api.store`.
+types below live in package `com.jucius.cesium.kafka.api.store`.
 
 ---
 
@@ -245,7 +245,7 @@ arrival order *before* the engine streams `[offset, barrier)` — preserving arr
   **refused** at `beginRecovery`, not replayed into. (`recoveryFailsFastOnAForeignIdentityCursor`.)
 
 `KafkaTrackerStore`'s sidecar/cursor logic lives in `SidecarCodec` /
-`events.cesium.kafka.store.tracker` if you want a worked reference.
+`com.jucius.cesium.kafka.store.tracker` if you want a worked reference.
 
 ---
 
@@ -382,7 +382,7 @@ and the [delivery-semantics archetype table](delivery-semantics.md#10-store-arch
 Register a `SchedulerStoreProvider` via `META-INF/services`:
 
 ```
-# META-INF/services/events.cesium.kafka.api.store.SchedulerStoreProvider
+# META-INF/services/com.jucius.cesium.kafka.api.store.SchedulerStoreProvider
 com.example.MyTrackerStoreProvider
 ```
 

@@ -14,18 +14,18 @@ dependencies {
     implementation(libs.micrometer.prometheus)
     implementation(libs.slf4j.api)
     // Logback is a compile dependency (not runtimeOnly) because the app ships a custom one-line
-    // JSON encoder (events.cesium.kafka.app.logging.CompactJsonEncoder, design §9) referenced from
+    // JSON encoder (com.jucius.cesium.kafka.app.logging.CompactJsonEncoder, design §9) referenced from
     // the JSON logging profile; the encoder extends logback's EncoderBase.
     implementation(libs.logback.classic)
 }
 
 application {
-    mainClass = "events.cesium.kafka.app.CesiumApp"
+    mainClass = "com.jucius.cesium.kafka.app.CesiumApp"
     applicationName = "cesium-kafka"
 }
 
 // Build-info resource for the /info endpoint (design §9): version (the Gradle project version) and
-// the short git commit when available. Read at runtime by events.cesium.kafka.app.metrics.BuildInfo
+// the short git commit when available. Read at runtime by com.jucius.cesium.kafka.app.metrics.BuildInfo
 // from the classpath; a clean fallback to the jar manifest / "unknown" keeps the app runnable when
 // the resource or git is absent.
 val generateBuildInfo by tasks.registering {

@@ -99,7 +99,7 @@ runner exists. Promote a baseline deliberately by committing a fresh `results.js
 
 ## 3. Macro (end-to-end) benchmarks (design `§11.4`)
 
-Measured by the `*PerfIT` suite in `cesium-kafka-it` (package `events.cesium.kafka.it`), all
+Measured by the `*PerfIT` suite in `cesium-kafka-it` (package `com.jucius.cesium.kafka.it`), all
 `@Tag("nightly")`/`@Tag("soak")` — they **never** run on the default/PR lane. Numbers are read off
 the engine's own `§9` meters and the broker, not synthetic tallies. CI-sized counts; the dedicated
 100 M / 12 GB / ZGC / 24 h soak is a manual lane (§6 below).
@@ -368,11 +368,11 @@ run on the PR lane.
 
 ```bash
 ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true \
-    --tests "events.cesium.kafka.it.IngestThroughputPerfIT" \
-    --tests "events.cesium.kafka.it.DispatchThroughputPerfIT" \
-    --tests "events.cesium.kafka.it.BurstPerfIT" \
-    --tests "events.cesium.kafka.it.LargePayloadPerfIT" \
-    --tests "events.cesium.kafka.it.HeterogeneousReplayPerfIT"
+    --tests "com.jucius.cesium.kafka.it.IngestThroughputPerfIT" \
+    --tests "com.jucius.cesium.kafka.it.DispatchThroughputPerfIT" \
+    --tests "com.jucius.cesium.kafka.it.BurstPerfIT" \
+    --tests "com.jucius.cesium.kafka.it.LargePayloadPerfIT" \
+    --tests "com.jucius.cesium.kafka.it.HeterogeneousReplayPerfIT"
 ```
 
 Scale-up knobs for a dedicated host (defaults are CI-sized):

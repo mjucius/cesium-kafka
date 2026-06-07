@@ -200,7 +200,7 @@ and [`design.md` §3.5](design.md#35-the-committed-cursor-v2-position-watermark-
 
 ## 6. The in-memory index
 
-Module `cesium-kafka-store-kafka`, package `events.cesium.kafka.store.tracker.index`. **Each tracker
+Module `cesium-kafka-store-kafka`, package `com.jucius.cesium.kafka.store.tracker.index`. **Each tracker
 partition's state is owned by exactly one dispatch thread and touched by no other thread, ever** —
 even on a combined ingest+dispatch instance, ADDs reach the index only via the tracker topic and the
 dispatch thread's own `poll()`. Zero locks, zero CAS on the hot path.

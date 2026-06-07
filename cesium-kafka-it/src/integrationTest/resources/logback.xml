@@ -9,7 +9,7 @@
     <logger name="org.testcontainers" level="INFO"/>
     <logger name="tc" level="INFO"/>
     <logger name="com.github.dockerjava" level="WARN"/>
-    <logger name="events.cesium" level="INFO"/>
+    <logger name="com.jucius.cesium" level="INFO"/>
     <root level="INFO">
         <appender-ref ref="STDOUT"/>
     </root>

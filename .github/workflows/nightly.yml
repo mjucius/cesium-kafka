@@ -52,17 +52,17 @@ jobs:
       - name: "Batch B — multi-instance fencing / rebalance (@Tag(\"nightly\"), fresh worker)"
         run: >-
           ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
-          --tests "events.cesium.kafka.it.ZombieFencingIT"
-          --tests "events.cesium.kafka.it.ZombieStaticIdFencingIT"
-          --tests "events.cesium.kafka.it.RebalanceScaleIT"
-          --tests "events.cesium.kafka.it.CooperativeRevocationIT"
-          --tests "events.cesium.kafka.it.PartitionsLostIT"
+          --tests "com.jucius.cesium.kafka.it.ZombieFencingIT"
+          --tests "com.jucius.cesium.kafka.it.ZombieStaticIdFencingIT"
+          --tests "com.jucius.cesium.kafka.it.RebalanceScaleIT"
+          --tests "com.jucius.cesium.kafka.it.CooperativeRevocationIT"
+          --tests "com.jucius.cesium.kafka.it.PartitionsLostIT"
       - name: "Batch C — compaction / degradation / backpressure (@Tag(\"nightly\"), fresh worker)"
         run: >-
           ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
-          --tests "events.cesium.kafka.it.CompactionIT"
-          --tests "events.cesium.kafka.it.DegradationIT"
-          --tests "events.cesium.kafka.it.BackpressureIT"
+          --tests "com.jucius.cesium.kafka.it.CompactionIT"
+          --tests "com.jucius.cesium.kafka.it.DegradationIT"
+          --tests "com.jucius.cesium.kafka.it.BackpressureIT"
       - name: Upload integration reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -103,14 +103,14 @@ jobs:
       - name: 'Macro perf — staging-heavy (Dispatch/Burst, @Tag("nightly"), fresh worker)'
         run: >-
           ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
-          --tests "events.cesium.kafka.it.DispatchThroughputPerfIT"
-          --tests "events.cesium.kafka.it.BurstPerfIT"
+          --tests "com.jucius.cesium.kafka.it.DispatchThroughputPerfIT"
+          --tests "com.jucius.cesium.kafka.it.BurstPerfIT"
       - name: 'Macro perf — ingest / large-payload / replay (@Tag("nightly"), fresh worker)'
         run: >-
           ./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true
-          --tests "events.cesium.kafka.it.IngestThroughputPerfIT"
-          --tests "events.cesium.kafka.it.LargePayloadPerfIT"
-          --tests "events.cesium.kafka.it.HeterogeneousReplayPerfIT"
+          --tests "com.jucius.cesium.kafka.it.IngestThroughputPerfIT"
+          --tests "com.jucius.cesium.kafka.it.LargePayloadPerfIT"
+          --tests "com.jucius.cesium.kafka.it.HeterogeneousReplayPerfIT"
       - name: Upload macro-perf reports
         if: always()
         uses: actions/upload-artifact@v4

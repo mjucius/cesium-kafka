@@ -5,6 +5,6 @@
 -->
 <included>
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="events.cesium.kafka.app.logging.CompactJsonEncoder"/>
+        <encoder class="com.jucius.cesium.kafka.app.logging.CompactJsonEncoder"/>
     </appender>
 </included>

@@ -1,7 +1,7 @@
 [
     {
         "jmhVersion" : "1.37",
-        "benchmark" : "events.cesium.kafka.benchmarks.RingSearchCompleteBenchmark.searchMiss",
+        "benchmark" : "com.jucius.cesium.kafka.benchmarks.RingSearchCompleteBenchmark.searchMiss",
         "mode" : "thrpt",
         "threads" : 1,
         "forks" : 2,
@@ -60,7 +60,7 @@
     },
     {
         "jmhVersion" : "1.37",
-        "benchmark" : "events.cesium.kafka.benchmarks.SidecarCodecBenchmark.decode",
+        "benchmark" : "com.jucius.cesium.kafka.benchmarks.SidecarCodecBenchmark.decode",
         "mode" : "thrpt",
         "threads" : 1,
         "forks" : 2,
@@ -119,7 +119,7 @@
     },
     {
         "jmhVersion" : "1.37",
-        "benchmark" : "events.cesium.kafka.benchmarks.SidecarCodecBenchmark.encode",
+        "benchmark" : "com.jucius.cesium.kafka.benchmarks.SidecarCodecBenchmark.encode",
         "mode" : "thrpt",
         "threads" : 1,
         "forks" : 2,
@@ -178,7 +178,7 @@
     },
     {
         "jmhVersion" : "1.37",
-        "benchmark" : "events.cesium.kafka.benchmarks.SidecarCodecBenchmark.roundtrip",
+        "benchmark" : "com.jucius.cesium.kafka.benchmarks.SidecarCodecBenchmark.roundtrip",
         "mode" : "thrpt",
         "threads" : 1,
         "forks" : 2,
@@ -237,7 +237,7 @@
     },
     {
         "jmhVersion" : "1.37",
-        "benchmark" : "events.cesium.kafka.benchmarks.DrainDueBenchmark.drain",
+        "benchmark" : "com.jucius.cesium.kafka.benchmarks.DrainDueBenchmark.drain",
         "mode" : "ss",
         "threads" : 1,
         "forks" : 2,
@@ -296,7 +296,7 @@
     },
     {
         "jmhVersion" : "1.37",
-        "benchmark" : "events.cesium.kafka.benchmarks.IndexInsertBenchmark.insert",
+        "benchmark" : "com.jucius.cesium.kafka.benchmarks.IndexInsertBenchmark.insert",
         "mode" : "ss",
         "threads" : 1,
         "forks" : 2,
@@ -355,7 +355,7 @@
     },
     {
         "jmhVersion" : "1.37",
-        "benchmark" : "events.cesium.kafka.benchmarks.ReplayApplyBenchmark.replay",
+        "benchmark" : "com.jucius.cesium.kafka.benchmarks.ReplayApplyBenchmark.replay",
         "mode" : "ss",
         "threads" : 1,
         "forks" : 2,

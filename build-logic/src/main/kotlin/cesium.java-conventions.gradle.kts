@@ -9,7 +9,7 @@ plugins {
 
 val libs = the<VersionCatalogsExtension>().named("libs")
 
-group = "events.cesium"
+group = "com.jucius.cesium"
 version = providers.gradleProperty("cesiumVersion").getOrElse("0.1.0-SNAPSHOT")
 
 java {
@@ -33,7 +33,7 @@ tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.addAll(listOf("-parameters", "-Xlint:all,-processing,-serial"))
     options.errorprone {
         disableWarningsInGeneratedCode = true
-        option("NullAway:AnnotatedPackages", "events.cesium")
+        option("NullAway:AnnotatedPackages", "com.jucius.cesium")
         if (name.contains("Test", ignoreCase = true)) {
             // Tests may exercise nullness edge cases deliberately.
             disable("NullAway")
