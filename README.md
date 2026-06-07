@@ -57,9 +57,14 @@ What is supported, and how stable, in v1:
 - Destination consumers must use `isolation.level=read_committed` to observe exactly-once
 - To build from source: any recent JDK on your `PATH` to launch Gradle — the build then provisions
   the JDK 21 toolchain automatically (Gradle's toolchain can download JDK 21, but it cannot bootstrap
-  without *some* Java runtime to start the Gradle process). Or build inside a JDK 21+ container.
+  without *some* Java runtime to start the Gradle process). On a host with no JDK at all, build
+  inside a container:
 
-## Try it — one command, no tools but Docker
+  ```bash
+  docker run --rm -v "$PWD":/src -w /src eclipse-temurin:21-jdk ./gradlew build
+  ```
+
+## Try it — one command (Docker; `make` optional)
 
 ```bash
 make demo
@@ -87,7 +92,15 @@ demo: submitting 5 notifications to 'orders' at 01:28:13 — all at once:
 Submission order was `n1,n2,n3,n4,n5`; delivery is re-ordered by each record's requested time (the
 `+Ns` label is the actual offset from submission, read from each message's dispatch timestamp).
 Tear it down with `make down`. `make help` lists the other targets (`up`, `logs`, `build`, `test`,
-`image`). Requires only [Docker](https://docs.docker.com/get-docker/) with Compose.
+`image`). The only hard requirement is [Docker](https://docs.docker.com/get-docker/) with Compose;
+`make` just wraps the Compose commands. On a host without `make`, run the demo with raw Compose:
+
+```bash
+docker compose -f config/docker-compose.yaml --profile demo down -v           # clean slate
+docker compose -f config/docker-compose.yaml up -d --build                    # Kafka + cesium
+docker compose -f config/docker-compose.yaml --profile demo run --rm --no-deps demo   # the demo
+docker compose -f config/docker-compose.yaml --profile demo down -v           # tear down
+```
 
 ## Quickstart (5 minutes) — drive it yourself
 

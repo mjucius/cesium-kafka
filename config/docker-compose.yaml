@@ -29,7 +29,7 @@
 
 services:
   kafka:
-    image: apache/kafka:4.3.0
+    image: apache/kafka:4.3.0@sha256:0be4c9eb3565733612d2836d65636fd611a219ebcf5b4162e5ac259ea0ecb907  # 4.3.0, digest-pinned for reproducibility (matches the app image's pinning)
     container_name: cesium-kafka-broker
     ports:
       - "9092:9092"
@@ -64,7 +64,7 @@ services:
   # poll. Seeding committed offsets to earliest is the documented explicit-operator
   # step. (The tracker topic and group B's first-run seek are self-sufficient.)
   topic-init:
-    image: apache/kafka:4.3.0
+    image: apache/kafka:4.3.0@sha256:0be4c9eb3565733612d2836d65636fd611a219ebcf5b4162e5ac259ea0ecb907  # 4.3.0, digest-pinned for reproducibility (matches the app image's pinning)
     container_name: cesium-kafka-init
     depends_on:
       kafka:

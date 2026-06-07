@@ -3,14 +3,18 @@ package com.jucius.cesium.kafka.it;
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -47,21 +51,34 @@ final class ScenarioSupport {
     private static void produce(
             String bootstrap, String topic, int partitions, int count, String keyPrefix, Long deliverAtMs) {
         try (Producer<byte[], byte[]> producer = ToxiproxySupport.newProducer(bootstrap)) {
+            List<Future<RecordMetadata>> sends = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
                 List<Header> headers = deliverAtMs == null
                         ? List.of()
                         : List.of(new RecordHeader(
                                 CesiumHeaders.DELIVER_AT,
                                 Long.toString(deliverAtMs).getBytes(StandardCharsets.UTF_8)));
-                producer.send(new ProducerRecord<>(
+                sends.add(producer.send(new ProducerRecord<>(
                         topic,
                         i % partitions,
                         System.currentTimeMillis(),
                         (keyPrefix + i).getBytes(StandardCharsets.UTF_8),
                         ("v" + i).getBytes(StandardCharsets.UTF_8),
-                        headers));
+                        headers)));
             }
             producer.flush();
+            // flush() waits for completion but does not throw on a per-record failure; await each
+            // ack so a produce error (e.g. RecordTooLarge) fails the test rather than being dropped.
+            for (Future<RecordMetadata> send : sends) {
+                try {
+                    send.get();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("interrupted awaiting produce ack", e);
+                } catch (ExecutionException e) {
+                    throw new IllegalStateException("scenario produce failed", e.getCause());
+                }
+            }
         }
     }
 

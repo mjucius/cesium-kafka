@@ -9,7 +9,14 @@ are **semver-governed from 1.0**; the engine's programmatic API (`cesium-kafka-c
 
 - Any recent JDK on your `PATH` to launch Gradle; the build then provisions the JDK 21 toolchain
   automatically. (Gradle needs a JVM to start before it can download a toolchain, so a totally
-  Java-less host fails with "JAVA_HOME is not set" — install any JDK, or build in a JDK 21+ container.)
+  Java-less host fails with "JAVA_HOME is not set".) On a host with no JDK, build in a container:
+
+  ```bash
+  docker run --rm -v "$PWD":/src -w /src eclipse-temurin:21-jdk ./gradlew build
+  # integration tests too (mount the Docker socket for Testcontainers):
+  docker run --rm -v "$PWD":/src -w /src -v /var/run/docker.sock:/var/run/docker.sock \
+    eclipse-temurin:21-jdk ./gradlew :cesium-kafka-it:integrationTest
+  ```
 - `./gradlew build` — compile, unit tests, formatting and static-analysis checks
 - `./gradlew :cesium-kafka-it:integrationTest` — integration tests (requires Docker)
 
