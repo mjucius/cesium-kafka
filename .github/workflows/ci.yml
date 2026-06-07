@@ -26,9 +26,13 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
+          # Install the test JVM AND 21, with 21 LAST so it becomes JAVA_HOME — i.e. Gradle (and
+          # therefore Spotless/palantir-java-format, which runs in the Gradle JVM and hooks javac
+          # internals that newer JDKs change) always runs on 21. The matrix test JVM is still
+          # installed, so the Gradle toolchain runs the test suites on it via -PtestToolchain.
           java-version: |
-            21
             ${{ matrix.test-jvm }}
+            21
       - uses: gradle/actions/setup-gradle@v4
       - name: Build and test
         run: ./gradlew build -PtestToolchain=${{ matrix.test-jvm }}

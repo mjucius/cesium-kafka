@@ -8,7 +8,9 @@ pluginManagement {
 
 plugins {
     // Auto-provisions the JDK 21 toolchain when the host JVM differs (e.g. CI lanes on newer LTS).
-    id("org.gradle.toolchains.foojay-resolver-convention") version "0.10.0"
+    // 1.0.0 is required for Gradle 9.x; 0.10.0 throws NoSuchFieldError JvmVendorSpec.IBM_SEMERU
+    // when it has to provision a toolchain (e.g. a test JVM not already installed).
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
 dependencyResolutionManagement {
