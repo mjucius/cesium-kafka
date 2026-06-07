@@ -3,10 +3,12 @@ package com.jucius.cesium.kafka.core.admin;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -20,7 +22,9 @@ import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.acl.AccessControlEntry;
+import org.apache.kafka.common.acl.AccessControlEntryFilter;
 import org.apache.kafka.common.acl.AclBinding;
+import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.acl.AclPermissionType;
 import org.apache.kafka.common.config.ConfigResource;
@@ -28,6 +32,7 @@ import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.resource.PatternType;
 import org.apache.kafka.common.resource.ResourcePattern;
+import org.apache.kafka.common.resource.ResourcePatternFilter;
 import org.apache.kafka.common.resource.ResourceType;
 
 /**
@@ -163,6 +168,25 @@ public final class KafkaClusterAdmin implements ClusterAdmin {
                         pattern,
                         new AccessControlEntry(principal, "*", AclOperation.DESCRIBE, AclPermissionType.ALLOW)));
         await(admin.createAcls(bindings).all(), "createAcls(" + topic + ")");
+    }
+
+    @Override
+    public Set<String> describeTrackerWritePrincipals(String topic) {
+        // PatternType.MATCH returns every ACL whose resource pattern matches the literal name:
+        // a LITERAL grant on this exact topic, a LITERAL '*' wildcard, and any PREFIXED pattern
+        // that is a prefix of the name — i.e. everyone who can actually write to the tracker.
+        AclBindingFilter filter = new AclBindingFilter(
+                new ResourcePatternFilter(ResourceType.TOPIC, topic, PatternType.MATCH), AccessControlEntryFilter.ANY);
+        Collection<AclBinding> bindings = await(admin.describeAcls(filter).values(), "describeAcls(" + topic + ")");
+        Set<String> writePrincipals = new LinkedHashSet<>();
+        for (AclBinding binding : bindings) {
+            AccessControlEntry entry = binding.entry();
+            if (entry.permissionType() == AclPermissionType.ALLOW
+                    && (entry.operation() == AclOperation.WRITE || entry.operation() == AclOperation.ALL)) {
+                writePrincipals.add(entry.principal());
+            }
+        }
+        return Set.copyOf(writePrincipals);
     }
 
     private <T> T await(KafkaFuture<T> future, String operation) {

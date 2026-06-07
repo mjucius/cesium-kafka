@@ -1,6 +1,7 @@
 package com.jucius.cesium.kafka.core.ingest;
 
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import java.time.Duration;
 import java.util.Objects;
 
@@ -28,6 +29,11 @@ import java.util.Objects;
  * @param retryBackoffInitial first retry backoff; doubles per consecutive failure
  * @param retryBackoffMax backoff cap — the loop never waits longer than this between retries, so
  *     recovery after a long broker outage is prompt
+ * @param onUnrelayable policy for records the destination <em>permanently</em> rejects on the
+ *     immediate-relay produce ({@code route.relay.on-unrelayable}, design §3.8 I-8): {@code DLQ}
+ *     (default) routes the poison record to the DLQ atomically with the source-offset advance,
+ *     {@code DROP} discards it, {@code FAIL} stops the loop. Transient produce failures are
+ *     unaffected — they stay on the abort/retry path
  */
 public record IngestLoopConfig(
         String sourceTopic,
@@ -37,7 +43,8 @@ public record IngestLoopConfig(
         int commitRetryLimit,
         int parkThreshold,
         Duration retryBackoffInitial,
-        Duration retryBackoffMax) {
+        Duration retryBackoffMax,
+        UnrelayablePolicy onUnrelayable) {
 
     /** Default steady-state poll timeout. */
     public static final Duration DEFAULT_POLL_TIMEOUT = Duration.ofSeconds(1);
@@ -58,6 +65,7 @@ public record IngestLoopConfig(
         Objects.requireNonNull(pollTimeout, "pollTimeout");
         Objects.requireNonNull(retryBackoffInitial, "retryBackoffInitial");
         Objects.requireNonNull(retryBackoffMax, "retryBackoffMax");
+        Objects.requireNonNull(onUnrelayable, "onUnrelayable");
         if (sourceTopic.isBlank()) {
             throw new IllegalArgumentException("sourceTopic must be configured");
         }
@@ -101,6 +109,7 @@ public record IngestLoopConfig(
                 config.kafka().transactions().commitRetry(),
                 DEFAULT_PARK_THRESHOLD,
                 DEFAULT_RETRY_BACKOFF_INITIAL,
-                DEFAULT_RETRY_BACKOFF_MAX);
+                DEFAULT_RETRY_BACKOFF_MAX,
+                config.route().relay().onUnrelayable());
     }
 }

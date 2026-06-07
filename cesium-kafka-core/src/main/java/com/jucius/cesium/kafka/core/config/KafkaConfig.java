@@ -45,10 +45,14 @@ public record KafkaConfig(
         CONSUMER
     }
 
-    /** Materializes the §8 defaults for absent components; the map is defensively copied. */
+    /**
+     * Materializes the §8 defaults for absent components; the common {@code properties} map is
+     * wrapped in a value-redacting {@link SecretMap} so its credentials never leak through
+     * {@code toString} (L6).
+     */
     public KafkaConfig {
         groupProtocol = Objects.requireNonNullElse(groupProtocol, GroupProtocol.CLASSIC);
-        properties = properties == null ? Map.of() : Map.copyOf(properties);
+        properties = SecretMap.copyOf(properties == null ? Map.of() : properties);
         transactions = Objects.requireNonNullElse(transactions, Transactions.defaults());
         ingestConsumer = Objects.requireNonNullElse(ingestConsumer, ClientOverrides.empty());
         trackerConsumer = Objects.requireNonNullElse(trackerConsumer, ClientOverrides.empty());
@@ -112,9 +116,12 @@ public record KafkaConfig(
      */
     public record ClientOverrides(Map<String, String> properties) {
 
-        /** Materializes an absent map as empty; the map is defensively copied. */
+        /**
+         * Materializes an absent map as empty and wraps it in a value-redacting {@link SecretMap}
+         * (L6) so overlay credentials never leak through {@code toString}.
+         */
         public ClientOverrides {
-            properties = properties == null ? Map.of() : Map.copyOf(properties);
+            properties = SecretMap.copyOf(properties == null ? Map.of() : properties);
         }
 
         /** Returns an overlay with no properties. */

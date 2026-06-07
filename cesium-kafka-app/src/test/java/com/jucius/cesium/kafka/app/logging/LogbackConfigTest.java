@@ -3,17 +3,22 @@ package com.jucius.cesium.kafka.app.logging;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
 import ch.qos.logback.classic.joran.JoranConfigurator;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.LoggingEvent;
 import ch.qos.logback.core.Appender;
 import ch.qos.logback.core.ConsoleAppender;
 import ch.qos.logback.core.encoder.Encoder;
 import ch.qos.logback.core.status.Status;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -43,6 +48,33 @@ class LogbackConfigTest {
         } finally {
             System.clearProperty("LOG_FORMAT");
         }
+    }
+
+    @Test
+    void plainProfileStripsControlCharsFromMessageAndMdc() throws Exception {
+        // L7: the default plain encoder must de-fang an attacker-influenced value so a CRLF cannot
+        // forge a second log line. Render a forged tracker completion-reason through the real encoder.
+        LoggerContext context = configureFromClasspath();
+        assertNoErrors(context);
+        PatternLayoutEncoder encoder = assertInstanceOf(PatternLayoutEncoder.class, consoleEncoder(context));
+
+        LoggingEvent event = new LoggingEvent();
+        event.setLevel(Level.INFO);
+        event.setLoggerName("com.jucius.cesium.kafka.core.tracker.KafkaTrackerStore");
+        event.setThreadName("cesium-dispatch-0");
+        event.setTimeStamp(1_700_000_000_000L);
+        event.setMessage("reason=FORGED\r\n1999-12-31 ERROR [evil] injected-line");
+        event.setMDCPropertyMap(Map.of("partition", "3\r\nALSO-INJECTED"));
+
+        String encoded = new String(encoder.encode(event), StandardCharsets.UTF_8);
+        String line = encoded.stripTrailing();
+
+        // Exactly one physical line: no embedded CR/LF survives from the message or the MDC.
+        assertFalse(line.contains("\n"), line);
+        assertFalse(line.contains("\r"), line);
+        // The content itself is preserved (collapsed onto the one line), only the control chars go.
+        assertTrue(line.contains("injected-line"), line);
+        assertTrue(line.contains("ALSO-INJECTED"), line);
     }
 
     private static LoggerContext configureFromClasspath() throws Exception {

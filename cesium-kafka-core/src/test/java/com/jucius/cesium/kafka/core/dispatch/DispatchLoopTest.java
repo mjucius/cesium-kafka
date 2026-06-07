@@ -15,6 +15,7 @@ import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
 import com.jucius.cesium.kafka.core.headers.RelayTimestampPolicy;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
@@ -44,6 +45,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TransactionAbortableException;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
@@ -441,6 +443,100 @@ class DispatchLoopTest {
         assertTrue(h.store.committedBatches.isEmpty());
     }
 
+    // ------------------------------------------------------------------ unrelayable poison records (M2/§3.8 I-8)
+
+    @Test
+    void permanentRelayRejectionRoutesToDlqWithRejectedTombstoneAtomically() {
+        Harness h = new Harness();
+        h.startActive(0);
+        h.store.cursorAt(0, 5L);
+        // The destination PERMANENTLY rejects the relay (too large). The entry must not relay forever.
+        h.producer().sendCallbackError = new RecordTooLargeException("relay exceeds max.message.bytes");
+        h.producer().failSendCallbackAt = 0; // the relay is the batch's first send
+        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+
+        h.loop.runOnce(); // attempt: relay permanently rejected ⇒ abort, restore, remember
+        assertTrue(h.events.contains("abort"), "a permanent rejection aborts the (uncommitted) batch");
+        assertRows(
+                h.store.abortedBatches.get(0), new long[][] {{0, 1}}, "the full batch is restored (nothing committed)");
+        assertTrue(h.store.committedBatches.isEmpty(), "nothing committed on the rejecting attempt");
+        assertFalse(h.loop.isDegraded(), "a deterministic record rejection must never park-and-degrade the loop");
+        assertEquals(
+                1.0,
+                h.counterValue("cesium.transactions", "loop", "dispatch", "result", "aborted", "cause", "unrelayable"));
+
+        // The §3.8 I-8 retry (the entry re-drains): poison ⇒ DLQ notice + REJECTED tombstone + cursor,
+        // all in ONE committed transaction — the partition advances past it. Clear the recordings
+        // from the aborted attempt (its discarded DISPATCHED tombstone, its restore) for clean reads.
+        h.producer().failSendCallbackAt = -1;
+        h.store.encodeCalls.clear();
+        h.store.committedBatches.clear();
+        h.store.abortedBatches.clear();
+        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.events.clear();
+        h.loop.runOnce();
+
+        assertEquals(1, h.producer().commitCount(), "exactly one committed copy — never an infinite relay loop");
+        assertEquals(
+                1L, h.events.stream().filter(("send:" + DLQ)::equals).count(), "the poison record goes to the DLQ");
+        ProducerRecord<byte[], byte[]> dlq = h.producer().history().stream()
+                .filter(r -> r.topic().equals(DLQ))
+                .findFirst()
+                .orElseThrow();
+        org.apache.kafka.common.header.Header reason = dlq.headers().lastHeader("cesium-error-reason");
+        assertNotNull(reason, "the unrelayable DLQ record carries the error-reason header");
+        assertEquals("unrelayable", new String(reason.value(), java.nio.charset.StandardCharsets.US_ASCII));
+        assertEquals(
+                CompletionReason.REJECTED, h.store.encodeCalls.get(0).reason(), "settled with a REJECTED tombstone");
+        assertRows(h.store.encodeCalls.get(0).entries(), new long[][] {{0, 1}});
+        assertRows(h.store.committedBatches.get(0), new long[][] {{0, 1}}, "the entry is finalized — never replays");
+        assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "unrelayable"));
+        assertEquals(
+                0.0,
+                h.counterValue("cesium.dispatch.records", "outcome", "dispatched"),
+                "the rejected entry was never dispatched to the destination");
+    }
+
+    @Test
+    void unrelayableDropPolicyWritesRejectedTombstoneWithoutADlqNotice() {
+        Harness h = new Harness(config(c -> c.onUnrelayable = UnrelayablePolicy.DROP));
+        h.startActive(0);
+        h.producer().sendCallbackError = new RecordTooLargeException("too large");
+        h.producer().failSendCallbackAt = 0;
+        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.loop.runOnce(); // attempt 1: rejected ⇒ remember as DROP, restore
+
+        h.producer().failSendCallbackAt = -1;
+        h.store.encodeCalls.clear();
+        h.store.committedBatches.clear();
+        h.store.abortedBatches.clear();
+        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.events.clear();
+        h.loop.runOnce(); // attempt 2: dropped — REJECTED tombstone + cursor, no DLQ notice
+
+        assertEquals(1, h.producer().commitCount());
+        assertFalse(h.events.contains("send:" + DLQ), "DROP writes no DLQ notice");
+        assertEquals(CompletionReason.REJECTED, h.store.encodeCalls.get(0).reason());
+        assertRows(
+                h.store.committedBatches.get(0), new long[][] {{0, 1}}, "the entry is still resolved — never replays");
+        assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "unrelayable"));
+    }
+
+    @Test
+    void unrelayableFailPolicyStopsTheDispatchLoop() {
+        Harness h = new Harness(config(c -> c.onUnrelayable = UnrelayablePolicy.FAIL));
+        h.startActive(0);
+        h.producer().sendCallbackError = new RecordTooLargeException("too large");
+        h.producer().failSendCallbackAt = 0;
+        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+
+        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        assertTrue(failure.getMessage().contains("on-unrelayable=FAIL"), failure.getMessage());
+        assertTrue(h.events.contains("abort"), "FAIL aborts before stopping");
+        assertRows(h.store.abortedBatches.get(0), new long[][] {{0, 1}}, "restore is definitive: nothing committed");
+        assertTrue(h.store.committedBatches.isEmpty());
+    }
+
     @Test
     void inDoubtCommitRetriesToDefinitiveCommit() {
         Harness h = new Harness(); // commitRetryLimit = 3
@@ -770,6 +866,7 @@ class DispatchLoopTest {
                 Duration.ofMillis(50),
                 Duration.ofSeconds(10),
                 b.policy,
+                b.onUnrelayable,
                 b.maxPendingPerPartition,
                 0L,
                 3,
@@ -782,6 +879,7 @@ class DispatchLoopTest {
         Duration drainSlice = Duration.ofMinutes(1);
         Duration idleCursorInterval = Duration.ofHours(1); // effectively off unless a test opts in
         UnfetchablePayloadPolicy policy = UnfetchablePayloadPolicy.DLQ;
+        UnrelayablePolicy onUnrelayable = UnrelayablePolicy.DLQ;
         long maxPendingPerPartition = 1_000_000;
         int parkThreshold = 5;
     }
@@ -930,6 +1028,12 @@ class DispatchLoopTest {
 
         RuntimeException initTransactionsException;
 
+        /** Zero-based send index whose callback completes exceptionally (the async-failure path). */
+        int failSendCallbackAt = -1;
+
+        RuntimeException sendCallbackError = new KafkaException("injected async send failure");
+        private int sendIndex;
+
         RecordingProducer(List<String> events) {
             super(true, null, new ByteArraySerializer(), new ByteArraySerializer());
             this.events = events;
@@ -955,6 +1059,12 @@ class DispatchLoopTest {
         @Override
         public synchronized Future<RecordMetadata> send(ProducerRecord<byte[], byte[]> record, Callback callback) {
             events.add("send:" + record.topic());
+            if (sendIndex++ == failSendCallbackAt) {
+                // The async-failure path: the I/O thread completes this send's callback with an
+                // exception; the record never reaches the (mock) transaction buffer.
+                callback.onCompletion(null, sendCallbackError);
+                return CompletableFuture.failedFuture(sendCallbackError);
+            }
             return super.send(record, callback);
         }
 

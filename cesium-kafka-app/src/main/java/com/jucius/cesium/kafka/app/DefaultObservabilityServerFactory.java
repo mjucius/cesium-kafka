@@ -24,8 +24,13 @@ public final class DefaultObservabilityServerFactory implements ObservabilitySer
     @Override
     public AutoCloseable start(ObservabilityRuntime runtime) throws Exception {
         HealthAssessor assessor = new HealthAssessor(runtime.health(), runtime.clock(), runtime.livenessStaleAfter());
-        ObservabilityServer server =
-                new ObservabilityServer(runtime.port(), runtime.registry(), assessor, runtime.serviceInfo());
+        ObservabilityServer server = new ObservabilityServer(
+                runtime.bindAddress(),
+                runtime.port(),
+                runtime.detailedInfo(),
+                runtime.registry(),
+                assessor,
+                runtime.serviceInfo());
         server.start();
         return server;
     }

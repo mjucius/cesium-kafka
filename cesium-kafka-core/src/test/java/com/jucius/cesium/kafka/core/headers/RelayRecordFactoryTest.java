@@ -236,6 +236,36 @@ class RelayRecordFactoryTest {
                 () -> noDlq.headerErrorDlqRecord(source(typicalHeaders()), DlqReasons.MALFORMED_HEADER, "d", NOW));
     }
 
+    // --- unrelayable DLQ record (§2.4, §3.8 I-8) --------------------------------------------------
+
+    @Test
+    void unrelayableDlq_reusesHeaderErrorShapeWithUnrelayableReasonAndDetail() {
+        ProducerRecord<byte[], byte[]> dlq =
+                factory().unrelayableDlqRecord(source(typicalHeaders()), "RecordTooLargeException: too big", NOW);
+        assertEquals("dlq", dlq.topic());
+        assertSame(KEY, dlq.key());
+        assertSame(VALUE, dlq.value());
+        // Reuses the header-error DLQ shape: all original headers are preserved.
+        assertArrayEquals(ascii("60000"), headerValue(dlq, CesiumHeaders.DELAY_MS));
+        assertArrayEquals(new byte[] {0x01}, headerValue(dlq, "app-header"));
+        // Error reason/detail + provenance + dispatch timestamp.
+        assertArrayEquals(ascii("unrelayable"), headerValue(dlq, CesiumHeaders.ERROR_REASON));
+        assertArrayEquals(
+                "RecordTooLargeException: too big".getBytes(StandardCharsets.UTF_8),
+                headerValue(dlq, CesiumHeaders.ERROR_DETAIL));
+        assertArrayEquals(ascii(Long.toString(NOW)), headerValue(dlq, CesiumHeaders.RELAYED_AT));
+        assertArrayEquals(ascii("7"), headerValue(dlq, CesiumHeaders.SOURCE_PARTITION));
+        assertEquals(NOW, dlq.timestamp());
+    }
+
+    @Test
+    void unrelayableDlq_withoutDlqTopic_throws() {
+        RelayRecordFactory noDlq =
+                new RelayRecordFactory("dest", null, true, RelayTimestampPolicy.DISPATCH, RelayPartitioning.BY_KEY);
+        assertThrows(
+                IllegalStateException.class, () -> noDlq.unrelayableDlqRecord(source(typicalHeaders()), "detail", NOW));
+    }
+
     // --- payload-expired loss notice (§2.4) -------------------------------------------------------
 
     @Test

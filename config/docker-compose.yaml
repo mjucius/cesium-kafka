@@ -1,4 +1,14 @@
 # =============================================================================
+# !!! NOT FOR PRODUCTION — PLAINTEXT, no auth/TLS/ACLs; quickstart/demo only !!!
+# -----------------------------------------------------------------------------
+# Every listener below is PLAINTEXT with NO authentication, NO TLS, and NO ACLs,
+# and the tracker topic is created with no write restriction. This stack exists
+# ONLY for the 5-minute local demo. Do NOT copy it into a shared/production
+# deployment: doing so inherits no-auth + no tracker ACL, which breaks the EOS
+# integrity guarantees (forged tracker ADD/tombstone -> duplication/data loss).
+# See SECURITY.md for the required production posture (TLS + SASL + the tracker
+# write ACL and least-privilege client-role ACLs).
+# =============================================================================
 # cesium-kafka — 5-minute quickstart (design §12)
 # =============================================================================
 # A single-broker KRaft Kafka, a one-shot topic/offset bootstrap, and cesium

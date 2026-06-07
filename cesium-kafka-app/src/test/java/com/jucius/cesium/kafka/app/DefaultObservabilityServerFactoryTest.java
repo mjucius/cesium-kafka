@@ -51,7 +51,9 @@ class DefaultObservabilityServerFactoryTest {
         Counter.builder("cesium.test.events").register(registry).increment();
         MutableEngineHealth health = new MutableEngineHealth(Clock.systemUTC());
         ObservabilityRuntime runtime = new ObservabilityRuntime(
+                "0.0.0.0",
                 0,
+                false,
                 registry,
                 health,
                 Clock.systemUTC(),

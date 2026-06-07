@@ -12,6 +12,7 @@ import com.jucius.cesium.kafka.core.kafka.KafkaClientFactory;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -23,6 +24,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.TreeSet;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.TopicConfig;
@@ -479,6 +481,86 @@ public final class StartupValidator {
                             + "; §2.1 recommends " + LOG_APPEND_TIME
                             + " so tracker record timestamps reflect append order."));
         }
+
+        checkTrackerAcl(config, tracker.name(), findings);
+    }
+
+    /**
+     * R12 tracker write-ACL verification, run on <em>every</em> startup once the topic exists —
+     * for both bootstrap modes, including {@code FAIL} (L3). Kafka enforces ACLs continuously
+     * regardless of whether cesium re-applies them, so the actionable gap the {@code CREATE}-only
+     * apply left open is <em>detection/UX</em>: cesium DESCRIBEs the live grant and emits a WARN
+     * (never a hard fail — the pipeline stays alive while the unenforced-control state is loud and
+     * surfaced) when the configured principal's exclusive WRITE grant is missing, when a foreign
+     * principal holds WRITE, or when {@code acl-principal} is unset entirely. A cluster with no
+     * authorizer downgrades to a WARN exactly like the ACL-apply path. A forged ADD is a
+     * duplicate-injection primitive and a forged tombstone is a data-loss primitive, so the
+     * restriction being absent or drifted is worth surfacing on every boot.
+     */
+    private void checkTrackerAcl(CesiumConfig config, String topic, List<Finding> findings) {
+        Optional<String> principal = config.route().tracker().aclPrincipal().filter(p -> !p.isBlank());
+        Set<String> writePrincipals;
+        try {
+            writePrincipals = admin.describeTrackerWritePrincipals(topic);
+        } catch (ClusterAdminException e) {
+            if (e.hasCause(SecurityDisabledException.class) || e.hasCause(UnsupportedVersionException.class)) {
+                findings.add(Finding.warning(
+                        "route.tracker.acl-principal",
+                        "the cluster has no authorizer, so the tracker write ACL (R12) cannot be verified ("
+                                + e.getMessage() + "). A forged ADD is a duplicate-injection primitive and a forged"
+                                + " tombstone is a data-loss primitive — enable an authorizer and restrict tracker"
+                                + " write access to the cesium principal, or enforce the restriction by other"
+                                + " means."));
+            } else {
+                findings.add(Finding.warning(
+                        "route.tracker.acl-principal",
+                        "could not describe the tracker write ACL on '" + topic + "' to verify R12: " + e.getMessage()
+                                + " — verify manually that tracker write access is restricted to the cesium"
+                                + " principal."));
+            }
+            return;
+        }
+        if (principal.isEmpty()) {
+            // L3(c): the normative R12 control is not configured. Mirror the no-authorizer WARN
+            // rather than staying silent (the size-based-retention pattern: an unenforced control
+            // is named and surfaced, never silently accepted).
+            String liveState = writePrincipals.isEmpty()
+                    ? "no ALLOW WRITE ACL is present on the topic, so on a permissive authorizer any principal can"
+                            + " forge tracker records"
+                    : "the topic currently grants ALLOW WRITE to " + new TreeSet<>(writePrincipals)
+                            + ", none of which cesium asserts or verifies";
+            findings.add(Finding.warning(
+                    "route.tracker.acl-principal",
+                    "route.tracker.acl-principal is unset, so cesium neither applies nor verifies the R12 tracker"
+                            + " write restriction — " + liveState
+                            + ". Set route.tracker.acl-principal to the cesium principal (a forged ADD is a"
+                            + " duplicate-injection primitive and a forged tombstone is a data-loss primitive)."));
+            return;
+        }
+        String configured = principal.get();
+        Set<String> foreign = new TreeSet<>(writePrincipals);
+        foreign.remove(configured);
+        if (!writePrincipals.contains(configured)) {
+            // L3(a): the operator asked for the restriction but it is not actually in force.
+            findings.add(Finding.warning(
+                    "route.tracker.acl-principal",
+                    "route.tracker.acl-principal='" + configured + "' is configured but no matching ALLOW WRITE ACL"
+                            + " exists on tracker topic '" + topic + "' (live ALLOW WRITE principals: "
+                            + (writePrincipals.isEmpty() ? "none" : new TreeSet<>(writePrincipals))
+                            + ") — the R12 write restriction is not in force. Re-apply the grant (or set"
+                            + " route.tracker.bootstrap: CREATE on a run where the topic is absent), or restore it"
+                            + " out of band."));
+        }
+        if (!foreign.isEmpty()) {
+            // L3(b): a principal other than the configured cesium principal can write tracker
+            // records — a duplicate-injection / data-loss primitive.
+            findings.add(Finding.warning(
+                    "route.tracker.acl-principal",
+                    "foreign principal(s) " + foreign + " hold ALLOW WRITE on tracker topic '" + topic + "' besides"
+                            + " the configured cesium principal '" + configured + "' — a non-cesium writer can forge"
+                            + " ADDs (duplicate injection) and tombstones (data loss). Revoke the foreign tracker"
+                            + " write grant(s) (R12)."));
+        }
     }
 
     // ------------------------------------------------------------------ dlq + destination
@@ -497,10 +579,33 @@ public final class StartupValidator {
                         "a configured policy routes to the DLQ but topic '" + topic
                                 + "' does not exist (§2.1, §2.3); create it or change"
                                 + " delay.on-malformed-header / delay.on-over-max /"
-                                + " dispatch.on-unfetchable-payload."));
+                                + " dispatch.on-unfetchable-payload / route.relay.on-unrelayable."));
+                return;
             }
+            checkDlqRetention(topic, findings);
         } catch (ClusterAdminException e) {
             findings.add(Finding.error("route.dlq.topic", "could not validate the DLQ topic: " + e.getMessage() + "."));
+        }
+    }
+
+    /**
+     * L4: an unbounded DLQ ({@code retention.ms=-1} and {@code retention.bytes=-1}) can be filled
+     * by a malformed-header flood — each rejected record copies its full payload 1:1 into the DLQ
+     * (§7.4) — so warn (never hard-fail; the DLQ is operator-owned) when the topic has no bound.
+     */
+    private void checkDlqRetention(String topic, List<Finding> findings) {
+        Map<String, String> topicConfig = admin.topicConfigs(topic);
+        long retentionMs =
+                parseLongConfig(topicConfig, TopicConfig.RETENTION_MS_CONFIG, DEFAULT_RETENTION_MS, findings);
+        long retentionBytes =
+                parseLongConfig(topicConfig, TopicConfig.RETENTION_BYTES_CONFIG, DEFAULT_RETENTION_BYTES, findings);
+        if (retentionMs == -1 && retentionBytes == -1) {
+            findings.add(Finding.warning(
+                    "route.dlq.topic",
+                    "DLQ topic '" + topic + "' has unbounded retention (retention.ms=-1 and retention.bytes=-1):"
+                            + " a malformed-header flood routes one full-payload copy per rejected record to the DLQ"
+                            + " (§7.4, L4) and can fill it without bound. Set a retention.ms and/or retention.bytes"
+                            + " bound on the DLQ topic."));
         }
     }
 
@@ -508,7 +613,12 @@ public final class StartupValidator {
     static boolean routesToDlq(CesiumConfig config) {
         return config.delay().onMalformedHeader() == MalformedHeaderPolicy.DLQ
                 || config.delay().onOverMax() == OverMaxPolicy.DLQ
-                || config.dispatch().onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ;
+                || config.dispatch().onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ
+                // route.relay.on-unrelayable defaults to DLQ (M2): the broker-side existence and L4
+                // retention checks MUST run for it too, otherwise a permanent-rejection DLQ write to a
+                // nonexistent topic fails with UnknownTopicOrPartition — not a permanent record
+                // rejection — and wedges the partition (the exact wedge M2 set out to eliminate).
+                || config.route().relay().onUnrelayable() == UnrelayablePolicy.DLQ;
     }
 
     private void checkDestination(CesiumConfig config, @Nullable TopicFacts source, List<Finding> findings) {

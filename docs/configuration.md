@@ -132,6 +132,7 @@ them in `kafka.properties` or any overlay is a startup error (exit 78); the reje
 | `route.dlq.topic` | unset | Dead-letter topic. **Required whenever any policy routes to DLQ** (the defaults do) — startup fails otherwise. Receives malformed-header, over-max, and payload-expired records. |
 | `route.relay.timestamp` | `DISPATCH` | The timestamp a relayed record carries. `DISPATCH` (now) avoids violating the destination's `message.timestamp.difference.max.ms` and skewing time-based retention; the original time is recoverable from the `cesium-source-timestamp` provenance header. `SOURCE` preserves the original CreateTime. |
 | `route.relay.partitioning` | `BY_KEY` | `BY_KEY` (destination partition count may differ) or `SOURCE_PARTITION` (partition counts validated equal at startup). |
+| `route.relay.on-unrelayable` | `DLQ` | Policy when the destination **permanently** rejects a relay on produce (record too large for the producer `max.request.size` or destination `max.message.bytes`, invalid record): `DLQ` (route the poison record to the DLQ with reason `unrelayable`, atomically with advancing past it — keeps the partition moving), `DROP` (advance past it with a metric, no DLQ record), or `FAIL` (stop the loop). Applies to both the ingest immediate-relay and the dispatch delayed-relay path. Transient produce failures are unaffected — they stay on the retry path. `DLQ` requires `route.dlq.topic`. To avoid the DLQ entirely, size destination `max.message.bytes ≥ source + provenance-header overhead`. |
 
 ---
 
@@ -146,6 +147,15 @@ them in `kafka.properties` or any overlay is a startup error (exit 78); the reje
 Delivering early a message someone intended to delay is a business hazard, so both default to DLQ —
 the violation is made explicit while the pipeline stays alive (D3). DLQ policies require
 `route.dlq.topic` to be configured.
+
+> **`FAIL` is unsafe whenever the source topic has untrusted producers.** It is non-default for a
+> reason: one crafted record (a non-decimal `cesium-delay-ms`, an over-`delay.max` value, a
+> wrong-length binary value) fatally stops the ingest loop, tears down **all** ingest/dispatch workers
+> in the process, and exits non-zero. Because the aborted batch never advanced the source offset and
+> `auto.offset.reset=none` is locked, the next start re-polls the same poison record and re-fails — a
+> pipeline-wide, **restart-persistent outage** until an operator seeks the group past the offset or
+> changes the policy. Use only `DLQ` (default) or `RELAY_IMMEDIATE` for multi-tenant / untrusted
+> ingress (L5; see [operations.md §5](operations.md) and [SECURITY.md](../SECURITY.md)).
 
 ---
 

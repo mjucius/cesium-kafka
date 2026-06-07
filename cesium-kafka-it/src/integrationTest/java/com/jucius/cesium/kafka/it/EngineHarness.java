@@ -466,6 +466,7 @@ final class EngineHarness implements AutoCloseable {
                 derived.penaltyBackoff(),
                 derived.penaltyBackoffMax(),
                 derived.onUnfetchablePayload(),
+                derived.onUnrelayable(),
                 derived.maxPendingPerPartition(),
                 derived.maxPendingTotal(),
                 derived.commitRetryLimit(),

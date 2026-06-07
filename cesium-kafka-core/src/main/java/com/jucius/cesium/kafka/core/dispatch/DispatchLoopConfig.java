@@ -3,6 +3,7 @@ package com.jucius.cesium.kafka.core.dispatch;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import java.time.Duration;
 import java.util.Objects;
 
@@ -28,6 +29,11 @@ import java.util.Objects;
  *     (§7.3, D22); doubles per consecutive transient failure of the same partition
  * @param penaltyBackoffMax penalty ceiling; the stamp never exceeds {@code now + this}
  * @param onUnfetchablePayload policy for provably-expired payloads (§7.4, D-9)
+ * @param onUnrelayable policy for records the destination <em>permanently</em> rejects on the
+ *     delayed-relay produce ({@code route.relay.on-unrelayable}, §3.8 I-8): {@code DLQ} (default)
+ *     writes an unrelayable DLQ notice + COMPLETE tombstone + cursor atomically, {@code DROP}
+ *     completes the entry without a notice, {@code FAIL} stops the loop. Transient produce failures
+ *     stay on the abort/restore retry path
  * @param maxPendingPerPartition backpressure high-water mark per ACTIVE shard (§5.3); intake for
  *     the partition pauses above it and resumes below {@code maxPendingPerPartition / 2}
  * @param maxPendingTotal global pending cap pausing all ACTIVE shards ({@code ≤ 0} disables; the
@@ -52,6 +58,7 @@ public record DispatchLoopConfig(
         Duration penaltyBackoff,
         Duration penaltyBackoffMax,
         UnfetchablePayloadPolicy onUnfetchablePayload,
+        UnrelayablePolicy onUnrelayable,
         long maxPendingPerPartition,
         long maxPendingTotal,
         int commitRetryLimit,
@@ -82,6 +89,7 @@ public record DispatchLoopConfig(
         Objects.requireNonNull(penaltyBackoff, "penaltyBackoff");
         Objects.requireNonNull(penaltyBackoffMax, "penaltyBackoffMax");
         Objects.requireNonNull(onUnfetchablePayload, "onUnfetchablePayload");
+        Objects.requireNonNull(onUnrelayable, "onUnrelayable");
         Objects.requireNonNull(retryBackoffInitial, "retryBackoffInitial");
         Objects.requireNonNull(retryBackoffMax, "retryBackoffMax");
         if (trackerTopic.isBlank()) {
@@ -150,6 +158,7 @@ public record DispatchLoopConfig(
                 dispatch.fetch().penalty().backoff(),
                 dispatch.fetch().penalty().backoffMax(),
                 dispatch.onUnfetchablePayload(),
+                config.route().relay().onUnrelayable(),
                 dispatch.maxPendingPerPartition(),
                 dispatch.resolveMaxPendingTotal(maxHeapBytes),
                 config.kafka().transactions().commitRetry(),

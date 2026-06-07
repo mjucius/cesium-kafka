@@ -26,3 +26,35 @@ replay_pid*
 # Test / runtime artifacts
 *.hprof
 .jqwik-database
+
+# Local-only security audit (never publish — it is an attacker roadmap)
+SECURITY-AUDIT.local.md
+
+# Secrets / credentials (audit I2): defence-in-depth against an accidental `git add` of a local
+# keystore, env file, or credential before the repo goes public. The project externalizes all
+# secrets via ${env:VAR}, so none of these belong in version control. These are extension-anchored
+# (plus a few well-known key filenames) so they never shadow legitimately-named source files — no
+# broad `*secret*`/`credentials*` substring globs, which collide with sources like SecretMap.java
+# under git's case-insensitive matching and would otherwise need a fragile `!*.md`-style re-include
+# block (which itself un-ignored SECURITY-AUDIT.local.md above).
+*.env
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+*.kdbx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+# Well-known credential filenames (the I2 footgun): GCP service-account keys and the like are
+# commonly named credentials.json / *-credentials.json / service-account*.json. These are exact
+# enough not to collide with any source file (verified: SecretMap.java and friends stay tracked).
+credentials.json
+*-credentials.json
+service-account*.json
+gcloud-*.json

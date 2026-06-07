@@ -135,6 +135,35 @@ public final class RelayRecordFactory {
     }
 
     /**
+     * Unrelayable-record DLQ record (reason {@link DlqReasons#UNRELAYABLE}): a record the
+     * destination broker <em>permanently</em> rejected on produce (too large, invalid) under
+     * {@code route.relay.on-unrelayable: DLQ}. Reuses the header-error DLQ shape — the original
+     * key/value and <em>all</em> headers (the source record carries the {@code cesium-*} control
+     * headers; they ride along harmlessly, unlike a relay they are not stripped) plus error
+     * reason/detail and provenance. Produced by the caller inside the relaying transaction (the
+     * ingest transaction for an immediate relay, the dispatch transaction for a delayed relay),
+     * atomically with the source-offset advance / COMPLETE tombstone.
+     *
+     * <p>The {@code source} is the consumed record being relayed: the source-topic record for an
+     * immediate relay, or the seek-fetched source payload for a delayed relay.
+     *
+     * @param detail the destination rejection reason (the producer exception's message)
+     */
+    public ProducerRecord<byte[], byte[]> unrelayableDlqRecord(
+            ConsumerRecord<byte[], byte[]> source, String detail, long nowMs) {
+        String topic = requireDlqTopic();
+        Headers headers = new RecordHeaders();
+        for (Header header : source.headers()) {
+            headers.add(header);
+        }
+        headers.add(CesiumHeaders.ERROR_REASON, ascii(DlqReasons.UNRELAYABLE));
+        headers.add(CesiumHeaders.ERROR_DETAIL, detail.getBytes(StandardCharsets.UTF_8));
+        // DLQ records always carry provenance — part of the versioned contract, not gated by config.
+        stampProvenance(headers, source, nowMs);
+        return new ProducerRecord<>(topic, null, nowMs, source.key(), source.value(), headers);
+    }
+
+    /**
      * Payload-expired loss notice (design §2.4): the payload is gone and only the pointer remains,
      * so the record is {@code key=null} with a small JSON value:
      * <pre>{"v":1,"sourceTopic":…,"sourcePartition":…,"sourceOffset":…,"scheduledFor":…,

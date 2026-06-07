@@ -16,7 +16,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -323,13 +325,47 @@ public final class CesiumConfigLoader {
         return sb.length() == 0 ? "(root)" : sb.toString();
     }
 
-    /** A binding failure message naming the offending value where Jackson knows it. */
+    /**
+     * A binding-failure message that names the field's <em>expected format</em> but never the
+     * offending value (L6). {@code ${env:VAR}} interpolation runs before binding, so a typed-scalar
+     * parse failure could carry a secret an operator mistakenly interpolated into a {@code Duration}
+     * / {@code int} / enum; echoing {@link InvalidFormatException#getValue()} (or Jackson's original
+     * message, which also embeds the value) would leak it into ERROR-level startup logs. The field
+     * path is reported separately by {@link #bindingPath}; here we report only the path-independent
+     * format hint, derived from the bind target type.
+     */
     private static String bindingMessage(JsonMappingException e) {
-        String original = e.getOriginalMessage();
         if (e instanceof InvalidFormatException invalidFormat) {
-            return "invalid value '" + invalidFormat.getValue() + "': " + original;
+            return "could not be bound: expected " + expectedFormat(invalidFormat.getTargetType())
+                    + " (the offending value is not echoed, to avoid leaking a secret an operator may have"
+                    + " interpolated via ${env:VAR} into a typed scalar — ${env:VAR} must target only"
+                    + " passthrough string maps, never typed scalars).";
         }
-        return original == null ? e.toString() : original;
+        // Non-InvalidFormatException binding failures (e.g. a scalar where a mapping/sequence is
+        // expected) surface as other JsonMappingException subtypes — notably MismatchedInputException
+        // — whose original message embeds the offending content verbatim (e.g. "...from String value
+        // ('<value>')"). Echoing it would leak a secret an operator mistakenly interpolated via
+        // ${env:VAR} into the failing field, so report only the structural cause class, never the raw
+        // value; the field path is already reported separately by bindingPath().
+        return "could not be bound (" + e.getClass().getSimpleName()
+                + "): this field has a value of the wrong shape (e.g. a scalar where a mapping or"
+                + " sequence is expected). The offending value is not echoed, to avoid leaking a secret"
+                + " an operator may have interpolated via ${env:VAR} — ${env:VAR} must target only"
+                + " passthrough string maps, never typed scalars or structured keys.";
+    }
+
+    /** The format a typed scalar expects, from its bind target type — never the rejected value. */
+    private static String expectedFormat(@Nullable Class<?> targetType) {
+        if (targetType == null) {
+            return "a valid value";
+        }
+        if (targetType == Duration.class) {
+            return "an ISO-8601 duration such as PT30S, PT5M, or P1D";
+        }
+        if (targetType.isEnum()) {
+            return "one of " + Arrays.toString(targetType.getEnumConstants()) + " (case-insensitive)";
+        }
+        return "a valid " + targetType.getSimpleName();
     }
 
     // ------------------------------------------------------------------ error helpers

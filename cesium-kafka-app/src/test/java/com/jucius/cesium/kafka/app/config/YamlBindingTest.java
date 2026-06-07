@@ -90,6 +90,8 @@ class YamlBindingTest {
                   max-pending-total: 500000
                 observability:
                   port: 9090
+                  bind-address: 127.0.0.1
+                  detailed-info: true
                 startup-checks:
                   retention: WARN
                   max-tolerated-outage: P3D
@@ -138,6 +140,8 @@ class YamlBindingTest {
         assertEquals(500_000L, dispatch.maxPendingTotal());
 
         assertEquals(9090, config.observability().port());
+        assertEquals("127.0.0.1", config.observability().bindAddress());
+        assertTrue(config.observability().detailedInfo());
         assertEquals(Duration.ofDays(3), config.startupChecks().maxToleratedOutage());
 
         // Untouched keys keep their §8 defaults.

@@ -88,6 +88,9 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      */
     public static final long WORST_CASE_BYTES_PER_ENTRY = 64;
 
+    /** Metric: recovery replays refused because the backlog would exceed the heap budget (H1). */
+    public static final String RECOVERY_OVER_BUDGET_METRIC = "cesium.recovery.over.budget";
+
     private static final int MIN_SIDECAR_MAX_BYTES = 128;
     private static final int MAX_SIDECAR_MAX_BYTES = 1 << 20;
     private static final Set<String> KNOWN_CONFIG_KEYS = Set.of(
@@ -104,6 +107,12 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
             /* supportsCancellation= */ false);
 
     private static final Logger log = LoggerFactory.getLogger(KafkaTrackerStore.class);
+
+    /**
+     * L7 length cap for the attacker-influenced {@code cesium-completion-reason} header when it is
+     * echoed into a log line — comfortably above any real reason-constant name.
+     */
+    static final int MAX_LOGGED_REASON_CHARS = 64;
 
     /** Shared empty headers for the headers-blind legacy {@code onTrackerRecord} overload. */
     private static final RecordHeaders NO_HEADERS = new RecordHeaders();
@@ -137,6 +146,16 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      * retention floor (D14), {@code offset.metadata.max.bytes} vs the sidecar budget (§3.5 risk
      * 6), topic-id liveness/identity (R11/R17), and compaction settings. The store validates only
      * what configuration alone can prove.
+     *
+     * <p><strong>Recovery ceiling (H1, design §5.3/§5.4).</strong> This worst-case footprint check
+     * sizes the <em>steady-state</em> ACTIVE backpressure caps against the heap budget; it does
+     * <em>not</em> by itself bound recovery, because a RECOVERING shard is never paused (it must
+     * replay to the barrier, I4). The same {@code effectiveHeapBudget} is therefore divided by
+     * {@value #WORST_CASE_BYTES_PER_ENTRY} B/entry into a runtime resident-pending ceiling
+     * ({@code Wiring.maxResidentEntries}) that the seed/replay paths enforce — so a durable backlog
+     * larger than the heap can hold fails fast and attributably ({@link
+     * RecoveryHeapBudgetExceededException} + the {@value #RECOVERY_OVER_BUDGET_METRIC} counter)
+     * instead of allocating into an {@code OutOfMemoryError} crash-loop.
      */
     @Override
     public void validate() {
@@ -197,21 +216,30 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                     + " B (" + (heapBudgetBytes > 0 ? HEAP_BUDGET_BYTES_KEY : "auto: max heap / 4")
                     + "); lower " + MAX_PENDING_PER_PARTITION_KEY + " or raise the heap (design §5.3, §4.4 item 7)");
         }
+        // Runtime recovery ceiling (H1): the most resident pending entries the heap budget can hold
+        // at the worst-case per-entry footprint. The seed/replay paths refuse to allocate past it
+        // (controlled fail, not OOM); it agrees with the validator above (same effectiveHeapBudget)
+        // and with dispatch.max-pending-total AUTO (heap budget / 64 B). >= 1 so a budget below one
+        // entry still admits the trip rather than silently flooring to zero.
+        long maxResidentEntries = Math.max(1L, effectiveHeapBudget / WORST_CASE_BYTES_PER_ENTRY);
         log.info(
                 "kafka-tracker validated: worst-case index footprint {} partitions x {} entries x {} B = {} B"
-                        + " within heap budget {} B; sidecar budget {} B",
+                        + " within heap budget {} B; sidecar budget {} B; recovery resident-pending ceiling {} entries",
                 route.partitionCount(),
                 maxPendingPerPartition,
                 WORST_CASE_BYTES_PER_ENTRY,
                 worstCaseBytes,
                 effectiveHeapBudget,
-                sidecarMaxBytes);
+                sidecarMaxBytes,
+                maxResidentEntries);
 
         this.wiring = new Wiring(
                 route,
                 trackerTopicId,
                 ctx.meterRegistry(),
                 sidecarMaxBytes,
+                effectiveHeapBudget,
+                maxResidentEntries,
                 new TrackerIndex(staleRebuildFloor, completedSweepFloor));
     }
 
@@ -328,6 +356,7 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                             + " is not below the cursor offset " + committed.offset()
                             + " (I5); refusing to recover from a corrupted cursor (§3.6)");
                 }
+                requireRecoveryHeadroom(w, partition, "sidecar seed"); // H1: bound the seed too
                 w.index.applyAdd(
                         partition,
                         entry.sourceOffset(),
@@ -395,18 +424,28 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         Wiring w = wiring();
         PartitionState state = requireState(w, partition);
         switch (TrackerWireFormat.decode(key, value, headers)) {
-            case TrackerDecodeResult.Add(long dispatchAtMs, boolean clamped) ->
+            case TrackerDecodeResult.Add(long dispatchAtMs, boolean clamped) -> {
+                // H1: a RECOVERING shard's replay is never backpressure-paused (it must reach the
+                // barrier, I4), so the hard resident-pending ceiling is its only OOM guard. The
+                // live ACTIVE path is governed by dispatch-side backpressure instead, so the ceiling
+                // is enforced only while the shard is still recovering.
+                if (!state.active) {
+                    requireRecoveryHeadroom(w, partition, "replay");
+                }
                 // R1 (duplicate-ADD anomaly handling) lives inside the index.
                 w.index.applyAdd(partition, TrackerWireFormat.decodeKey(key), dispatchAtMs, trackerOffset, clamped);
+            }
             case TrackerDecodeResult.Complete ignored ->
                 w.index.applyComplete(partition, TrackerWireFormat.decodeKey(key)); // R2: absent = silent no-op
             case TrackerDecodeResult.CompleteUnknownReason(String rawReason) -> {
-                // The completion must still apply (M4 decision); the novelty is surfaced.
+                // The completion must still apply (M4 decision); the novelty is surfaced. The
+                // reason bytes are chosen by whoever can write the tracker topic (a missing/weak
+                // R12 ACL), so the value is sanitized before logging (L7) — see sanitizeReasonForLog.
                 w.unknownReasonRecords.increment();
                 log.warn(
                         "tracker tombstone with unrecognized completion reason '{}' applied:"
                                 + " partition {} offset {} (a newer writer's reason constant?)",
-                        rawReason,
+                        sanitizeReasonForLog(rawReason),
                         partition,
                         trackerOffset);
                 w.index.applyComplete(partition, TrackerWireFormat.decodeKey(key));
@@ -419,6 +458,29 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
             case TrackerDecodeResult.Invalid(String detail) -> recordInvalid(w, partition, trackerOffset, detail);
         }
         advancePosition(w, partition, state, trackerOffset);
+    }
+
+    /**
+     * Sanitizes the attacker-influenced {@code cesium-completion-reason} header before it is logged
+     * (L7). The header bytes are chosen by whoever can write the tracker topic (the R12 ACL is the
+     * only control) and are decoded as US-ASCII, so CR/LF and other control characters survive into
+     * {@code rawReason}; logged verbatim under the default plain encoder ({@code %msg}, no escaping)
+     * they would forge log lines (CRLF log-injection). Every {@linkplain Character#isISOControl(char)
+     * ISO control character} is replaced with {@code '?'} and the result is capped at
+     * {@value #MAX_LOGGED_REASON_CHARS} characters (an ellipsis marks truncation) so a crafted
+     * oversized reason cannot bloat the line either.
+     */
+    static String sanitizeReasonForLog(String rawReason) {
+        int limit = Math.min(rawReason.length(), MAX_LOGGED_REASON_CHARS);
+        StringBuilder sb = new StringBuilder(limit + 1);
+        for (int i = 0; i < limit; i++) {
+            char c = rawReason.charAt(i);
+            sb.append(Character.isISOControl(c) ? '?' : c);
+        }
+        if (rawReason.length() > MAX_LOGGED_REASON_CHARS) {
+            sb.append('…');
+        }
+        return sb.toString();
     }
 
     /**
@@ -654,6 +716,45 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         }
     }
 
+    /**
+     * The H1 recovery OOM guard: refuse to seed/replay another pending entry once the global
+     * resident pending count (across every owned shard) has reached the heap-budget ceiling.
+     *
+     * <p>Checked only on the uncapped seed/replay paths (a RECOVERING shard is never
+     * backpressure-paused, §5.3); the live ACTIVE path is bounded by dispatch-side backpressure. A
+     * trip is a controlled, attributable fail-fast — counter + runbook ERROR + a dedicated
+     * exception — replacing the silent {@link OutOfMemoryError} crash-loop. Nothing is committed and
+     * no shard is promoted before its barrier, so the durable log stays authoritative (I4/I8).
+     */
+    private void requireRecoveryHeadroom(Wiring w, int partition, String phase) {
+        long resident = w.index.totalPendingCount();
+        if (resident < w.maxResidentEntries) {
+            return;
+        }
+        w.recoveryOverBudget.increment();
+        log.error(
+                "RECOVERY OVER HEAP BUDGET — refusing to {} another pending entry for tracker partition {}:"
+                        + " {} entries already resident across {} owned shard(s) have reached the ceiling of {}"
+                        + " entries (heap budget {} B / {} B per entry). The durable tracker backlog exceeds what"
+                        + " this heap can hold in memory; nothing has been committed and the durable log is intact."
+                        + " ACTION: raise -Xmx (or store.properties {}) and/or reduce the backlog (lower delay.max,"
+                        + " drain the source, or shorten source retention), then restart. This is a controlled"
+                        + " fail-fast that replaces an OutOfMemoryError crash-loop (security finding H1, design"
+                        + " §5.3/§5.4).",
+                phase,
+                partition,
+                resident,
+                w.index.assignedPartitionCount(),
+                w.maxResidentEntries,
+                w.heapBudgetBytes,
+                WORST_CASE_BYTES_PER_ENTRY,
+                HEAP_BUDGET_BYTES_KEY);
+        throw new RecoveryHeapBudgetExceededException("recovery backlog for tracker partition " + partition
+                + " exceeds the heap budget: " + resident + " resident pending entries reached the ceiling of "
+                + w.maxResidentEntries + " (heap budget " + w.heapBudgetBytes + " B / " + WORST_CASE_BYTES_PER_ENTRY
+                + " B per entry); raise the heap or reduce the durable backlog before restarting (H1, §5.3/§5.4)");
+    }
+
     private void validateSidecarIdentity(Wiring w, int partition, SidecarCodec.DecodedSidecar decoded) {
         RouteDescriptor route = w.route;
         if (!decoded.clusterId().equals(route.clusterId())
@@ -795,6 +896,8 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         final Uuid trackerTopicId;
         final MeterRegistry registry;
         final int sidecarMaxBytes;
+        final long heapBudgetBytes;
+        final long maxResidentEntries;
         final TrackerIndex index;
         final Int2ObjectOpenHashMap<PartitionState> states = new Int2ObjectOpenHashMap<>();
         final Counter invalidRecords;
@@ -804,17 +907,22 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         final Counter indexAnomalies;
         final Counter heapRebuilds;
         final Counter logSweeps;
+        final Counter recoveryOverBudget;
 
         Wiring(
                 RouteDescriptor route,
                 Uuid trackerTopicId,
                 MeterRegistry registry,
                 int sidecarMaxBytes,
+                long heapBudgetBytes,
+                long maxResidentEntries,
                 TrackerIndex index) {
             this.route = route;
             this.trackerTopicId = trackerTopicId;
             this.registry = registry;
             this.sidecarMaxBytes = sidecarMaxBytes;
+            this.heapBudgetBytes = heapBudgetBytes;
+            this.maxResidentEntries = maxResidentEntries;
             this.index = index;
             this.invalidRecords = Counter.builder("cesium.tracker.invalid.records")
                     .description("tracker wire-format violations, counted and skipped (design §2.2, R12 canary)")
@@ -838,6 +946,10 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                     .register(registry);
             this.logSweeps = Counter.builder("cesium.store.log.sweeps")
                     .description("monotonic arrival-log sweeps across all shards")
+                    .register(registry);
+            this.recoveryOverBudget = Counter.builder(RECOVERY_OVER_BUDGET_METRIC)
+                    .description("recovery seed/replay refusals: the durable backlog would exceed the heap budget,"
+                            + " so the store fails fast instead of OOMing (security finding H1, design §5.3/§5.4)")
                     .register(registry);
         }
     }

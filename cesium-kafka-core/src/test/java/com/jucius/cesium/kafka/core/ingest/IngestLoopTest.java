@@ -19,6 +19,7 @@ import com.jucius.cesium.kafka.core.headers.RelayTimestampPolicy;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -48,6 +49,7 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
@@ -283,7 +285,15 @@ class IngestLoopTest {
     @Test
     void parkAndDegradeRaisesGaugeAtThresholdAndClearsOnSuccess() {
         IngestLoopConfig config = new IngestLoopConfig(
-                SOURCE, TRACKER, 2, Duration.ofSeconds(1), 3, 2, Duration.ofMillis(100), Duration.ofSeconds(10));
+                SOURCE,
+                TRACKER,
+                2,
+                Duration.ofSeconds(1),
+                3,
+                2,
+                Duration.ofMillis(100),
+                Duration.ofSeconds(10),
+                UnrelayablePolicy.DLQ);
         Harness h = new Harness(config, MalformedHeaderPolicy.DLQ, OverMaxPolicy.DLQ);
         h.startAssigned(P0);
         h.producer().failSendOffsetsTimes = 2;
@@ -508,6 +518,167 @@ class IngestLoopTest {
         assertEquals(1, h.producer().history().size(), "exactly one committed copy on the replacement");
     }
 
+    // ------------------------------------------------------------------ unrelayable poison records (M2/§3.8 I-8)
+
+    @Test
+    void permanentRelayRejectionRoutesToDlqAtomicallyAndAdvancesPastIt() {
+        Harness h = new Harness();
+        h.startAssigned(P0);
+        // The destination PERMANENTLY rejects the first record's relay (too large). The second is a
+        // normal record at a higher offset on the same partition — it must still be delivered (the
+        // partition is not wedged behind the poison record).
+        h.producer().sendCallbackError = new RecordTooLargeException("relay exceeds max.message.bytes");
+        h.producer().failSendCallbackAt = 0;
+        h.consumer.addRecord(record(P0, 0, noHeaders())); // poison
+        h.consumer.addRecord(record(P0, 1, noHeaders())); // normal, behind the poison
+
+        h.loop.runOnce(); // attempt 1: relay@0 permanently rejected ⇒ abort, remember, rewind
+        assertTrue(h.events.contains("abort"), "a permanent rejection aborts the batch (nothing committed)");
+        assertEquals(0, h.producer().commitCount(), "nothing committed on the rejecting attempt");
+        assertEquals(0L, h.consumer.position(P0), "rewound to reprocess and route the poison record");
+        assertTrue(h.consumer.paused().isEmpty(), "a poison record is NOT a transient failure: no backoff/park gate");
+        assertFalse(h.loop.isDegraded(), "a deterministic record rejection must never trip park-and-degrade");
+        assertEquals(
+                0.0, h.counterValue("cesium.dlq.records", "reason", DlqReasons.UNRELAYABLE), "counts flush on commit");
+
+        // The §3.8 I-8 retry: poison ⇒ DLQ, normal ⇒ destination, source offset advanced past both,
+        // all in ONE committed transaction. No clock advance: there is no backoff to wait out.
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+        h.consumer.addRecord(record(P0, 1, noHeaders()));
+        h.loop.runOnce();
+
+        assertEquals(1, h.producer().commitCount(), "exactly one committed copy — never an infinite retry loop");
+        assertEquals(2, h.producer().history().size(), "the poison DLQ record and the normal relay, atomic");
+        ProducerRecord<byte[], byte[]> dlq = h.producer().history().get(0);
+        assertEquals(DLQ, dlq.topic(), "poison record routed to the DLQ");
+        assertEquals(DlqReasons.UNRELAYABLE, headerValue(dlq, CesiumHeaders.ERROR_REASON));
+        assertArrayEquals(KEY, dlq.key(), "DLQ reuses the header-error shape: original key/value (§2.4)");
+        assertArrayEquals(VALUE, dlq.value());
+        assertNotNull(
+                dlq.headers().lastHeader(CesiumHeaders.ERROR_DETAIL), "the destination rejection detail is carried");
+        assertEquals(DEST, h.producer().history().get(1).topic(), "the following normal record IS delivered");
+        assertEquals(
+                2L, h.lastCommittedOffsets().get(P0).offset(), "the source offset advanced past the poison record");
+        assertEquals(1.0, h.counterValue("cesium.ingest.records", "outcome", "dlq"));
+        assertEquals(1.0, h.counterValue("cesium.dlq.records", "reason", DlqReasons.UNRELAYABLE));
+        assertEquals(1.0, h.counterValue("cesium.ingest.records", "outcome", "relayed_immediate"));
+        assertEquals(
+                1.0,
+                h.counterValue("cesium.transactions", "loop", "ingest", "result", "aborted", "cause", "unrelayable"));
+    }
+
+    @Test
+    void transientRelayFailureStaysOnTheRetryPathAndNeverDeadLetters() {
+        Harness h = new Harness();
+        h.startAssigned(P0);
+        // A TRANSIENT produce failure (broker availability, not record-level) must NOT be mistaken
+        // for a permanent rejection — it stays on the abort/retry path so a blip never drops a message.
+        h.producer().sendCallbackError = new KafkaException("transient destination unavailability");
+        h.producer().failSendCallbackAt = 0;
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+
+        h.loop.runOnce();
+        assertTrue(h.events.contains("abort"));
+        assertEquals(java.util.Set.of(P0), h.consumer.paused(), "transient failure arms the backoff gate (retry path)");
+        assertEquals(
+                0.0,
+                h.counterValue("cesium.dlq.records", "reason", DlqReasons.UNRELAYABLE),
+                "a transient failure is never routed to the unrelayable DLQ");
+        assertEquals(
+                0.0,
+                h.counterValue("cesium.transactions", "loop", "ingest", "result", "aborted", "cause", "unrelayable"));
+
+        // It retries and succeeds once the destination recovers — exactly the existing behavior.
+        h.producer().failSendCallbackAt = -1;
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+        h.clock.advanceMillis(101);
+        h.loop.runOnce();
+        assertEquals(1, h.producer().commitCount());
+        assertEquals(DEST, h.producer().history().get(0).topic(), "the record relays normally after the blip");
+    }
+
+    @Test
+    void unrelayableFailPolicyStopsTheLoop() {
+        Harness h = new Harness(defaultConfig(UnrelayablePolicy.FAIL), MalformedHeaderPolicy.DLQ, OverMaxPolicy.DLQ);
+        h.startAssigned(P0);
+        h.producer().sendCallbackError = new RecordTooLargeException("too large");
+        h.producer().failSendCallbackAt = 0;
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+
+        IngestLoopFatalException failure = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        assertTrue(failure.getMessage().contains("on-unrelayable=FAIL"), failure.getMessage());
+        assertTrue(h.events.contains("abort"), "FAIL aborts: the record is not consumed");
+        assertEquals(0, h.producer().commitCount());
+    }
+
+    @Test
+    void unrelayableDropPolicyAdvancesWithoutADlqRecord() {
+        Harness h = new Harness(defaultConfig(UnrelayablePolicy.DROP), MalformedHeaderPolicy.DLQ, OverMaxPolicy.DLQ);
+        h.startAssigned(P0);
+        h.producer().sendCallbackError = new RecordTooLargeException("too large");
+        h.producer().failSendCallbackAt = 0;
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+        h.loop.runOnce(); // attempt 1: rejected ⇒ remember as DROP, rewind
+
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+        h.loop.runOnce(); // attempt 2: dropped — nothing produced, but the offset advances past it
+
+        assertEquals(1, h.producer().commitCount());
+        assertTrue(h.producer().history().isEmpty(), "DROP produces nothing — not even a DLQ record");
+        assertEquals(
+                1L, h.lastCommittedOffsets().get(P0).offset(), "the offset still advances past the dropped record");
+        assertEquals(1.0, h.counterValue("cesium.ingest.records", "outcome", "unrelayable_dropped"));
+    }
+
+    @Test
+    void rejectedHeaderErrorDlqWriteEscalatesToDropAndAdvancesPastThePoisonRecord() {
+        // §3.8 I-8 sibling path: a malformed-header record routed to the DLQ whose DLQ copy is ITSELF
+        // permanently rejected (the original payload + all headers + provenance exceeds the producer
+        // max.request.size / DLQ max.message.bytes). The header-error DLQ send is attributed, so the
+        // rejection routes through the unrelayable path (escalating to DROP) instead of falling to the
+        // abortable path and wedging the partition on an infinite abort/retry loop.
+        Harness h = new Harness(); // onMalformed=DLQ, onUnrelayable=DLQ (defaults)
+        h.startAssigned(P0);
+        h.producer().sendCallbackError = new RecordTooLargeException("DLQ copy exceeds max.request.size");
+        h.producer().failSendCallbackAt = 0; // reject the header-error DLQ write itself
+        h.consumer.addRecord(record(P0, 0, delayMs("not-a-number"))); // malformed ⇒ header-error DLQ
+
+        h.loop.runOnce(); // attempt 1: header-error DLQ write rejected ⇒ abort, remember as DLQ, rewind
+        assertTrue(h.events.contains("abort"), "a rejected DLQ write aborts the batch (nothing committed)");
+        assertEquals(0, h.producer().commitCount(), "nothing committed on the rejecting attempt");
+        assertEquals(0L, h.consumer.position(P0), "rewound to reprocess the poison record, not advanced past it");
+        assertTrue(
+                h.consumer.paused().isEmpty(),
+                "a rejected DLQ write is NOT a transient failure: no backoff/park gate (would wedge the partition)");
+        assertFalse(h.loop.isDegraded(), "a deterministic DLQ-write rejection must never trip park-and-degrade");
+        assertEquals(
+                1.0,
+                h.counterValue("cesium.transactions", "loop", "ingest", "result", "aborted", "cause", "unrelayable"),
+                "attributed: routed through the unrelayable abort path, not the generic abortable path");
+
+        // attempt 2: the unrelayable DLQ copy is rejected AGAIN ⇒ promoteUnrelayable escalates to DROP.
+        h.producer().failSendCallbackAt = 1; // the reprocess's DLQ send is the producer's 2nd send
+        h.consumer.addRecord(record(P0, 0, delayMs("not-a-number")));
+        h.loop.runOnce();
+        assertEquals(0, h.producer().commitCount(), "still nothing committed while the DLQ copy keeps being rejected");
+        assertEquals(
+                1.0,
+                h.counterValue("cesium.unrelayable.dlq.rejected"),
+                "the escalate-to-DROP path is taken when the DLQ copy is itself rejected");
+
+        // attempt 3: now resolved as DROP ⇒ nothing produced, but the source offset advances past it.
+        h.producer().failSendCallbackAt = -1;
+        h.consumer.addRecord(record(P0, 0, delayMs("not-a-number")));
+        h.loop.runOnce();
+        assertEquals(1, h.producer().commitCount(), "exactly one committed copy — never an infinite retry/wedge");
+        assertTrue(h.producer().history().isEmpty(), "DROP produces nothing — not even a DLQ record");
+        assertEquals(
+                1L,
+                h.lastCommittedOffsets().get(P0).offset(),
+                "the source offset advanced past the poison record (partition not wedged)");
+        assertEquals(1.0, h.counterValue("cesium.ingest.records", "outcome", "unrelayable_dropped"));
+    }
+
     // ------------------------------------------------------------------ I-7 tracker partition drift
 
     @Test
@@ -520,7 +691,8 @@ class IngestLoopTest {
                 3,
                 IngestLoopConfig.DEFAULT_PARK_THRESHOLD,
                 Duration.ofMillis(100),
-                Duration.ofSeconds(10));
+                Duration.ofSeconds(10),
+                UnrelayablePolicy.DLQ);
         Harness h = new Harness(config, MalformedHeaderPolicy.DLQ, OverMaxPolicy.DLQ);
         h.startAssigned(P0, P1);
         h.consumer.addRecord(record(P1, 0, delayMs("60000")));
@@ -543,7 +715,8 @@ class IngestLoopTest {
                 3,
                 IngestLoopConfig.DEFAULT_PARK_THRESHOLD,
                 Duration.ofMillis(100),
-                Duration.ofSeconds(10));
+                Duration.ofSeconds(10),
+                UnrelayablePolicy.DLQ);
         Harness h = new Harness(config, MalformedHeaderPolicy.DLQ, OverMaxPolicy.DLQ);
         h.producer().partitionsForResult = List.of(
                 new PartitionInfo(TRACKER, 0, null, null, null), new PartitionInfo(TRACKER, 1, null, null, null));
@@ -681,6 +854,10 @@ class IngestLoopTest {
     // ------------------------------------------------------------------ harness
 
     private static IngestLoopConfig defaultConfig() {
+        return defaultConfig(UnrelayablePolicy.DLQ);
+    }
+
+    private static IngestLoopConfig defaultConfig(UnrelayablePolicy onUnrelayable) {
         return new IngestLoopConfig(
                 SOURCE,
                 TRACKER,
@@ -689,7 +866,8 @@ class IngestLoopTest {
                 3,
                 IngestLoopConfig.DEFAULT_PARK_THRESHOLD,
                 Duration.ofMillis(100),
-                Duration.ofSeconds(10));
+                Duration.ofSeconds(10),
+                onUnrelayable);
     }
 
     private static ConsumerRecord<byte[], byte[]> record(TopicPartition tp, long offset, Headers headers) {

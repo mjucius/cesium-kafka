@@ -21,7 +21,15 @@
 # =============================================================================
 
 # ---- stage 1: build the distribution ----------------------------------------
-FROM eclipse-temurin:21-jdk AS build
+# Base images are digest-pinned (audit L9) so a repointed/regressed upstream tag cannot silently
+# change the build/runtime bytes. The digest is the multi-arch index (so it still resolves on
+# amd64/arm64). Refresh these deliberately (Dependabot's docker ecosystem, or re-resolve with
+# `docker buildx imagetools inspect eclipse-temurin:21-jdk --format "{{.Manifest.Digest}}"`) so
+# base-OS CVE patches still flow through. The pinned digest is the eclipse-temurin:21-jdk tag.
+# (The "# 21-jdk" label lives on its own line: Dockerfile treats a trailing `#` on an instruction
+# line as an argument, not a comment, so it cannot sit after the FROM.)
+# 21-jdk
+FROM eclipse-temurin:21-jdk@sha256:b9142586f9712700c6c9e07adcedfb18608b1a3a056e4001423a3354adfa9d80 AS build
 WORKDIR /src
 
 # Copy the wrapper and build scripts first so dependency resolution layers cache
@@ -43,7 +51,10 @@ COPY cesium-kafka-it/ cesium-kafka-it/
 RUN ./gradlew --no-daemon :cesium-kafka-app:installDist
 
 # ---- stage 2: runtime -------------------------------------------------------
-FROM eclipse-temurin:21-jre AS runtime
+# Digest-pinned multi-arch index for the eclipse-temurin:21-jre tag (audit L9); see the stage-1
+# note on refreshing deliberately.
+# 21-jre
+FROM eclipse-temurin:21-jre@sha256:010e0a06bd4e0184dec58626afb3ba727b42c56c91b977e2f0a9e0837e0fa3fb AS runtime
 
 # Non-root runtime user (a fixed high uid plays well with restricted PodSecurity).
 RUN groupadd --system --gid 10001 cesium \

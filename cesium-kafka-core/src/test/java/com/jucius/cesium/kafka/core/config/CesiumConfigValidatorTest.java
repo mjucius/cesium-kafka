@@ -12,6 +12,7 @@ import com.jucius.cesium.kafka.core.config.ValidationReport.Severity;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -184,9 +185,16 @@ class CesiumConfigValidatorTest {
     class DlqPolicies {
 
         private CesiumConfig withoutDlq(
-                MalformedHeaderPolicy onMalformed, OverMaxPolicy onOverMax, UnfetchablePayloadPolicy onUnfetchable) {
-            RouteConfig route =
-                    new RouteConfig(new TopicRef("orders"), new TopicRef("orders-out"), null, Optional.empty(), null);
+                MalformedHeaderPolicy onMalformed,
+                OverMaxPolicy onOverMax,
+                UnfetchablePayloadPolicy onUnfetchable,
+                UnrelayablePolicy onUnrelayable) {
+            RouteConfig route = new RouteConfig(
+                    new TopicRef("orders"),
+                    new TopicRef("orders-out"),
+                    null,
+                    Optional.empty(),
+                    new RelayConfig(null, null, onUnrelayable));
             DelayConfig delay = new DelayConfig(null, onOverMax, onMalformed);
             DispatchConfig dispatch =
                     new DispatchConfig(null, null, null, null, null, null, null, onUnfetchable, null, null);
@@ -197,19 +205,27 @@ class CesiumConfigValidatorTest {
         @Test
         void eachDlqPolicyRequiresTheDlqTopic() {
             ValidationReport report = validator.validate(
-                    withoutDlq(MalformedHeaderPolicy.DLQ, OverMaxPolicy.DLQ, UnfetchablePayloadPolicy.DLQ),
+                    withoutDlq(
+                            MalformedHeaderPolicy.DLQ,
+                            OverMaxPolicy.DLQ,
+                            UnfetchablePayloadPolicy.DLQ,
+                            UnrelayablePolicy.DLQ),
                     TestConfigs.ROOMY_CONTEXT);
             List<String> paths = errorPaths(report);
             assertTrue(paths.contains("delay.on-malformed-header"), report::render);
             assertTrue(paths.contains("delay.on-over-max"), report::render);
             assertTrue(paths.contains("dispatch.on-unfetchable-payload"), report::render);
+            assertTrue(paths.contains("route.relay.on-unrelayable"), report::render);
         }
 
         @Test
         void nonDlqPoliciesNeedNoDlqTopic() {
             ValidationReport report = validator.validate(
                     withoutDlq(
-                            MalformedHeaderPolicy.RELAY_IMMEDIATE, OverMaxPolicy.CLAMP, UnfetchablePayloadPolicy.DROP),
+                            MalformedHeaderPolicy.RELAY_IMMEDIATE,
+                            OverMaxPolicy.CLAMP,
+                            UnfetchablePayloadPolicy.DROP,
+                            UnrelayablePolicy.DROP),
                     TestConfigs.ROOMY_CONTEXT);
             assertFalse(report.hasErrors(), report::render);
         }
@@ -217,9 +233,25 @@ class CesiumConfigValidatorTest {
         @Test
         void singleDlqPolicyIsAttributedToItsKey() {
             ValidationReport report = validator.validate(
-                    withoutDlq(MalformedHeaderPolicy.DLQ, OverMaxPolicy.FAIL, UnfetchablePayloadPolicy.DROP),
+                    withoutDlq(
+                            MalformedHeaderPolicy.DLQ,
+                            OverMaxPolicy.FAIL,
+                            UnfetchablePayloadPolicy.DROP,
+                            UnrelayablePolicy.DROP),
                     TestConfigs.ROOMY_CONTEXT);
             assertEquals(List.of("delay.on-malformed-header"), errorPaths(report), report::render);
+        }
+
+        @Test
+        void unrelayableDlqPolicyIsAttributedToItsKey() {
+            ValidationReport report = validator.validate(
+                    withoutDlq(
+                            MalformedHeaderPolicy.RELAY_IMMEDIATE,
+                            OverMaxPolicy.FAIL,
+                            UnfetchablePayloadPolicy.DROP,
+                            UnrelayablePolicy.DLQ),
+                    TestConfigs.ROOMY_CONTEXT);
+            assertEquals(List.of("route.relay.on-unrelayable"), errorPaths(report), report::render);
         }
 
         @Test
@@ -230,6 +262,62 @@ class CesiumConfigValidatorTest {
                     "app", new InstanceId("slot-0"), null, null, route, null, null, null, null, null, null, null);
             assertTrue(errorPaths(validator.validate(config, TestConfigs.ROOMY_CONTEXT))
                     .contains("route.dlq.topic"));
+        }
+    }
+
+    // ------------------------------------------------------------------ cross-field: unsafe FAIL
+
+    @Nested
+    class UnsafeFailPolicies {
+
+        private CesiumConfig withDelayPolicies(MalformedHeaderPolicy onMalformed, OverMaxPolicy onOverMax) {
+            DelayConfig delay = new DelayConfig(null, onOverMax, onMalformed);
+            return new CesiumConfig(
+                    "orders-delay",
+                    new InstanceId("slot-0"),
+                    null,
+                    null,
+                    TestConfigs.route(),
+                    delay,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+        }
+
+        private List<String> warningPaths(ValidationReport report) {
+            return report.warnings().stream().map(Finding::path).toList();
+        }
+
+        @Test
+        void malformedHeaderFailWarnsAsUnsafeForUntrustedIngress() {
+            // L5: FAIL is a valid opt-in (so never an ERROR) but turns one crafted record into a
+            // pipeline-wide, restart-persistent outage — warn so an operator copying a strict
+            // single-tenant example onto untrusted ingress is told.
+            ValidationReport report = validate(withDelayPolicies(MalformedHeaderPolicy.FAIL, OverMaxPolicy.DLQ));
+            assertFalse(report.hasErrors(), report::render);
+            Finding warning = report.warnings().stream()
+                    .filter(f -> f.path().equals("delay.on-malformed-header"))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(warning.message().contains("restart-persistent"), warning::message);
+            assertTrue(warning.message().contains("untrusted"), warning::message);
+        }
+
+        @Test
+        void overMaxFailWarnsAsUnsafeForUntrustedIngress() {
+            ValidationReport report = validate(withDelayPolicies(MalformedHeaderPolicy.DLQ, OverMaxPolicy.FAIL));
+            assertFalse(report.hasErrors(), report::render);
+            assertTrue(warningPaths(report).contains("delay.on-over-max"), report::render);
+        }
+
+        @Test
+        void defaultDlqPoliciesEmitNoUnsafeFailWarning() {
+            ValidationReport report = validate(TestConfigs.valid());
+            assertFalse(warningPaths(report).contains("delay.on-malformed-header"), report::render);
+            assertFalse(warningPaths(report).contains("delay.on-over-max"), report::render);
         }
     }
 
@@ -366,7 +454,28 @@ class CesiumConfigValidatorTest {
 
     @Test
     void observabilityPortRangeIsEnforced() {
-        CesiumConfig config = new CesiumConfig(
+        assertTrue(errorPaths(validate(withObservability(new ObservabilityConfig(70000, null, null))))
+                .contains("observability.port"));
+    }
+
+    @Test
+    void observabilityBindAddressMustParse() {
+        // L1: a non-literal host is rejected with a clear config error (and without a DNS lookup).
+        assertTrue(errorPaths(validate(withObservability(new ObservabilityConfig(8081, "not a host", null))))
+                .contains("observability.bind-address"));
+        assertTrue(errorPaths(validate(withObservability(new ObservabilityConfig(8081, "256.0.0.1", null))))
+                .contains("observability.bind-address"));
+        // Literals and localhost parse cleanly.
+        for (String ok : List.of("0.0.0.0", "127.0.0.1", "::1", "localhost")) {
+            assertFalse(
+                    errorPaths(validate(withObservability(new ObservabilityConfig(8081, ok, null))))
+                            .contains("observability.bind-address"),
+                    ok);
+        }
+    }
+
+    private static CesiumConfig withObservability(ObservabilityConfig observability) {
+        return new CesiumConfig(
                 "app",
                 new InstanceId("slot-0"),
                 null,
@@ -377,9 +486,8 @@ class CesiumConfigValidatorTest {
                 null,
                 null,
                 null,
-                new ObservabilityConfig(70000),
+                observability,
                 null);
-        assertTrue(errorPaths(validate(config)).contains("observability.port"));
     }
 
     @ParameterizedTest

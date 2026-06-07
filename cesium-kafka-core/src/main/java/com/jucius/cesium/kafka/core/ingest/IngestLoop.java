@@ -5,10 +5,13 @@ import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
 import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.headers.DelayHeaderCodec;
+import com.jucius.cesium.kafka.core.headers.DlqReasons;
 import com.jucius.cesium.kafka.core.headers.HeaderParseResult;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
 import com.jucius.cesium.kafka.core.policy.IngestDecision;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayableRejections;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
@@ -16,12 +19,15 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -76,6 +82,13 @@ import org.slf4j.LoggerFactory;
  *       every prior batch committed or rewound before the next poll), and retry by re-polling —
  *       with consecutive failures paced by capped exponential backoff realized as {@code pause()}
  *       + heartbeat polling, so group membership stays alive while the loop waits.
+ *   <li><em>Unrelayable</em> (§3.8 I-8, M2): a relay the destination <em>permanently</em> rejects
+ *       (record too large / invalid — {@link UnrelayableRejections}) is not transient and must not
+ *       retry forever (which would wedge the whole source partition). The batch aborts, the
+ *       offending record is attributed via the send callback, and on the rewound reprocess it is
+ *       routed by {@code route.relay.on-unrelayable} (DLQ record / drop) atomically with the
+ *       source-offset advance — never a failure-streak event, so a poison record never parks the
+ *       loop.
  *   <li><em>Fatal</em> ({@link ProducerFencedException}, {@link OutOfOrderSequenceException},
  *       authentication/authorization, fenced instance id, the I-7 tracker-partition fail-fast,
  *       …): close clients, fail the loop.
@@ -147,6 +160,23 @@ public final class IngestLoop implements Runnable {
     private @Nullable InDoubtRecovery inDoubtRecovery;
     private final BatchCounts batchCounts = new BatchCounts();
 
+    /**
+     * Source records a prior attempt found <em>permanently</em> unrelayable by the destination
+     * (§3.8 I-8), keyed by source {@code (partition, offset)} → the resolved disposition. The relay
+     * for such a record would only be rejected again, so on reprocess the loop routes it per the
+     * {@code route.relay.on-unrelayable} policy (DLQ/DROP) instead. Loop-thread-confined; pruned on
+     * commit (offsets advanced past it) and on partition revocation (the new owner re-discovers).
+     */
+    private final Map<SourceCoord, Unrelayable> unrelayable = new HashMap<>();
+
+    /**
+     * Permanent destination rejections attributed to a specific source record by the send callback
+     * (§3.8). Written from the producer I/O thread, drained on the loop thread after the
+     * transaction's outcome is known — a {@link ConcurrentLinkedQueue} for safe cross-thread
+     * publication. Reset at the start of every transaction.
+     */
+    private final ConcurrentLinkedQueue<UnrelayableHit> unrelayableHits = new ConcurrentLinkedQueue<>();
+
     // Cross-thread state: stop flag, health/metrics, async send errors from the producer I/O thread.
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicInteger degraded = new AtomicInteger();
@@ -159,6 +189,7 @@ public final class IngestLoop implements Runnable {
     private final Counter scheduledRecords;
     private final Counter clampedRecords;
     private final Counter dlqOutcomeRecords;
+    private final Counter unrelayableDroppedRecords;
     private final Counter malformedHeaders;
     private final Counter overMaxHeaders;
     private final Counter conflictHeaders;
@@ -213,6 +244,7 @@ public final class IngestLoop implements Runnable {
         this.scheduledRecords = ingestRecords("scheduled");
         this.clampedRecords = ingestRecords("clamped");
         this.dlqOutcomeRecords = ingestRecords("dlq");
+        this.unrelayableDroppedRecords = ingestRecords("unrelayable_dropped");
         this.malformedHeaders = registry.counter("cesium.header.errors", "type", "malformed");
         this.overMaxHeaders = registry.counter("cesium.header.errors", "type", "over_max");
         this.conflictHeaders = registry.counter("cesium.header.errors", "type", "conflict");
@@ -364,6 +396,15 @@ public final class IngestLoop implements Runnable {
                 // broker resolves the dangling transaction. Close + fail the loop.
                 throw new IngestLoopFatalException("fatal ingest transaction failure", e);
             }
+            if (!unrelayableHits.isEmpty()) {
+                // §3.8 I-8: the destination PERMANENTLY rejected a relay (too large / invalid), not
+                // a transient blip. Abort (nothing committed), remember the offending record(s), and
+                // reprocess — routing them to the route.relay.on-unrelayable policy instead of
+                // retrying forever. Distinct from the abortable path below so a poison record never
+                // trips park-and-degrade and the partition advances on the very next poll.
+                handleUnrelayable(records, e);
+                return;
+            }
             // Definitively abortable: nothing committed, nothing visible. Rewind and re-poll.
             abortIfInFlight();
             abortedTransactions(causeTag(e)).increment();
@@ -376,6 +417,86 @@ public final class IngestLoop implements Runnable {
     }
 
     /**
+     * The §3.8 I-8 unrelayable path: a relay this batch attempted was permanently rejected by the
+     * destination and attributed to one or more source records. Abort the (uncommitted) batch and,
+     * unless {@code route.relay.on-unrelayable=FAIL}, record each offending record's resolved
+     * disposition and rewind so the reprocess routes it to the DLQ (or drops it) atomically with the
+     * offset advance — never an infinite retry. {@code failureStreak} is deliberately untouched: a
+     * deterministic record rejection is not broker degradation and must not park-and-degrade the
+     * loop, and the rewound batch re-polls immediately (no backoff gate).
+     */
+    private void handleUnrelayable(ConsumerRecords<byte[], byte[]> records, RuntimeException cause) {
+        abortIfInFlight();
+        abortedTransactions("unrelayable").increment();
+        List<UnrelayableHit> hits = new ArrayList<>();
+        for (UnrelayableHit hit; (hit = unrelayableHits.poll()) != null; ) {
+            hits.add(hit);
+        }
+        if (config.onUnrelayable() == UnrelayablePolicy.FAIL) {
+            // FAIL: a permanent destination rejection is an operator problem to surface. Like the
+            // other FAIL policies, the record stays at the committed offset (restart-persistent).
+            UnrelayableHit first = hits.get(0);
+            throw new IngestLoopFatalException(
+                    "route.relay.on-unrelayable=FAIL: the destination permanently rejected the relay of source "
+                            + config.sourceTopic() + "-" + first.coord().partition() + "@"
+                            + first.coord().offset()
+                            + ": " + first.detail(),
+                    cause);
+        }
+        for (UnrelayableHit hit : hits) {
+            promoteUnrelayable(hit);
+        }
+        rewindToBatchStart(records);
+        log.warn(
+                "ingest relay permanently rejected by the destination for {} record(s) (route.relay.on-unrelayable={});"
+                        + " rewinding to route them on reprocess instead of retrying forever (§3.8 I-8)",
+                hits.size(),
+                config.onUnrelayable());
+    }
+
+    /**
+     * Records (or escalates) an unrelayable record's disposition. A first rejection of a relay maps
+     * to the policy route (DLQ, or DROP). A <em>second</em> rejection of an already-DLQ-routed record
+     * means the unrelayable DLQ write was itself too large to produce (the relay exceeds
+     * {@code max.request.size}, so the larger DLQ copy is rejected too) — escalate to DROP so the
+     * partition still advances rather than wedging on the DLQ write, logged loudly (§3.8).
+     */
+    private void promoteUnrelayable(UnrelayableHit hit) {
+        Unrelayable existing = unrelayable.get(hit.coord());
+        if (existing == null) {
+            Unrelayable.Route route =
+                    config.onUnrelayable() == UnrelayablePolicy.DROP ? Unrelayable.Route.DROP : Unrelayable.Route.DLQ;
+            unrelayable.put(hit.coord(), new Unrelayable(route, hit.detail()));
+        } else if (existing.route() == Unrelayable.Route.DLQ) {
+            log.error(
+                    "the unrelayable DLQ write for source {}-{}@{} was ALSO permanently rejected ({}); escalating to"
+                            + " DROP so the partition is not wedged on the DLQ write (route.relay.on-unrelayable=DLQ,"
+                            + " §3.8)",
+                    config.sourceTopic(),
+                    hit.coord().partition(),
+                    hit.coord().offset(),
+                    hit.detail());
+            registry.counter("cesium.unrelayable.dlq.rejected").increment();
+            unrelayable.put(hit.coord(), new Unrelayable(Unrelayable.Route.DROP, hit.detail()));
+        }
+    }
+
+    /**
+     * Prunes resolved unrelayable entries once the committing batch advanced the source offset past
+     * them (also sweeping any stale entry below the committed position). Keeps the map bounded.
+     */
+    private void pruneUnrelayableBelow(ConsumerRecords<byte[], byte[]> records) {
+        if (unrelayable.isEmpty()) {
+            return;
+        }
+        for (TopicPartition partition : records.partitions()) {
+            List<ConsumerRecord<byte[], byte[]>> partitionRecords = records.records(partition);
+            long next = partitionRecords.get(partitionRecords.size() - 1).offset() + 1;
+            unrelayable.keySet().removeIf(coord -> coord.partition() == partition.partition() && coord.offset() < next);
+        }
+    }
+
+    /**
      * The §3.1 transaction: begin; per record parse → decide → send; offsets with the identity
      * blob and freshly fetched group metadata; commit; flush the batch's metric counts (committed
      * dispositions only). Fires crash points I-1…I-4.
@@ -383,6 +504,7 @@ public final class IngestLoop implements Runnable {
     private void transact(ConsumerRecords<byte[], byte[]> records) {
         CrashPoints.maybeFire(CrashPoints.INGEST_BEFORE_BEGIN);
         asyncSendError = null;
+        unrelayableHits.clear();
         batchCounts.reset();
         producer.beginTransaction();
         transactionInFlight = true;
@@ -397,10 +519,19 @@ public final class IngestLoop implements Runnable {
         CrashPoints.maybeFire(CrashPoints.INGEST_AFTER_SEND_OFFSETS);
         commitWithRetry();
         flushBatchMetrics();
+        pruneUnrelayableBelow(records);
     }
 
     /** Parses one record's headers, applies policy, and sends the resulting record(s). */
     private void dispatch(ConsumerRecord<byte[], byte[]> record, long nowMs) {
+        Unrelayable known = unrelayable.get(new SourceCoord(record.partition(), record.offset()));
+        if (known != null) {
+            // A prior attempt proved the destination permanently rejects this record's relay
+            // (§3.8 I-8): re-relaying would only fail again and wedge the partition. Resolve it per
+            // the route.relay.on-unrelayable disposition INSTEAD, atomically with the offset advance.
+            applyUnrelayable(record, known, nowMs);
+            return;
+        }
         HeaderParseResult parsed = headerCodec.parse(record, nowMs);
         if (parsed.conflicted()) {
             batchCounts.conflict++;
@@ -418,7 +549,9 @@ public final class IngestLoop implements Runnable {
         IngestDecision decision = policyEngine.decide(parsed, nowMs);
         switch (decision) {
             case IngestDecision.RelayNow ignored -> {
-                send(relayFactory.relayImmediate(record, nowMs));
+                // Attributed: a permanent destination rejection on this relay is captured against
+                // the source record so the §3.8 I-8 unrelayable path can route it on reprocess.
+                send(relayFactory.relayImmediate(record, nowMs), new SourceCoord(record.partition(), record.offset()));
                 batchCounts.relayedImmediate++;
             }
             case IngestDecision.Schedule schedule -> {
@@ -432,7 +565,16 @@ public final class IngestLoop implements Runnable {
                 batchCounts.clamped++;
             }
             case IngestDecision.ToDlq toDlq -> {
-                send(relayFactory.headerErrorDlqRecord(record, toDlq.reason(), toDlq.detail(), nowMs));
+                // Attributed (§3.8 I-8), exactly like the relay sends above: a malformed / over-max
+                // source record whose payload is near the source max.message.bytes can produce a
+                // header-error DLQ copy (original key/value + ALL headers + provenance) that exceeds
+                // the producer max.request.size or a tighter DLQ max.message.bytes and is permanently
+                // rejected. Attributing the send routes that rejection through the unrelayable path
+                // (promoteUnrelayable escalates a rejected DLQ write to DROP) so the partition still
+                // advances, instead of falling to the abortable path and wedging on an infinite retry.
+                send(
+                        relayFactory.headerErrorDlqRecord(record, toDlq.reason(), toDlq.detail(), nowMs),
+                        new SourceCoord(record.partition(), record.offset()));
                 batchCounts.dlq++;
                 batchCounts.dlqReasons.merge(toDlq.reason(), 1L, Long::sum);
             }
@@ -485,13 +627,50 @@ public final class IngestLoop implements Runnable {
 
     /** Fire-and-forget transactional send; async failures are captured and surfaced pre-commit. */
     private void send(ProducerRecord<byte[], byte[]> record) {
+        send(record, null);
+    }
+
+    /**
+     * Fire-and-forget transactional send. When {@code attribution} is non-null and the send is
+     * <em>permanently</em> rejected by the destination (record too large / invalid — §3.8 I-8), the
+     * failure is recorded against that source record so the offending record can be routed to the
+     * {@code route.relay.on-unrelayable} policy on reprocess instead of retried forever. All async
+     * failures still set {@code asyncSendError}, surfaced before the offsets are sent or at commit.
+     */
+    private void send(ProducerRecord<byte[], byte[]> record, @Nullable SourceCoord attribution) {
         // The future is deliberately unused: completion errors are observed via the callback (and
         // the commit itself would surface them); blocking per record would serialize the batch.
         var unused = producer.send(record, (metadata, exception) -> {
-            if (exception != null && asyncSendError == null) {
+            if (exception == null) {
+                return;
+            }
+            if (asyncSendError == null) {
                 asyncSendError = exception;
             }
+            if (attribution != null && UnrelayableRejections.isPermanentRecordRejection(exception)) {
+                unrelayableHits.add(new UnrelayableHit(attribution, String.valueOf(exception)));
+            }
         });
+    }
+
+    /**
+     * Resolves a record a prior attempt proved permanently unrelayable, per the
+     * {@code route.relay.on-unrelayable} disposition (§3.8 I-8): {@code DLQ} writes an unrelayable
+     * DLQ record (attributed, so a DLQ write that is <em>itself</em> rejected escalates to DROP via
+     * {@link #promoteUnrelayable}), {@code DROP} produces nothing. Either way the source offset
+     * advances in the same transaction — the partition makes progress past the poison record.
+     */
+    private void applyUnrelayable(ConsumerRecord<byte[], byte[]> record, Unrelayable known, long nowMs) {
+        switch (known.route()) {
+            case DLQ -> {
+                send(
+                        relayFactory.unrelayableDlqRecord(record, known.detail(), nowMs),
+                        new SourceCoord(record.partition(), record.offset()));
+                batchCounts.dlq++;
+                batchCounts.dlqReasons.merge(DlqReasons.UNRELAYABLE, 1L, Long::sum);
+            }
+            case DROP -> batchCounts.unrelayableDropped++;
+        }
     }
 
     /**
@@ -848,6 +1027,7 @@ public final class IngestLoop implements Runnable {
         incrementBy(scheduledRecords, batchCounts.scheduled);
         incrementBy(clampedRecords, batchCounts.clamped);
         incrementBy(dlqOutcomeRecords, batchCounts.dlq);
+        incrementBy(unrelayableDroppedRecords, batchCounts.unrelayableDropped);
         incrementBy(malformedHeaders, batchCounts.malformed);
         incrementBy(overMaxHeaders, batchCounts.overMax);
         incrementBy(conflictHeaders, batchCounts.conflict);
@@ -935,12 +1115,30 @@ public final class IngestLoop implements Runnable {
         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
             registry.counter("cesium.ingest.rebalances", "event", "revoked").increment();
             log.info("source partitions revoked: {}", partitions);
+            dropUnrelayable(partitions);
         }
 
         @Override
         public void onPartitionsLost(Collection<TopicPartition> partitions) {
             registry.counter("cesium.ingest.rebalances", "event", "lost").increment();
             log.warn("source partitions lost without clean revocation: {}", partitions);
+            dropUnrelayable(partitions);
+        }
+
+        /**
+         * Drops unrelayable bookkeeping for partitions this member no longer owns: the new owner
+         * re-discovers (re-attempts the relay, fails the same way, routes it). Runs inside
+         * {@code poll()} on the loop thread (I3), so the map is touched single-threaded.
+         */
+        private void dropUnrelayable(Collection<TopicPartition> partitions) {
+            if (unrelayable.isEmpty() || partitions.isEmpty()) {
+                return;
+            }
+            Set<Integer> ids = new HashSet<>();
+            for (TopicPartition tp : partitions) {
+                ids.add(tp.partition());
+            }
+            unrelayable.keySet().removeIf(coord -> ids.contains(coord.partition()));
         }
     }
 
@@ -954,6 +1152,7 @@ public final class IngestLoop implements Runnable {
         long scheduled;
         long clamped;
         long dlq;
+        long unrelayableDropped;
         long malformed;
         long overMax;
         long conflict;
@@ -964,12 +1163,27 @@ public final class IngestLoop implements Runnable {
             scheduled = 0;
             clamped = 0;
             dlq = 0;
+            unrelayableDropped = 0;
             malformed = 0;
             overMax = 0;
             conflict = 0;
             dlqReasons.clear();
         }
     }
+
+    /** A source-record identity within the (single) source topic: partition + offset. */
+    private record SourceCoord(int partition, long offset) {}
+
+    /** A resolved disposition for a permanently-unrelayable record (§3.8 I-8). */
+    private record Unrelayable(Route route, String detail) {
+        enum Route {
+            DLQ,
+            DROP
+        }
+    }
+
+    /** A permanent destination rejection attributed to a specific source record by a send callback. */
+    private record UnrelayableHit(SourceCoord coord, String detail) {}
 
     /**
      * The durable inputs of a pending in-doubt recovery (§3.8 step b), kept so a transiently

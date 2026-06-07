@@ -2,6 +2,7 @@ package com.jucius.cesium.kafka.app.metrics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -63,8 +64,18 @@ class ObservabilityServerTest {
 
     /** Starts the server against the current fixture state and records the bound ephemeral port. */
     private void startServer() throws Exception {
+        startServer("0.0.0.0", false);
+    }
+
+    /** Starts the server honoring the given bind address and {@code /info} detail level. */
+    private void startServer(String bindAddress, boolean detailedInfo) throws Exception {
         server = new ObservabilityServer(
-                0, registry, new HealthAssessor(health, Clock.systemUTC(), GENEROUS_STALE), info::get);
+                bindAddress,
+                0,
+                detailedInfo,
+                registry,
+                new HealthAssessor(health, Clock.systemUTC(), GENEROUS_STALE),
+                info::get);
         server.start();
     }
 
@@ -209,8 +220,27 @@ class ObservabilityServerTest {
     }
 
     @Test
-    void infoReportsBuildStoreRolesAndAcknowledgments() throws Exception {
+    void infoDefaultRedactsSensitiveFields() throws Exception {
+        // detailed-info OFF by default (security M3): version/build for ops, nothing reconnaissance-worthy.
         startServer();
+
+        HttpResponse<String> response = get("/info");
+        assertEquals(200, response.statusCode());
+        JsonNode body = JSON.readTree(response.body());
+        assertEquals("1.2.3", body.get("version").asText());
+        assertEquals("abc1234", body.get("gitCommit").asText());
+        assertEquals("kafka-tracker", body.get("store").get("type").asText());
+        // The applicationId is the fencing-id seed — it must not leak on the unauthenticated endpoint.
+        assertFalse(body.has("applicationId"), body.toString());
+        assertFalse(body.has("roles"), body.toString());
+        assertFalse(body.has("acknowledgments"), body.toString());
+        assertFalse(body.get("store").has("capabilities"), body.toString());
+    }
+
+    @Test
+    void infoDetailedExposesBuildStoreRolesAndAcknowledgments() throws Exception {
+        // Opt-in detailed mode (observability.detailed-info=true) discloses the operational fields.
+        startServer("0.0.0.0", true);
 
         HttpResponse<String> response = get("/info");
         assertEquals(200, response.statusCode());
@@ -224,6 +254,41 @@ class ObservabilityServerTest {
                 body.get("store").get("capabilities").get("affinity").asText());
         assertEquals(List.of("ingest", "dispatch"), readStrings(body.get("roles")));
         assertEquals(List.of("size-based-retention"), readStrings(body.get("acknowledgments")));
+    }
+
+    @Test
+    void enablesSlowClientReapingAndBoundsTheDispatchPool() throws Exception {
+        // M1: the unauthenticated server must reap slow clients and bound in-flight handling so a
+        // slowloris cannot pin every dispatcher thread and starve the health probes.
+        startServer();
+
+        String maxReq = System.getProperty(ObservabilityServer.MAX_REQ_TIME_PROPERTY);
+        String maxRsp = System.getProperty(ObservabilityServer.MAX_RSP_TIME_PROPERTY);
+        assertNotNull(maxReq, "maxReqTime must be set before HttpServer.create");
+        assertNotNull(maxRsp, "maxRspTime must be set before HttpServer.create");
+        assertTrue(Long.parseLong(maxReq) > 0, maxReq);
+        assertTrue(Long.parseLong(maxRsp) > 0, maxRsp);
+        // In-flight handling is bounded by a modest fixed pool, larger than the original 2 threads.
+        assertEquals(ObservabilityServer.DISPATCH_THREADS, server.dispatchThreadCeiling());
+        assertTrue(ObservabilityServer.DISPATCH_THREADS > 2, "the dispatch pool was modestly increased");
+    }
+
+    @Test
+    void honorsConfiguredLoopbackBindAddress() throws Exception {
+        // L1: binding 127.0.0.1 restricts the listener to loopback rather than every interface.
+        startServer("127.0.0.1", false);
+
+        assertTrue(server.boundAddress().isLoopbackAddress(), () -> "bound to " + server.boundAddress());
+        // And it still answers on loopback.
+        assertEquals(200, get("/health/live").statusCode());
+    }
+
+    @Test
+    void defaultBindAddressIsWildcard() throws Exception {
+        // L1: the default keeps the wildcard bind so k8s probes reach the listener.
+        startServer();
+
+        assertTrue(server.boundAddress().isAnyLocalAddress(), () -> "bound to " + server.boundAddress());
     }
 
     @Test

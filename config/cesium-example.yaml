@@ -65,10 +65,15 @@ route:
   # Dead-letter topic. Required whenever any policy routes to DLQ (the defaults do).
   dlq:
     topic: orders-dlq
-  # Relay fidelity (design §2.4).
+  # Relay fidelity and failure policy (design §2.4, §3.8).
   relay:
     timestamp: DISPATCH      # DISPATCH (default) | SOURCE
     partitioning: BY_KEY     # BY_KEY (default) | SOURCE_PARTITION
+    # What to do when the destination PERMANENTLY rejects a relay on produce
+    # (record too large for max.request.size/max.message.bytes, invalid record).
+    # DLQ keeps the source partition moving past the poison record instead of
+    # retrying forever and wedging it (design §3.8 I-8). DLQ requires route.dlq.
+    on-unrelayable: DLQ      # DLQ (default) | DROP | FAIL
 
 delay:
   # Maximum accepted delay. Drives the tracker tombstone-retention floor and the
@@ -123,6 +128,14 @@ dispatch:
 observability:
   # HTTP port for /metrics, /health/live, /health/ready, /info (design §9).
   port: 8081
+  # Interface to bind. Default 0.0.0.0 (all interfaces) keeps k8s liveness/readiness probes working.
+  # The endpoints are UNAUTHENTICATED — restrict to 127.0.0.1 for a loopback-only sidecar scrape, and
+  # otherwise network-restrict the port (e.g. a k8s NetworkPolicy) (security L1).
+  # bind-address: 0.0.0.0
+  # /info is unauthenticated. By default it exposes only version/build + store type. Set to true to
+  # also disclose applicationId (the fencing-id seed), roles, store capabilities, and acknowledgments
+  # — only behind a network-restricted endpoint (security M3).
+  # detailed-info: false
 
 startup-checks:
   retention: FAIL                  # source retention.ms vs delay.max + margin: FAIL | WARN | SKIP

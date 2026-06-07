@@ -18,7 +18,7 @@ contract).
 2. [The tracker sizing worksheet](#2-the-tracker-sizing-worksheet)
 3. [Correctness-load-bearing tracker settings](#3-correctness-load-bearing-tracker-settings)
 4. [Lowering `delay.max` (runbook)](#4-lowering-delaymax-runbook)
-5. [Tracker write ACL](#5-tracker-write-acl)
+5. [Least-privilege deployment: TLS, SASL, and the ACL matrix](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix)
 6. [Tracker disaster recovery (runbook)](#6-tracker-disaster-recovery-runbook)
 7. [Offsets retention vs outage tolerance](#7-offsets-retention-vs-outage-tolerance)
 8. [Scaling roles](#8-scaling-roles)
@@ -129,6 +129,24 @@ delay ceiling, not the message size or pending count, sets the disk bill.
 - Keep `segment.ms ≈ 1 h` and `min.compaction.lag.ms` at the floor so the cleaner actually collects
   tombstones; oversized segments delay collection and inflate disk.
 
+### No in-process rate limiting; bound the DLQ
+
+cesium has **no per-tenant rate limiting** — no per-producer / per-key / per-partition quota or
+fairness anywhere in ingest. A flood or far-future delay-bomb grows the tracker (and, for malformed
+records, the DLQ) on disk, bounded only by the controls that sit **before** cesium. Rely on:
+
+- **Broker client/produce quotas** on the source-producer principals;
+- **Source `retention.bytes`** to bound what a flood can accumulate (note size/tier eviction interacts
+  with the payload-lifetime check — `startup-checks.size-based-retention`, [§14.2](#142-startup-validation-against-the-cluster-exit-1));
+- **Per-tenant topic isolation** (a route per tenant, not one shared source);
+- a deliberately chosen **`delay.max`** — it multiplies tracker disk through the `2 × delay.max`
+  tombstone-retention floor (this worksheet).
+
+**Bound the DLQ's retention yourself.** Startup validates only that the DLQ topic *exists*, not its
+retention — a malformed-record flood (default `DLQ` policy copies the full original payload 1:1) can
+fill an unbounded DLQ. Set `retention.ms`/`retention.bytes` on the DLQ topic to match your drain
+cadence.
+
 ---
 
 ## 3. Correctness-load-bearing tracker settings
@@ -178,7 +196,52 @@ rather than silently risk a duplicate.
 
 ---
 
-## 5. Tracker write ACL
+## 5. Least-privilege deployment: TLS, SASL, and the ACL matrix
+
+cesium **delegates authentication and authorization to the broker** — it opens ordinary Kafka clients
+and the broker decides what each may do. [SECURITY.md](../SECURITY.md) is the authoritative
+secure-deployment guide; the operational key points mirror here.
+
+### Require TLS + SASL in production
+
+Set `security.protocol` (`SSL` or `SASL_SSL`) and a SASL mechanism through the **`kafka.properties`
+passthrough** (applied to every cesium client) so the broker can identify cesium as one principal. Keep
+secrets out of the config file — reference them with `${env:VAR}` (e.g.
+`sasl.jaas.config: ${env:KAFKA_JAAS_CONFIG}`, `ssl.truststore.password: ${env:KAFKA_TRUSTSTORE_PASSWORD}`).
+The [PLAINTEXT quickstart compose](../config/docker-compose.yaml) is a local demo only — never a
+production posture.
+
+### Least-privilege ACLs for all six client roles
+
+All six cesium clients authenticate as a **single cesium principal** (`User:cesium`); grant it exactly
+these and nothing else (substitute your `application-id` for `<app>`). `DESCRIBE` is implied by
+`READ`/`WRITE` on the same resource; idempotent producer writes are authorized by topic `WRITE` in
+Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the consumer `Group`.
+
+| Client role | Resource (type · name/pattern) | Ops |
+|---|---|---|
+| Ingest consumer (group A) | `Group` `cesium.<app>.ingest` (literal); `Topic` *source* | READ; READ |
+| Dispatch consumer (group B) | `Group` `cesium.<app>.dispatch` (literal); `Topic` *tracker* | READ; READ |
+| Seek consumer (group-less) | `Topic` *source* | READ (**no `Group` ACL**) |
+| Ingest txn producer | `TransactionalId` `cesium.<app>.ingest.*` (prefixed); `Topic` *tracker* / *destination* / *DLQ*; `Group` `cesium.<app>.ingest` | WRITE; WRITE; READ |
+| Dispatch txn producer | `TransactionalId` `cesium.<app>.dispatch.*` (prefixed); `Topic` *destination* / *tracker* / *DLQ*; `Group` `cesium.<app>.dispatch` | WRITE; WRITE; READ |
+| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE); **`CREATE` bootstrap only:** `Cluster` CREATE + ALTER | per cell |
+
+> **The `TransactionalId` and `Group` ACLs are load-bearing, not optional (M3).** cesium's
+> transactional / `group.instance.id` ids are deterministic (`cesium.<app>.<role>.<instance>.<ordinal>`)
+> and the `application-id` seed leaks on the unauthenticated `/info`. **Without a `TransactionalId` ACL
+> scoping `cesium.<app>.*` to the cesium principal, any authenticated co-tenant can open a producer
+> with cesium's transactional id and fence it into a `ProducerFencedException` → fatal exit → restart →
+> re-fence crash-loop** (and likewise `FencedInstanceIdException` via the static group id). **Do not
+> stop at the tracker topic ACL.** Under `route.tracker.bootstrap: FAIL` the cesium principal does not
+> need `Cluster` CREATE/ALTER — provision the tracker topic and its write ACL out of band.
+
+**Topic ownership** (restrict `WRITE` accordingly): your upstream producers write the **source**
+(cesium only reads it); cesium writes the **destination** (downstream consumers read it with
+`read_committed`); cesium writes the **DLQ** (your drain tooling reads it); cesium alone writes **and**
+reads the **tracker**.
+
+### Tracker write ACL (the R12 control)
 
 **Restricting tracker write access to the cesium principal is a normative deployment requirement**
 (R12). The tracker topic is the durable scheduler state:
@@ -191,14 +254,36 @@ Actions:
 - Set `route.tracker.acl-principal: User:<cesium-principal>`. With `route.tracker.bootstrap: CREATE`
   and a cluster authorizer present, cesium grants that principal write/read/describe on the tracker
   topic at bootstrap. (If the cluster has no authorizer, cesium logs that the ACL could not be
-  applied — provision it yourself.)
+  applied — provision it yourself. Under `FAIL` bootstrap mode cesium does **not** apply the ACL —
+  provision it out of band.)
 - Ensure **no other principal** has write access to the tracker topic.
-- cesium counts wire-format violations on the tracker as `cesium_tracker_invalid_records_total` and
-  logs them at WARN — treat a nonzero rate as a tamper / foreign-writer canary ([§13](#13-metrics-and-alerting)).
 
-HMAC tamper-evidence is a reserved config namespace, **not implemented in v1** — ACLs are the correct
-enforcement point (HMAC only helps in hostile clusters where cesium's own credentials are already
-suspect).
+**The invalid-records counter is not a forgery detector.** cesium counts *structurally malformed or
+version-skewed* tracker writes as `cesium_tracker_invalid_records_total` (logged at WARN); a nonzero
+rate flags a malformed/version-skew foreign writer ([§13](#13-metrics-and-alerting)). It does **not**
+detect well-formed forgeries — a wire-format-aware adversary with tracker write access can craft an ADD
+or tombstone that decodes cleanly and is applied as legitimate state, and this counter never moves
+(L2). The write-restricting ACL is the v1 control; **detecting competent tampering requires broker
+authorizer audit logging** (who actually wrote the tracker) or the reserved, **deferred**
+`store.kafka.hmac.*` record-level HMAC (config namespace reserved, not implemented in v1 — it only
+helps in hostile clusters where cesium's own credentials are already suspect).
+
+### Untrusted-producer ingress: avoid the `FAIL` delay policies (L5)
+
+`delay.on-malformed-header: FAIL` and `delay.on-over-max: FAIL` (both non-default) are **unsafe when
+the source topic has untrusted producers**: one crafted record fatally stops ingest, tears down all
+workers, and exits non-zero; the offset never advances and `auto.offset.reset=none` is locked, so
+restart re-polls and re-fails — a pipeline-wide, **restart-persistent outage**. Keep the `DLQ` defaults
+(or `RELAY_IMMEDIATE`) for multi-tenant ingress. See [configuration.md §5](configuration.md#5-delay-protocol-delay).
+
+### Observability port is unauthenticated (L1)
+
+The observability HTTP server ([§13](#13-metrics-and-alerting); default port 8081) is read-only but
+**completely unauthenticated** and binds all interfaces in v1. It **MUST be network-restricted** — on
+Kubernetes apply a NetworkPolicy scoping port 8081 to the monitoring namespace (the scraper) only, or
+bind it to loopback for a co-located sidecar. An `observability.bind-address` option (to bind
+`127.0.0.1`) is being added; until then rely on the network policy. `/info` discloses the
+`application-id` (which seeds the M3 fencing ids), so the network restriction is part of the M3 control.
 
 See also [SECURITY.md](../SECURITY.md).
 
@@ -372,6 +457,9 @@ Key points:
   their open transaction at a batch boundary before consumers close (graceful, fenced shutdown).
 - **Rolling restart moves zero partitions** because the returning member reclaims its own assignment
   within the session timeout.
+- **Restrict the observability port (8081).** It is unauthenticated; add a NetworkPolicy scoping
+  ingress on 8081 to the monitoring namespace (the Prometheus scraper) and the kubelet probe source
+  only — see [§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix) / [§13](#13-metrics-and-alerting) (L1).
 
 ### HPA warning
 
@@ -452,6 +540,12 @@ below (the `cesium_*` meters) — meters carry only the **per-meter** tags shown
 are absent. Do not write alerts against them; to obtain JVM/client metrics, run a JMX→Prometheus
 exporter sidecar against the JVM.
 
+> **This port is unauthenticated and MUST be network-restricted** — all four endpoints (and the
+> `application-id` `/info` discloses) are readable by anyone with network reach, with no built-in
+> slow-client protection (M1). Scope it with a Kubernetes NetworkPolicy (monitoring namespace only) or
+> bind it to loopback ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L1; an
+> `observability.bind-address` option is being added).
+
 ### Metric inventory (as emitted — verified against the code)
 
 In Prometheus exposition: **counters** end in `_total`; **timers** expose `_seconds_count`,
@@ -481,7 +575,7 @@ In Prometheus exposition: **counters** end in `_total`; **timers** expose `_seco
 | `cesium_shard_paused` | gauge | `partition` | backpressure pause state |
 | `cesium_degraded` | gauge | `loop` | park-and-degrade state (§3.8); cause is logged |
 | `cesium_loop_last_iteration_timestamp_seconds` | gauge | `loop` | epoch-seconds of the last loop iteration; feeds liveness |
-| `cesium_tracker_invalid_records_total` | counter | | tracker wire-format violations — tamper / foreign-writer canary |
+| `cesium_tracker_invalid_records_total` | counter | | tracker wire-format violations (malformed / version-skew) — foreign-writer canary. **Does NOT detect well-formed forgeries** ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L2) |
 | `cesium_tracker_cancel_records_total` | counter | | reserved CANCEL records seen (no-ops in v1) |
 | `cesium_tracker_unknown_reason_records_total` | counter | | tombstones with an unrecognized completion reason (applied) |
 | `cesium_cursor_guard_violations_total` | counter | | I5 / monotonic cursor-guard trips (a surfaced bug — last safe cursor returned) |
@@ -525,7 +619,7 @@ In Prometheus exposition: **counters** end in `_total`; **timers** expose `_seco
 | Cold-fetch cost | `histogram_quantile(0.99, cesium_fetch_duration_seconds_bucket) > threshold` | Cold-segment / IOPS pressure ([§12](#12-broker-iops-budgeting-for-seek-fetch)). |
 | Sidecar overflow (replay cost rising) | `cesium_pinned_entries` near `dispatch.cursor.sidecar-max-bytes/12` **and** `cesium_cursor_sidecar_bytes` near budget, sustained | Overflow mode (§3.5) — replay reverts to `completion_rate × pin age`. Raise `dispatch.cursor.sidecar-max-bytes` (with broker `offset.metadata.max.bytes`), or inspect long-delay producers. |
 | Tracker integrity canary | step-collapse of `cesium_pending_entries` | Tracker possibly truncated/recreated (R-9). Follow [§6](#6-tracker-disaster-recovery-runbook). |
-| Tamper / foreign writer | `rate(cesium_tracker_invalid_records_total[10m]) > 0` | Something other than cesium wrote the tracker (or a version skew). Check the ACL ([§5](#5-tracker-write-acl)). |
+| Malformed tracker write / foreign writer | `rate(cesium_tracker_invalid_records_total[10m]) > 0` | A *malformed or version-skewed* write hit the tracker. Check the ACL ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix)). Note: a well-formed forgery would **not** move this counter — detecting competent tampering needs broker authorizer audit logging (L2). |
 | Cursor-guard / index anomaly | `rate(cesium_cursor_guard_violations_total[15m]) > 0` or `rate(cesium_store_index_anomalies_total[15m]) > 0` | A surfaced invariant violation — not data loss (last-safe-cursor returned), but file a bug with logs. |
 | Backpressure pause | `cesium_shard_paused > 0` (sustained) | Index near cap; intake paused. Add dispatch capacity or raise the heap / caps. |
 | DLQ drain | `rate(cesium_dlq_records_total[10m]) > 0` | Inspect and drain the DLQ; correlate `reason`. |

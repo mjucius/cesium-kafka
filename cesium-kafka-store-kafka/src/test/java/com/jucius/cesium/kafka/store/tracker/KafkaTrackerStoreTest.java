@@ -260,6 +260,41 @@ class KafkaTrackerStoreTest {
     }
 
     @Test
+    void unknownReasonHeaderIsSanitizedBeforeLogging() {
+        // L7: the completion-reason header is attacker-influenced (a tracker writer chooses its
+        // bytes, the R12 ACL is the only control) and decoded US-ASCII, so CR/LF/control chars
+        // survive. Logged verbatim under the default plain encoder this is a CRLF log-forgery
+        // vector; sanitizeReasonForLog strips controls and caps length before the warn.
+        String forged = "DISPATCHED\r\nINJECTED\t\u0000";
+        String sanitized = KafkaTrackerStore.sanitizeReasonForLog(forged);
+        assertFalse(sanitized.contains("\r"), sanitized);
+        assertFalse(sanitized.contains("\n"), sanitized);
+        assertFalse(sanitized.contains("\t"), sanitized);
+        assertFalse(sanitized.contains("\u0000"), sanitized);
+        assertEquals("DISPATCHED??INJECTED??", sanitized);
+
+        String oversized = "x".repeat(KafkaTrackerStore.MAX_LOGGED_REASON_CHARS + 50);
+        String capped = KafkaTrackerStore.sanitizeReasonForLog(oversized);
+        assertEquals(KafkaTrackerStore.MAX_LOGGED_REASON_CHARS + 1, capped.length());
+        assertTrue(capped.endsWith("…"), capped);
+
+        // The real onTrackerRecord path still applies the completion (M4) with a CRLF-laden reason.
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        KafkaTrackerStore store = activeStore(ctx, 0);
+        feedSchedule(store, 0, new ScheduledRef(0, 10, T0 + 100, false));
+        RecordHeaders headers = new RecordHeaders();
+        headers.add(TrackerWireFormat.COMPLETION_REASON_HEADER, forged.getBytes(StandardCharsets.US_ASCII));
+        store.onTrackerRecord(0, 1, TrackerWireFormat.encodeKey(10), null, headers);
+        assertEquals(0, store.pendingCount(0), "the completion must still apply");
+        assertEquals(
+                1.0,
+                ctx.registry()
+                        .get("cesium.tracker.unknown.reason.records")
+                        .counter()
+                        .count());
+    }
+
+    @Test
     void headersBlindTombstonesKeepTheLenientApplyPosture() {
         // The legacy 4-arg overload cannot see headers, so it cannot distinguish a forged
         // reason-less tombstone from a legitimate one whose headers were simply not plumbed: it

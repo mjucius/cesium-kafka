@@ -11,6 +11,8 @@ import com.jucius.cesium.kafka.core.fetch.SeekFetcher;
 import com.jucius.cesium.kafka.core.headers.DelayHeaderCodec;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayableRejections;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
@@ -31,6 +33,7 @@ import java.util.TreeSet;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -105,6 +108,12 @@ import org.slf4j.LoggerFactory;
  *       point — the broker-affirmed "not committed" signal, KIP-890): abort, restore the full
  *       drained batch via {@code onBatchAborted}, stamp the batch's source partitions with a
  *       penalty not-before, and retry under capped exponential backoff.
+ *   <li><em>Unrelayable</em> (§3.8 I-8, M2): a relay the destination <em>permanently</em> rejects
+ *       (record too large / invalid — {@link UnrelayableRejections}) is not transient and must not
+ *       retry forever (which would wedge the partition). The batch aborts and restores; the
+ *       offending entry is attributed via the send callback, and on the retry it is routed by
+ *       {@code route.relay.on-unrelayable} (unrelayable DLQ notice / drop) + a {@code REJECTED}
+ *       tombstone + the cursor, atomically — no penalty box, no failure streak.
  *   <li><em>Fatal</em> ({@link ProducerFencedException}, {@link InvalidPidMappingException},
  *       {@link OutOfOrderSequenceException}, auth, fenced instance id, tracker-integrity
  *       fail-fasts): close clients, fail the loop — the batch is never restored, the durable log
@@ -191,6 +200,22 @@ public final class DispatchLoop implements Runnable {
     private final Map<Integer, AtomicInteger> pausedGauges = new HashMap<>();
     private final List<Gauge> registeredPausedGauges = new ArrayList<>();
 
+    /**
+     * Entries a prior dispatch attempt found <em>permanently</em> unrelayable by the destination
+     * (§3.8 I-8), keyed by source {@code (partition, offset)} → the resolved disposition. On the
+     * retry these are routed to the {@code route.relay.on-unrelayable} policy (an unrelayable DLQ
+     * notice / drop) + a REJECTED tombstone + the cursor, all atomic — instead of relaying again and
+     * wedging the partition. Loop-thread-confined; pruned on commit and on shard drop.
+     */
+    private final Map<SourceCoord, Unrelayable> unrelayable = new HashMap<>();
+
+    /**
+     * Permanent destination rejections attributed to a specific entry by the send callback (§3.8).
+     * Written from the producer I/O thread, drained on the loop thread once the transaction's
+     * outcome is known; reset per dispatch transaction.
+     */
+    private final ConcurrentLinkedQueue<UnrelayableHit> unrelayableHits = new ConcurrentLinkedQueue<>();
+
     // Cross-thread state: stop flag, health/metrics, async send errors from the producer I/O thread.
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicInteger degraded = new AtomicInteger();
@@ -204,6 +229,7 @@ public final class DispatchLoop implements Runnable {
     private final Counter dispatchedRecords;
     private final Counter payloadExpiredRecords;
     private final Counter droppedRecords;
+    private final Counter unrelayableRecords;
     private final Counter committedTransactions;
     private final Timer commitTimer;
     private final Timer dispatchLag;
@@ -251,6 +277,7 @@ public final class DispatchLoop implements Runnable {
         this.dispatchedRecords = dispatchRecords("dispatched");
         this.payloadExpiredRecords = dispatchRecords("payload_expired");
         this.droppedRecords = dispatchRecords("dropped");
+        this.unrelayableRecords = dispatchRecords("unrelayable");
         this.committedTransactions =
                 registry.counter("cesium.transactions", "loop", "dispatch", "result", "committed", "cause", "none");
         this.commitTimer = Timer.builder("cesium.txn.commit.seconds")
@@ -758,6 +785,13 @@ public final class DispatchLoop implements Runnable {
                 // resolves the dangling transaction. Close + fail; never restore (I9-compatible).
                 throw new DispatchLoopFatalException("fatal dispatch transaction failure", e);
             }
+            if (!unrelayableHits.isEmpty()) {
+                // §3.8 I-8: the destination PERMANENTLY rejected a relay (too large / invalid), not a
+                // transient blip. Abort, restore the full batch, and remember the offending entries so
+                // the retry routes them to the route.relay.on-unrelayable policy (DLQ notice + REJECTED
+                // tombstone + cursor, atomic) instead of relaying forever and wedging the partition.
+                return handleUnrelayable(batch, e);
+            }
             // Definitively abortable (incl. TransactionAbortableException from a retried commit —
             // the broker-affirmed "not committed"): nothing committed, restore the FULL batch.
             abortIfInFlight();
@@ -770,6 +804,7 @@ public final class DispatchLoop implements Runnable {
         }
         // Success epilogue — the harness-modelled order: commit, THEN restore the carry-over.
         store.onBatchCommitted(settledView);
+        pruneUnrelayable(settledView);
         if (classified.carryCount > 0) {
             store.onBatchAborted(DueBatchView.select(batch, classified.carryIndices, classified.carryCount));
         }
@@ -798,20 +833,38 @@ public final class DispatchLoop implements Runnable {
             DueBatch batch, DueBatch settledView, Classified classified, FetchResult fetched, long nowMs) {
         CrashPoints.maybeFire(CrashPoints.DISPATCH_BEFORE_BEGIN);
         asyncSendError = null;
+        unrelayableHits.clear();
         producer.beginTransaction();
         transactionInFlight = true;
         boolean dlqNotices = config.onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ;
         for (int s = 0; s < classified.settledCount; s++) {
             int i = classified.settledIndices[s];
-            if (fetched.outcome(i) == FetchOutcome.FOUND) {
-                send(relayFactory.relayScheduled(fetched.record(i), nowMs, batch.dispatchAtMs(i), batch.clamped(i)));
-            } else if (dlqNotices) {
-                send(relayFactory.payloadExpiredDlqRecord(
-                        config.sourceTopic(),
-                        batch.sourcePartition(i),
-                        batch.sourceOffset(i),
-                        batch.dispatchAtMs(i),
-                        nowMs));
+            if (fetched.outcome(i) != FetchOutcome.FOUND) {
+                if (dlqNotices) {
+                    send(relayFactory.payloadExpiredDlqRecord(
+                            config.sourceTopic(),
+                            batch.sourcePartition(i),
+                            batch.sourceOffset(i),
+                            batch.dispatchAtMs(i),
+                            nowMs));
+                }
+            } else if (classified.rejected[i]) {
+                // A prior attempt proved this relay is permanently rejected (§3.8 I-8): route per the
+                // route.relay.on-unrelayable disposition INSTEAD of relaying it again. The REJECTED
+                // tombstone (below) resolves the entry either way, so it never replays forever.
+                Unrelayable known = unrelayable.get(new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)));
+                if (known != null && known.route() == Unrelayable.Route.DLQ) {
+                    // Attributed: a DLQ write that is itself rejected escalates to DROP, not a wedge.
+                    send(
+                            relayFactory.unrelayableDlqRecord(fetched.record(i), known.detail(), nowMs),
+                            new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)));
+                }
+            } else {
+                // Attributed: a permanent destination rejection on this relay is captured against the
+                // entry so the §3.8 I-8 unrelayable path can route it on the retry.
+                send(
+                        relayFactory.relayScheduled(fetched.record(i), nowMs, batch.dispatchAtMs(i), batch.clamped(i)),
+                        new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)));
             }
         }
         sendCompletions(batch, settledView, classified);
@@ -848,6 +901,15 @@ public final class DispatchLoop implements Runnable {
                 ? CompletionReason.PAYLOAD_MISSING_DLQ
                 : CompletionReason.DROPPED;
         sendCompletionGroup(batch, settledView, classified, classified.goneIndices, classified.goneCount, goneReason);
+        // §3.8 I-8: permanently-unrelayable entries (routed to the DLQ or dropped above) are settled
+        // with REJECTED — the tombstone advances past them so they never replay.
+        sendCompletionGroup(
+                batch,
+                settledView,
+                classified,
+                classified.rejectedIndices,
+                classified.rejectedCount,
+                CompletionReason.REJECTED);
     }
 
     private void sendCompletionGroup(
@@ -968,6 +1030,7 @@ public final class DispatchLoop implements Runnable {
                 pausedForBackpressure.remove(partition);
                 lastCursorActivityMs.remove(partition);
                 lastCommittedCursorOffset.remove(partition);
+                dropUnrelayableForPartition(partition); // re-recovery re-discovers from the durable log
                 needsCursor.add(partition);
             }
             consumer.pause(toPause);
@@ -1142,8 +1205,12 @@ public final class DispatchLoop implements Runnable {
 
     // ------------------------------------------------------------------ classification & penalties
 
-    /** Single pass over the fetch result building the settled / per-reason / carry-over index sets. */
-    private static Classified classify(DueBatch batch, FetchResult fetched) {
+    /**
+     * Single pass over the fetch result building the settled / per-reason / carry-over index sets.
+     * A FOUND entry already known permanently unrelayable (§3.8 I-8) is split off into the REJECTED
+     * set so the transaction routes it to the {@code on-unrelayable} policy instead of relaying it.
+     */
+    private Classified classify(DueBatch batch, FetchResult fetched) {
         int n = batch.size();
         if (fetched.size() != n) {
             throw new DispatchLoopFatalException("fetcher contract violation: " + fetched.size() + " outcome(s) for a "
@@ -1154,7 +1221,12 @@ public final class DispatchLoop implements Runnable {
             switch (fetched.outcome(i)) {
                 case FOUND -> {
                     c.settledIndices[c.settledCount++] = i;
-                    c.foundIndices[c.foundCount++] = i;
+                    if (unrelayable.containsKey(new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)))) {
+                        c.rejectedIndices[c.rejectedCount++] = i;
+                        c.rejected[i] = true;
+                    } else {
+                        c.foundIndices[c.foundCount++] = i;
+                    }
                 }
                 case GONE -> {
                     c.settledIndices[c.settledCount++] = i;
@@ -1247,13 +1319,113 @@ public final class DispatchLoop implements Runnable {
 
     /** Fire-and-forget transactional send; async failures are captured and surfaced pre-commit. */
     private void send(ProducerRecord<byte[], byte[]> record) {
+        send(record, null);
+    }
+
+    /**
+     * Fire-and-forget transactional send. When {@code attribution} is non-null and the send is
+     * <em>permanently</em> rejected by the destination (record too large / invalid — §3.8 I-8), the
+     * failure is recorded against that entry so it can be routed to the
+     * {@code route.relay.on-unrelayable} policy on the retry instead of relayed forever. All async
+     * failures still set {@code asyncSendError}, surfaced before the offsets are sent or at commit.
+     */
+    private void send(ProducerRecord<byte[], byte[]> record, @Nullable SourceCoord attribution) {
         // The future is deliberately unused: completion errors are observed via the callback (and
         // the commit itself would surface them); blocking per record would serialize the batch.
         var unused = producer.send(record, (metadata, exception) -> {
-            if (exception != null && asyncSendError == null) {
+            if (exception == null) {
+                return;
+            }
+            if (asyncSendError == null) {
                 asyncSendError = exception;
             }
+            if (attribution != null && UnrelayableRejections.isPermanentRecordRejection(exception)) {
+                unrelayableHits.add(new UnrelayableHit(attribution, String.valueOf(exception)));
+            }
         });
+    }
+
+    /**
+     * The §3.8 I-8 unrelayable path: a relay this batch attempted was permanently rejected by the
+     * destination and attributed to one or more entries. Abort, restore the full batch (nothing
+     * committed), and — unless {@code route.relay.on-unrelayable=FAIL} — record each offending
+     * entry's disposition so the retry routes it (unrelayable DLQ notice / drop) + a REJECTED
+     * tombstone + the cursor, atomically. No penalty box and no backoff streak: a deterministic
+     * record rejection is not source degradation, and the restored entry re-drains immediately and
+     * resolves rather than wedging the partition.
+     *
+     * @return always {@code false} — this drain slice made no committed progress
+     */
+    private boolean handleUnrelayable(DueBatch batch, RuntimeException cause) {
+        abortIfInFlight();
+        abortedTransactions("unrelayable").increment();
+        List<UnrelayableHit> hits = new ArrayList<>();
+        for (UnrelayableHit hit; (hit = unrelayableHits.poll()) != null; ) {
+            hits.add(hit);
+        }
+        if (config.onUnrelayable() == UnrelayablePolicy.FAIL) {
+            store.onBatchAborted(batch); // restore (definitive: nothing committed), then surface
+            UnrelayableHit first = hits.get(0);
+            throw new DispatchLoopFatalException(
+                    "route.relay.on-unrelayable=FAIL: the destination permanently rejected the relay of source "
+                            + config.sourceTopic() + "-" + first.coord().partition() + "@"
+                            + first.coord().offset()
+                            + ": " + first.detail());
+        }
+        for (UnrelayableHit hit : hits) {
+            promoteUnrelayable(hit);
+        }
+        store.onBatchAborted(batch);
+        log.warn(
+                "dispatch relay permanently rejected by the destination for {} entry(ies) (route.relay.on-unrelayable"
+                        + "={}); restoring to route them on the retry instead of relaying forever (§3.8 I-8)",
+                hits.size(),
+                config.onUnrelayable(),
+                cause);
+        return false;
+    }
+
+    /**
+     * Records (or escalates) an unrelayable entry's disposition. A first rejection of a relay maps
+     * to the policy route (DLQ, or DROP). A <em>second</em> rejection of an already-DLQ-routed entry
+     * means the unrelayable DLQ write was itself too large to produce — escalate to DROP so the
+     * partition still advances rather than wedging on the DLQ write, logged loudly (§3.8).
+     */
+    private void promoteUnrelayable(UnrelayableHit hit) {
+        Unrelayable existing = unrelayable.get(hit.coord());
+        if (existing == null) {
+            Unrelayable.Route route =
+                    config.onUnrelayable() == UnrelayablePolicy.DROP ? Unrelayable.Route.DROP : Unrelayable.Route.DLQ;
+            unrelayable.put(hit.coord(), new Unrelayable(route, hit.detail()));
+        } else if (existing.route() == Unrelayable.Route.DLQ) {
+            log.error(
+                    "the unrelayable DLQ write for source {}-{}@{} was ALSO permanently rejected ({}); escalating to"
+                            + " DROP so the partition is not wedged on the DLQ write (route.relay.on-unrelayable=DLQ,"
+                            + " §3.8)",
+                    config.sourceTopic(),
+                    hit.coord().partition(),
+                    hit.coord().offset(),
+                    hit.detail());
+            registry.counter("cesium.unrelayable.dlq.rejected").increment();
+            unrelayable.put(hit.coord(), new Unrelayable(Unrelayable.Route.DROP, hit.detail()));
+        }
+    }
+
+    /** Drops resolved unrelayable entries once their COMPLETE tombstone committed (settled view). */
+    private void pruneUnrelayable(DueBatch settledView) {
+        if (unrelayable.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < settledView.size(); i++) {
+            unrelayable.remove(new SourceCoord(settledView.sourcePartition(i), settledView.sourceOffset(i)));
+        }
+    }
+
+    /** Drops unrelayable bookkeeping for a shard the loop no longer owns / is re-recovering. */
+    private void dropUnrelayableForPartition(int partition) {
+        if (!unrelayable.isEmpty()) {
+            unrelayable.keySet().removeIf(coord -> coord.partition() == partition);
+        }
     }
 
     /** Surfaces an asynchronously failed send before the offsets are sent (mirrors ingest). */
@@ -1347,6 +1519,9 @@ public final class DispatchLoop implements Runnable {
         } else {
             incrementBy(droppedRecords, classified.goneCount);
         }
+        // §3.8 I-8: entries the destination permanently rejected and we resolved out-of-band (DLQ
+        // notice, or dropped). Never dispatched, so they carry no dispatch-lag sample.
+        incrementBy(unrelayableRecords, classified.rejectedCount);
         for (int f = 0; f < classified.foundCount; f++) {
             long lagMs = Math.max(0, nowMs - batch.dispatchAtMs(classified.foundIndices[f]));
             dispatchLag.record(Duration.ofMillis(lagMs));
@@ -1509,6 +1684,7 @@ public final class DispatchLoop implements Runnable {
                 lastCursorActivityMs.remove(partition);
                 lastCommittedCursorOffset.remove(partition);
                 penaltyStreaks.remove(partition);
+                dropUnrelayableForPartition(partition);
                 if (pausedForBackpressure.remove(partition)) {
                     pausedGauge(partition).set(0);
                 }
@@ -1526,11 +1702,16 @@ public final class DispatchLoop implements Runnable {
         final int[] settledIndices;
         final int[] foundIndices;
         final int[] goneIndices;
+        final int[] rejectedIndices;
         final int[] carryIndices;
+        /** {@code rejected[i]} ⇒ batch index {@code i} is a FOUND-but-permanently-unrelayable entry. */
+        final boolean[] rejected;
+
         final Set<Integer> transientPartitions = new TreeSet<>();
         int settledCount;
         int foundCount;
         int goneCount;
+        int rejectedCount;
         int carryCount;
         int firstGoneIndex = -1;
 
@@ -1538,9 +1719,25 @@ public final class DispatchLoop implements Runnable {
             settledIndices = new int[capacity];
             foundIndices = new int[capacity];
             goneIndices = new int[capacity];
+            rejectedIndices = new int[capacity];
             carryIndices = new int[capacity];
+            rejected = new boolean[capacity];
         }
     }
+
+    /** A source-entry identity within the (single) source topic: partition + offset. */
+    private record SourceCoord(int partition, long offset) {}
+
+    /** A resolved disposition for a permanently-unrelayable entry (§3.8 I-8). */
+    private record Unrelayable(Route route, String detail) {
+        enum Route {
+            DLQ,
+            DROP
+        }
+    }
+
+    /** A permanent destination rejection attributed to a specific entry by a send callback. */
+    private record UnrelayableHit(SourceCoord coord, String detail) {}
 
     /**
      * The pending half of the I9 procedure: whether the replacement producer has been built and

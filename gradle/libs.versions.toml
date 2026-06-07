@@ -2,9 +2,12 @@
 kafka = "4.3.0"
 fastutil = "8.5.16"
 micrometer = "1.15.0"
-jackson = "2.19.0"
+# jackson/logback bumped for SCA hygiene (audit L8): jackson >= 2.21.1 (latest stable 2.2x) clears
+# GHSA-72hv-8253-57qq, logback >= 1.5.19 clears CVE-2025-11226 — both unreachable here but flagged
+# by scanners. Kept current via Dependabot's gradle ecosystem (.github/dependabot.yml).
+jackson = "2.22.0"
 slf4j = "2.0.17"
-logback = "1.5.18"
+logback = "1.5.34"
 jspecify = "1.0.0"
 junit = "5.12.2"
 junit-platform = "1.12.2"

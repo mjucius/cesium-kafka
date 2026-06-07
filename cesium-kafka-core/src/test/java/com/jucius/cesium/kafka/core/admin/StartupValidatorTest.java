@@ -21,6 +21,7 @@ import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
@@ -172,8 +173,13 @@ class StartupValidatorTest {
     @Test
     void healthyClusterPassesAndCapturesIdentity() {
         givenHealthyCluster();
+        // A genuinely healthy cluster has the R12 tracker write ACL configured and in force, so
+        // the L3 ACL verification adds no finding (the matching-grant case).
+        admin.putTrackerWriteAcl(TRACKER, "User:cesium");
+        ConfigBuilder builder = new ConfigBuilder();
+        builder.aclPrincipal = "User:cesium";
 
-        StartupValidationResult result = validator.validate(defaultConfig());
+        StartupValidationResult result = validator.validate(builder.build());
 
         assertNoErrors(result);
         assertTrue(result.report().warnings().isEmpty(), () -> result.report().render());
@@ -403,6 +409,10 @@ class StartupValidatorTest {
             admin.topicConfigs.remove(TRACKER);
             admin.aclFailure =
                     new ClusterAdminException("createAcls failed", new SecurityDisabledException("no authorizer"));
+            // A cluster with no authorizer also fails the every-startup DESCRIBE (L3), so the ACL
+            // verification downgrades to a WARN just like the apply path.
+            admin.describeAclsFailure =
+                    new ClusterAdminException("describeAcls failed", new SecurityDisabledException("no authorizer"));
             ConfigBuilder builder = new ConfigBuilder();
             builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
             builder.aclPrincipal = "User:cesium";
@@ -533,6 +543,125 @@ class StartupValidatorTest {
         }
     }
 
+    // ------------------------------------------------------------------ tracker write ACL (L3)
+
+    @Nested
+    class TrackerAcl {
+
+        private static final String ACL_PATH = "route.tracker.acl-principal";
+
+        private ConfigBuilder withPrincipal(String principal) {
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.bootstrap = TrackerConfig.Bootstrap.FAIL;
+            builder.aclPrincipal = principal;
+            return builder;
+        }
+
+        @Test
+        void matchingExclusiveGrantProducesNoFinding() {
+            givenHealthyCluster();
+            admin.putTrackerWriteAcl(TRACKER, "User:cesium");
+
+            StartupValidationResult result =
+                    validator.validate(withPrincipal("User:cesium").build());
+
+            assertNoErrors(result);
+            assertNoFindingAt(result, ACL_PATH);
+        }
+
+        @Test
+        void describeRunsInFailModeNotOnlyOnCreate() {
+            // The whole point of L3: FAIL mode (topic pre-provisioned out of band) still verifies
+            // the live ACL on every startup. No grant is ever applied here, yet the missing
+            // restriction is detected.
+            givenHealthyCluster();
+
+            StartupValidationResult result =
+                    validator.validate(withPrincipal("User:cesium").build());
+
+            assertTrue(admin.aclGrants.isEmpty(), "FAIL mode never applies an ACL");
+            assertNoErrors(result);
+            assertWarningContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
+        }
+
+        @Test
+        void configuredPrincipalWithoutMatchingGrantWarns() {
+            givenHealthyCluster();
+            // Some other principal holds write, but not the configured cesium principal.
+            admin.putTrackerWriteAcl(TRACKER, "User:intruder");
+
+            StartupValidationResult result =
+                    validator.validate(withPrincipal("User:cesium").build());
+
+            assertNoErrors(result);
+            assertWarningContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
+            assertWarningContains(result, ACL_PATH, "User:intruder");
+        }
+
+        @Test
+        void foreignWriterAlongsideTheConfiguredPrincipalWarns() {
+            givenHealthyCluster();
+            admin.putTrackerWriteAcl(TRACKER, "User:cesium");
+            admin.putTrackerWriteAcl(TRACKER, "User:intruder");
+
+            StartupValidationResult result =
+                    validator.validate(withPrincipal("User:cesium").build());
+
+            assertNoErrors(result);
+            assertWarningContains(result, ACL_PATH, "foreign principal");
+            assertWarningContains(result, ACL_PATH, "User:intruder");
+        }
+
+        @Test
+        void unsetPrincipalWarnsThatTheR12ControlIsUnenforced() {
+            givenHealthyCluster();
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoErrors(result);
+            assertWarningContains(result, ACL_PATH, "unset");
+            assertWarningContains(result, ACL_PATH, "any principal can");
+        }
+
+        @Test
+        void unsetPrincipalNamesExistingForeignWriters() {
+            givenHealthyCluster();
+            admin.putTrackerWriteAcl(TRACKER, "User:intruder");
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoErrors(result);
+            assertWarningContains(result, ACL_PATH, "unset");
+            assertWarningContains(result, ACL_PATH, "User:intruder");
+        }
+
+        @Test
+        void noAuthorizerDowngradesVerificationToWarning() {
+            givenHealthyCluster();
+            admin.describeAclsFailure =
+                    new ClusterAdminException("describeAcls failed", new SecurityDisabledException("no authorizer"));
+
+            StartupValidationResult result =
+                    validator.validate(withPrincipal("User:cesium").build());
+
+            assertNoErrors(result);
+            assertWarningContains(result, ACL_PATH, "no authorizer");
+            assertWarningContains(result, ACL_PATH, "cannot be verified");
+        }
+
+        @Test
+        void describeFailureForOtherReasonsWarnsToVerifyManually() {
+            givenHealthyCluster();
+            admin.describeAclsFailure = new ClusterAdminException("describeAcls timed out");
+
+            StartupValidationResult result =
+                    validator.validate(withPrincipal("User:cesium").build());
+
+            assertNoErrors(result);
+            assertWarningContains(result, ACL_PATH, "verify manually");
+        }
+    }
+
     // ------------------------------------------------------------------ recorded identity (R-10)
 
     @Nested
@@ -645,10 +774,73 @@ class StartupValidatorTest {
             builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
             builder.dispatch = new DispatchConfig(
                     null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            // route.relay.on-unrelayable defaults to DLQ, which IS a DLQ-routing policy (M2), so the
+            // "no policy routes to DLQ" premise also requires it to be a non-DLQ disposition.
+            builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DROP);
 
             StartupValidationResult result = validator.validate(builder.build());
 
             assertNoErrors(result);
+        }
+
+        @Test
+        void onUnrelayableDlqAloneRequiresTheDlqTopicToExist() {
+            // M2 regression guard: with every delay/dispatch policy set to a non-DLQ value but
+            // on-unrelayable left at its DLQ default, the broker-side DLQ existence check MUST still
+            // run — otherwise a permanent-rejection DLQ write to a nonexistent topic wedges the
+            // partition (UnknownTopicOrPartition is not a permanent record rejection).
+            givenHealthyCluster();
+            admin.topics.remove(DLQ);
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
+            builder.dispatch = new DispatchConfig(
+                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DLQ);
+
+            StartupValidationResult result = validator.validate(builder.build());
+
+            assertErrorContains(result, "route.dlq.topic", "does not exist");
+        }
+
+        @Test
+        void onUnrelayableDlqAloneRunsTheL4UnboundedRetentionCheck() {
+            // The same M2 gap silently skipped the L4 unbounded-DLQ WARN for this path; with the gate
+            // fixed it fires when on-unrelayable=DLQ is the only DLQ-routing policy.
+            givenHealthyCluster();
+            admin.addTopic(DLQ, 1, Map.of("retention.ms", "-1", "retention.bytes", "-1"));
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
+            builder.dispatch = new DispatchConfig(
+                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DLQ);
+
+            StartupValidationResult result = validator.validate(builder.build());
+
+            assertNoErrors(result);
+            assertWarningContains(result, "route.dlq.topic", "unbounded retention");
+        }
+
+        @Test
+        void unboundedDlqRetentionWarns() {
+            givenHealthyCluster();
+            admin.addTopic(DLQ, 1, Map.of("retention.ms", "-1", "retention.bytes", "-1"));
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoErrors(result);
+            assertWarningContains(result, "route.dlq.topic", "unbounded retention");
+        }
+
+        @Test
+        void boundedDlqRetentionDoesNotWarn() {
+            givenHealthyCluster();
+            // retention.bytes=-1 but a finite retention.ms is a bound: no warning.
+            admin.addTopic(DLQ, 1, Map.of("retention.ms", "604800000", "retention.bytes", "-1"));
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoErrors(result);
+            assertNoFindingAt(result, "route.dlq.topic");
         }
 
         @Test
@@ -666,7 +858,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.addTopic(DESTINATION, PARTITIONS + 1, Map.of());
             ConfigBuilder builder = new ConfigBuilder();
-            builder.relay = new RelayConfig(null, RelayPartitioning.SOURCE_PARTITION);
+            builder.relay = new RelayConfig(null, RelayPartitioning.SOURCE_PARTITION, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -677,7 +869,7 @@ class StartupValidatorTest {
         void sourcePartitionRelayPassesWithEqualPartitionCounts() {
             givenHealthyCluster();
             ConfigBuilder builder = new ConfigBuilder();
-            builder.relay = new RelayConfig(null, RelayPartitioning.SOURCE_PARTITION);
+            builder.relay = new RelayConfig(null, RelayPartitioning.SOURCE_PARTITION, null);
 
             assertNoErrors(validator.validate(builder.build()));
         }

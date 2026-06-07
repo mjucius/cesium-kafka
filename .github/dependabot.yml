@@ -1,0 +1,37 @@
+# Dependabot keeps the supply-chain pins current (audit M4).
+#
+#   * github-actions — the third-party actions in .github/workflows/{ci,nightly,release}.yml are
+#     SHA-pinned to immutable commits (audit M4). Pinning trades freshness for integrity, so
+#     Dependabot is REQUIRED to bump those SHAs (and their trailing "# vX.Y.Z" comments) as new
+#     releases land — otherwise the pins silently rot and miss upstream security fixes.
+#   * gradle — surfaces dependency updates for the version catalog (gradle/libs.versions.toml),
+#     gradle.properties, and the build scripts, so the jackson/logback (audit L8) and other library
+#     pins keep pace with upstream patch releases and SCA advisories.
+#
+# Weekly cadence keeps PR churn low for a pre-1.0 project; grouped minor/patch PRs reduce noise.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
+    groups:
+      gradle-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

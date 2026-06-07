@@ -154,6 +154,10 @@ class ConfigDefaultsTest {
     @Test
     void observabilityDefaults() {
         assertEquals(8081, allDefaults().observability().port());
+        // L1: wildcard bind by default for k8s probe compatibility.
+        assertEquals("0.0.0.0", allDefaults().observability().bindAddress());
+        // M3: the unauthenticated /info hides the sensitive fields unless explicitly enabled.
+        assertFalse(allDefaults().observability().detailedInfo());
     }
 
     @Test

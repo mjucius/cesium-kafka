@@ -5,6 +5,9 @@ import com.jucius.cesium.kafka.core.config.ValidationReport.Severity;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
+import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,6 +25,18 @@ import org.jspecify.annotations.Nullable;
  * (25% of max heap). Strictness is the {@code startup-checks.heap-budget} flag (FAIL default,
  * WARN opt-down); the computed footprint is always included in the report as an INFO finding so
  * startup logs print it (§5.3).
+ *
+ * <p><strong>Scope — this check bounds steady-state ACTIVE backpressure, not recovery (H1).</strong>
+ * The worst-case footprint assumes the per-partition cap holds, which it does only for ACTIVE
+ * shards: a RECOVERING shard is never backpressure-paused (it must replay to the barrier, I4), so
+ * this startup check alone does <em>not</em> bound the replay footprint. Recovery is instead bounded
+ * <em>at runtime</em> by the store's resident-pending ceiling (the same heap budget ÷
+ * {@value DispatchConfig#INDEX_BYTES_PER_ENTRY} B/entry): an over-budget durable backlog fails fast
+ * and attributably ({@code cesium_recovery_over_budget} + a runbook log line) instead of allocating
+ * into an {@code OutOfMemoryError} crash-loop. The durable backlog that recovery replays is itself
+ * bounded outside cesium by broker client/produce quotas + source {@code retention.bytes} +
+ * {@code delay.max} (the L4 deployment guidance, §5.3/§5.4) — this validator cannot see those, which
+ * is why the runtime ceiling is the load-bearing recovery guard.
  */
 public final class CesiumConfigValidator {
 
@@ -155,6 +170,8 @@ public final class CesiumConfigValidator {
         if (port < 1 || port > 65535) {
             findings.add(Finding.error("observability.port", "must be in [1, 65535], got " + port + "."));
         }
+        bindAddress(
+                findings, "observability.bind-address", config.observability().bindAddress());
         positiveDuration(
                 findings,
                 "startup-checks.max-tolerated-outage",
@@ -189,12 +206,97 @@ public final class CesiumConfigValidator {
         }
     }
 
+    /**
+     * L1: the observability bind address must be an IP literal ({@code 0.0.0.0}, {@code 127.0.0.1},
+     * {@code ::}, {@code ::1}) or {@code localhost}. Hostnames are rejected here without a DNS lookup
+     * (the validator never touches the network) — a bind address is a local interface, and parsing it
+     * eagerly turns a typo into a clear config error rather than a {@code BindException} at startup.
+     */
+    private static void bindAddress(List<Finding> findings, String path, String value) {
+        if (value.isBlank()) {
+            findings.add(Finding.error(path, "must not be blank."));
+            return;
+        }
+        if (value.equalsIgnoreCase("localhost")) {
+            return;
+        }
+        if (value.indexOf(':') >= 0) {
+            // IPv6 literal: getByName parses the literal without a DNS lookup (a hostname cannot
+            // contain a ':'), so an unparseable value fails here rather than reaching for the network.
+            try {
+                InetAddress.getByName(value);
+                return;
+            } catch (UnknownHostException e) {
+                findings.add(Finding.error(path, "is not a valid IPv6 literal: " + value + "."));
+                return;
+            }
+        }
+        if (!isIpv4Literal(value)) {
+            findings.add(Finding.error(
+                    path, "must be an IP literal (e.g. 0.0.0.0, 127.0.0.1, ::1) or localhost, got " + value + "."));
+        }
+    }
+
+    /** Strict dotted-quad check (no DNS): exactly four octets, each 0-255. */
+    private static boolean isIpv4Literal(String value) {
+        String[] octets = value.split("\\.", -1);
+        if (octets.length != 4) {
+            return false;
+        }
+        for (String octet : octets) {
+            if (octet.isEmpty() || octet.length() > 3) {
+                return false;
+            }
+            int parsed;
+            try {
+                parsed = Integer.parseInt(octet);
+            } catch (NumberFormatException e) {
+                return false;
+            }
+            if (parsed < 0 || parsed > 255) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // ------------------------------------------------------------------ cross-field rules
 
     private static void checkCrossField(CesiumConfig config, List<Finding> findings) {
         checkDlqPolicies(config, findings);
+        checkUnsafeFailPolicies(config, findings);
         checkPenaltyOrdering(config, findings);
         checkDrainSlice(config, findings);
+    }
+
+    /**
+     * L5: warn when an ingest delay policy is set to {@code FAIL}. A single crafted record (a
+     * non-decimal or out-of-range {@code cesium-delay-ms}, or a delay above {@code delay.max})
+     * then fatally stops the ingest loop, tearing down every worker; because the aborting batch
+     * never commits offsets and {@code auto.offset.reset=none} is locked, the poison record stays
+     * at the committed source offset and re-fails on every restart — a pipeline-wide,
+     * restart-persistent outage from one record. {@code FAIL} is safe only when the source topic
+     * has exclusively trusted producers; multi-tenant ingress must use {@code DLQ} /
+     * {@code RELAY_IMMEDIATE} / {@code CLAMP}. WARN, never ERROR: {@code FAIL} is a deliberate,
+     * non-default opt-in.
+     */
+    private static void checkUnsafeFailPolicies(CesiumConfig config, List<Finding> findings) {
+        if (config.delay().onMalformedHeader() == MalformedHeaderPolicy.FAIL) {
+            findings.add(Finding.warning(
+                    "delay.on-malformed-header",
+                    "FAIL turns a single crafted record (a malformed cesium-delay-ms) into a pipeline-wide,"
+                            + " restart-persistent outage (L5): the poison record stays at the committed source offset"
+                            + " and auto.offset.reset=none re-fails it on every restart. Unsafe when the SOURCE topic"
+                            + " has untrusted producers — prefer DLQ or RELAY_IMMEDIATE for multi-tenant ingress."));
+        }
+        if (config.delay().onOverMax() == OverMaxPolicy.FAIL) {
+            findings.add(Finding.warning(
+                    "delay.on-over-max",
+                    "FAIL turns a single crafted record (a delay above delay.max) into a pipeline-wide,"
+                            + " restart-persistent outage (L5): the poison record stays at the committed source offset"
+                            + " and auto.offset.reset=none re-fails it on every restart. Unsafe when the SOURCE topic"
+                            + " has untrusted producers — prefer DLQ or CLAMP for multi-tenant ingress."));
+        }
     }
 
     /** Every policy routing to DLQ requires the DLQ topic to exist (§2.3, §7.4). */
@@ -212,6 +314,9 @@ public final class CesiumConfigValidator {
         }
         if (config.dispatch().onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ) {
             findings.add(Finding.error("dispatch.on-unfetchable-payload", requirement));
+        }
+        if (config.route().relay().onUnrelayable() == UnrelayablePolicy.DLQ) {
+            findings.add(Finding.error("route.relay.on-unrelayable", requirement));
         }
     }
 
@@ -289,6 +394,10 @@ public final class CesiumConfigValidator {
     /**
      * Worst-case index footprint vs the 25%-of-heap index budget (§5.3): always reported as INFO;
      * a breach is an ERROR (or WARNING under {@code startup-checks.heap-budget: WARN}).
+     *
+     * <p>This bounds the ACTIVE backpressure caps only; the replay footprint of a RECOVERING shard
+     * is bounded at runtime by the store's resident-pending ceiling, not here (H1 — see the class
+     * javadoc).
      */
     private static void checkHeapBudget(CesiumConfig config, ValidationContext context, List<Finding> findings) {
         long perPartition = config.dispatch().maxPendingPerPartition();

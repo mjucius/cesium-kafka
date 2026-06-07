@@ -3,9 +3,11 @@ package com.jucius.cesium.kafka.core.admin;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
@@ -27,13 +29,22 @@ final class FakeClusterAdmin implements ClusterAdmin {
     final Map<String, Map<TopicPartition, OffsetAndMetadata>> groupOffsets = new HashMap<>();
     final List<CreatedTopic> created = new ArrayList<>();
     final List<AclGrant> aclGrants = new ArrayList<>();
+    final Map<String, Set<String>> trackerWriteAcls = new HashMap<>();
     ClusterAdminException aclFailure;
     ClusterAdminException describeFailure;
+    ClusterAdminException describeAclsFailure;
     ClusterAdminException groupOffsetsFailure;
 
     /** Registers one committed offset (with metadata) for a consumer group. */
     void putGroupOffset(String groupId, TopicPartition partition, OffsetAndMetadata offset) {
         groupOffsets.computeIfAbsent(groupId, ignored -> new LinkedHashMap<>()).put(partition, offset);
+    }
+
+    /** Pre-registers an existing ALLOW WRITE ACL on a topic (e.g. for FAIL-mode startups). */
+    void putTrackerWriteAcl(String topic, String principal) {
+        trackerWriteAcls
+                .computeIfAbsent(topic, ignored -> new LinkedHashSet<>())
+                .add(principal);
     }
 
     /** Registers a topic with the given partition count and effective configs. */
@@ -90,5 +101,14 @@ final class FakeClusterAdmin implements ClusterAdmin {
             throw aclFailure;
         }
         aclGrants.add(new AclGrant(topic, principal));
+        putTrackerWriteAcl(topic, principal);
+    }
+
+    @Override
+    public Set<String> describeTrackerWritePrincipals(String topic) {
+        if (describeAclsFailure != null) {
+            throw describeAclsFailure;
+        }
+        return Set.copyOf(trackerWriteAcls.getOrDefault(topic, Set.of()));
     }
 }

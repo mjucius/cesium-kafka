@@ -109,8 +109,14 @@ class AppQuickstartIT extends KafkaIT {
         Clock clock = Clock.systemUTC();
         registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         engine = new CesiumEngine(config, registry, clock, SHUTDOWN_BUDGET);
+        // detailed-info enabled so /info exposes the applicationId asserted below (security M3 opt-in).
         server = new ObservabilityServer(
-                0, registry, new HealthAssessor(engine.health(), clock, LIVENESS_STALE_AFTER), this::serviceInfo);
+                "0.0.0.0",
+                0,
+                true,
+                registry,
+                new HealthAssessor(engine.health(), clock, LIVENESS_STALE_AFTER),
+                this::serviceInfo);
         server.start();
 
         // Server up, engine not started: liveness is UP (no loops to be wedged), readiness is NOT_READY

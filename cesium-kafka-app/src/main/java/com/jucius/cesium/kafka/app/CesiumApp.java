@@ -111,7 +111,9 @@ public final class CesiumApp {
         AutoCloseable observability = () -> {};
         try {
             ObservabilityRuntime runtime = new ObservabilityRuntime(
+                    config.observability().bindAddress(),
                     config.observability().port(),
+                    config.observability().detailedInfo(),
                     registry,
                     engine.health(),
                     clock,

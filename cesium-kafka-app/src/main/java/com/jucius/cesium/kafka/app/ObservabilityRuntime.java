@@ -18,7 +18,11 @@ import java.util.function.Supplier;
  * and the {@link #serviceInfo()} supplier is re-evaluated per request so {@code /info} reflects the
  * latest store capabilities once the store is up.
  *
+ * @param bindAddress the {@code observability.bind-address} the listener binds (§8 default {@code
+ *     0.0.0.0}; {@code 127.0.0.1} restricts the unauthenticated endpoints to loopback, security L1)
  * @param port the {@code observability.port} the server binds (§8 default 8081)
+ * @param detailedInfo whether {@code /info} discloses the sensitive fields (applicationId, roles,
+ *     store capabilities, acknowledgments); §8 default {@code false} (security M3)
  * @param registry the Prometheus registry every loop self-registered its meters into; the server
  *     scrapes it for {@code /metrics}
  * @param health the engine-written health signals the server reads for {@code /health/live} and
@@ -32,7 +36,9 @@ import java.util.function.Supplier;
  *     acknowledgments), re-evaluated per request
  */
 public record ObservabilityRuntime(
+        String bindAddress,
         int port,
+        boolean detailedInfo,
         PrometheusMeterRegistry registry,
         EngineHealth health,
         Clock clock,

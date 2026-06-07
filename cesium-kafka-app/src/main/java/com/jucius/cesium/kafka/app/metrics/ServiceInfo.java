@@ -36,8 +36,22 @@ public record ServiceInfo(
         acknowledgments = List.copyOf(acknowledgments);
     }
 
-    /** Renders this info as a JSON object for the {@code /info} endpoint. */
-    public String toJson() {
+    /**
+     * Renders this info as a JSON object for the {@code /info} endpoint. {@code version} and {@code
+     * gitCommit} are always present (the ops fields). The sensitive/operational detail —
+     * {@code applicationId} (the fencing-id seed), {@code roles}, the store {@code capabilities}, and
+     * {@code acknowledgments} — is emitted only when {@code detailed} is set, so the unauthenticated
+     * endpoint discloses nothing reconnaissance-worthy by default (security M3).
+     *
+     * @param detailed whether to include the sensitive/operational fields (opt-in, off by default)
+     */
+    public String toJson(boolean detailed) {
+        Json.Obj root = Json.object().str("version", build.version());
+        build.gitCommit().ifPresent(commit -> root.str("gitCommit", commit));
+        if (!detailed) {
+            // Default unauthenticated payload: ops provenance plus the innocuous store type only.
+            return root.raw("store", Json.object().str("type", storeType).end()).end();
+        }
         Json.Arr rolesJson = Json.array();
         for (String role : roles) {
             rolesJson.str(role);
@@ -55,8 +69,6 @@ public record ServiceInfo(
                         .bool("requiresTrackerTopic", caps.requiresTrackerTopic())
                         .bool("supportsCancellation", caps.supportsCancellation())
                         .end()));
-        Json.Obj root = Json.object().str("version", build.version());
-        build.gitCommit().ifPresent(commit -> root.str("gitCommit", commit));
         return root.str("applicationId", applicationId)
                 .raw("roles", rolesJson.end())
                 .raw("store", store.end())

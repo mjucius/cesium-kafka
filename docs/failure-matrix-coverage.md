@@ -29,7 +29,7 @@ Legend for the **Lane** column:
 | I-5 | Zombie ingest resumes and commits ⇒ `TxnOffsetCommit` fenced | `ZombieStaticIdFencingIT.duplicateIngestInstanceIdFences…` (group-A duplicate `group.instance.id`) | nightly |
 | I-6 | Rebalance mid-batch (impossible mid-transaction) | `IngestLoopTest` (no transaction spans a poll; callbacks at txn boundaries) | unit |
 | I-7 | Tracker partition missing (source grew) | `StartupValidatorTest`; `StartupChecksIT` (partition-count mismatch ⇒ `EX_CONFIG`) | PR |
-| I-8 | Destination/tracker produce error ⇒ abort/retry; poison ⇒ DLQ | `IngestPolicyEngineTest` (decision tables); `HeaderPolicyIT` (malformed/over-max ⇒ DLQ) | PR |
+| I-8 | Destination produce error ⇒ transient: abort/retry; permanent (record too large / invalid): poison ⇒ DLQ atomically with the offset advance, partition not wedged (M2) | `IngestPolicyEngineTest` (decision tables); `UnrelayableRejectionsTest` (taxonomy); `IngestLoopTest` / `DispatchLoopTest` (permanent ⇒ DLQ/DROP/FAIL, transient ⇒ retry); `RelayRecordFactoryTest` (unrelayable DLQ shape); `HeaderPolicyIT` (malformed/over-max ⇒ DLQ); `UnrelayableDlqIT` (oversized relay ⇒ DLQ once + following record delivered) | PR |
 | I-9 | Group-A committed offsets expired ⇒ `auto.offset.reset=none` fail-fast | `StartupChecksIT` (group-A offsets removed ⇒ fail-fast runbook exit) | PR |
 | I-10 | Broker degradation outlasting retries ⇒ pause-all + degrade | `IngestLoopTest` park-and-degrade (membership-preserving pause, no exit) | unit — see [gap 5](#gaps-and-concerns) |
 

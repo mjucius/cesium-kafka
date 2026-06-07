@@ -3,11 +3,18 @@
   Plain (default) logging profile (design §9): a one-line console encoder. %X renders the MDC
   context (applicationId/loop/partition/txn). Included by logback.xml when LOG_FORMAT is unset or
   "plain".
+
+  Safe-by-default against log injection (security L7): the message and MDC are wrapped in a %replace
+  converter that strips C0 control characters and DEL ([\x00-\x1F\x7F], i.e. CR/LF/TAB/etc.), so an
+  attacker-influenced value (e.g. a tracker completion-reason header) can never forge a second log
+  line or inject terminal escapes. The range uses \xNN literals rather than \p{Cntrl} so the regex
+  carries no { } that would confuse logback's option parser. An exception's stack trace is appended
+  by PatternLayout after the wrapped section, so multi-line traces stay human-readable.
 -->
 <included>
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} - %msg %X%n</pattern>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} - %replace(%msg %X){'[\x00-\x1F\x7F]', ''}%n</pattern>
         </encoder>
     </appender>
 </included>
