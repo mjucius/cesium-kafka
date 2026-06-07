@@ -7,7 +7,9 @@ are **semver-governed from 1.0**; the engine's programmatic API (`cesium-kafka-c
 
 ## Building
 
-- JDK 21+ (the build provisions the 21 toolchain automatically)
+- Any recent JDK on your `PATH` to launch Gradle; the build then provisions the JDK 21 toolchain
+  automatically. (Gradle needs a JVM to start before it can download a toolchain, so a totally
+  Java-less host fails with "JAVA_HOME is not set" — install any JDK, or build in a JDK 21+ container.)
 - `./gradlew build` — compile, unit tests, formatting and static-analysis checks
 - `./gradlew :cesium-kafka-it:integrationTest` — integration tests (requires Docker)
 

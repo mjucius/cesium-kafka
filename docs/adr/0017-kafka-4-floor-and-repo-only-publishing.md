@@ -22,8 +22,9 @@ three for v1.0.
   4.0+ brokers.
 - **Publishing: repo-only for v1.0.** **No Maven Central, no GHCR image push.** The release workflow
   runs the full build/test and publishes a **GitHub Release with the built distribution archives
-  (`distTar` / `distZip`) only**. The `Dockerfile` (distroless) remains for users to build the image
-  locally; it is simply not pushed.
+  (`distTar` / `distZip`) only**. The `Dockerfile` (an `eclipse-temurin:21-jre` runtime — the Gradle
+  `application`-plugin start script needs a shell, so a shell-less distroless base is not used)
+  remains for users to build the image locally; it is simply not pushed.
 - **Product surface.** The runnable **app is the supported v1 product**. The engine's programmatic
   API is **internal-until-1.x**. The **store SPI module (`cesium-kafka-api`) plus the
   `cesium-kafka-store-testkit`** are the **stable, semver-published surface** for store implementers

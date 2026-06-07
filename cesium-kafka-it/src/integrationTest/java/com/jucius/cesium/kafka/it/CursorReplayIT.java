@@ -62,7 +62,13 @@ class CursorReplayIT extends KafkaIT {
         long pinsFor = ts + 45_000;
         try (Producer<byte[], byte[]> producer = newProducer()) {
             for (int i = 0; i < TRAFFIC; i++) {
-                produce(producer, source, 0, ts, "k-" + i, "v-" + i, h(CesiumHeaders.DELAY_MS, "1500"));
+                // The delay is relative to the records' fixed source timestamp `ts`. It must comfortably
+                // exceed the worst-case pipeline-startup latency: if ingest first polls these records
+                // more than `delay` after `ts` (slow/loaded host), they are already past-due and get
+                // relayed IMMEDIATELY with no tracker ADD — shrinking the tracker history the invariant
+                // below checks (the original 1500 ms was too tight and flaked on slower hosts). 8 s gives
+                // ample scheduling headroom while staying far under the 45 s pin horizon.
+                produce(producer, source, 0, ts, "k-" + i, "v-" + i, h(CesiumHeaders.DELAY_MS, "8000"));
             }
             for (int i = 0; i < PINS; i++) {
                 produce(
@@ -100,10 +106,16 @@ class CursorReplayIT extends KafkaIT {
                     SidecarCodec.DecodedSidecar sidecar = SidecarCodec.decode(committed.metadata());
                     assertEquals(PINS, sidecar.entries().size(), "exactly the pins are pinned");
                 });
+        // Sanity check that the history is substantial relative to the post-catch-up replay window
+        // (which the cursor==high-watermark assertion above already proved is ~0). A robust lower
+        // bound is TRAFFIC: every scheduled record contributes at least one ADD before its tombstone,
+        // so the end offset is >= the scheduled count regardless of dispatch/compaction timing. (We do
+        // not require TRAFFIC*2 — that assumed every tombstone had also landed by this instant, which
+        // is timing-sensitive; the real boundedness proof is the cursor catch-up, not this magnitude.)
         long historyLength = logEndOffsetTotal(tracker);
         assertTrue(
-                historyLength > TRAFFIC * 2,
-                () -> "test invariant: the tracker history (" + historyLength + ") dwarfs the replay window");
+                historyLength > TRAFFIC,
+                () -> "test invariant: the tracker history (" + historyLength + ") dwarfs the ~0 replay window");
 
         // Restart: recovery seeds the pins from the sidecar and replays ~nothing.
         harness.stop();

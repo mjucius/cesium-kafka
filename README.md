@@ -55,7 +55,9 @@ What is supported, and how stable, in v1:
 
 - Kafka **4.0+** brokers (KRaft)
 - Destination consumers must use `isolation.level=read_committed` to observe exactly-once
-- Java 21+ (to build/run from source)
+- To build from source: any recent JDK on your `PATH` to launch Gradle — the build then provisions
+  the JDK 21 toolchain automatically (Gradle's toolchain can download JDK 21, but it cannot bootstrap
+  without *some* Java runtime to start the Gradle process). Or build inside a JDK 21+ container.
 
 ## Try it — one command, no tools but Docker
 
