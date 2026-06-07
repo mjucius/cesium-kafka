@@ -35,3 +35,18 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      # JUnit's jupiter artifact and the platform launcher are version-locked and MUST move together
+      # (jupiter 6.x requires platform 6.x). Group all their update-types into a single PR so a major
+      # bump never arrives as two separate, individually-unbuildable mismatched PRs (as 5→6 did).
+      junit:
+        patterns:
+          - "org.junit.jupiter:*"
+          - "org.junit.platform:*"
+    ignore:
+      # Hold spotless at 7.x: 8.x has a shared-BuildService classloader conflict
+      # (SpotlessTaskService loaded by two project scopes) with this build's jmh-plugin +
+      # convention-plugin + included-build (build-logic) layout — it fails :cesium-kafka-benchmarks
+      # at configuration time. Spotless is a build-only formatter with no security/correctness
+      # surface, so we pin the working major until the upstream interaction is resolved.
+      - dependency-name: "com.diffplug.spotless:spotless-plugin-gradle"
+        update-types: ["version-update:semver-major"]
