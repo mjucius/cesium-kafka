@@ -6,6 +6,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+- One-command self-driving demo (`make demo`): submits five out-of-order delayed notifications and
+  watches them arrive re-ordered and on schedule, exactly once — needs only Docker (a `kcat`
+  sidecar provides the tooling). Added a `Makefile` (`demo`/`up`/`down`/`logs`/`build`/`test`/
+  `image`), `config/demo/run-demo.sh`, and a `demo`-profile service in `config/docker-compose.yaml`.
+
+### Fixed
+- The Docker image / `docker compose ... up --build` quickstart failed to configure because
+  `settings.gradle.kts` included `cesium-kafka-benchmarks` while the Dockerfile (intentionally)
+  omits that dev-only module; the benchmarks module is now included only when its directory is
+  present, so slim build contexts configure cleanly.
+- Stopped tracking stray Gradle build output (`build-logic/.iso-*-build/`) and ignored it.
+- Dev/source-build version aligned to `1.0.0-SNAPSHOT` (was `0.1.0-SNAPSHOT`); release builds still
+  derive the version from the git tag.
+
 ## [1.0.0] - 2026-06-06
 
 First public release. cesium-kafka is a Kafka delayed-message relay: it consumes a source topic and

@@ -57,11 +57,41 @@ What is supported, and how stable, in v1:
 - Destination consumers must use `isolation.level=read_committed` to observe exactly-once
 - Java 21+ (to build/run from source)
 
-## Quickstart (5 minutes)
+## Try it — one command, no tools but Docker
 
-You need [Docker](https://docs.docker.com/get-docker/) (with Compose) and
-[`kcat`](https://github.com/edenhill/kcat). The Compose stack runs a single-broker KRaft Kafka, a
-one-shot bootstrap step, and cesium itself built from source.
+```bash
+make demo
+```
+
+This brings up a single-broker Kafka + cesium (built from source) and runs a self-driving demo: it
+submits five "notifications" **all at once, in an order that is not their delivery order**, each
+asking to be delivered after a different delay — then watches them arrive, re-ordered and on
+schedule, exactly once. No `kcat` or other tools needed on your machine (a sidecar provides it):
+
+```text
+demo: submitting 5 notifications to 'orders' at 01:28:13 — all at once:
+  submitted n1  "Welcome email"     -> deliver in 20s
+  submitted n2  "Reminder ping"      -> deliver in  5s
+  submitted n3  "Shipping notice"    -> deliver in 15s
+  submitted n4  "Wake-up call"       -> deliver in 10s
+  submitted n5  "Receipt"            -> deliver immediately
+  ARRIVED  + 0s  key=n5  payload="Receipt"
+  ARRIVED  + 5s  key=n2  payload="Reminder ping"
+  ARRIVED  +10s  key=n4  payload="Wake-up call"
+  ARRIVED  +15s  key=n3  payload="Shipping notice"
+  ARRIVED  +20s  key=n1  payload="Welcome email"
+```
+
+Submission order was `n1,n2,n3,n4,n5`; delivery is re-ordered by each record's requested time (the
+`+Ns` label is the actual offset from submission, read from each message's dispatch timestamp).
+Tear it down with `make down`. `make help` lists the other targets (`up`, `logs`, `build`, `test`,
+`image`). Requires only [Docker](https://docs.docker.com/get-docker/) with Compose.
+
+## Quickstart (5 minutes) — drive it yourself
+
+To produce and consume by hand instead, you also need [`kcat`](https://github.com/edenhill/kcat).
+The Compose stack runs a single-broker KRaft Kafka, a one-shot bootstrap step, and cesium itself
+built from source.
 
 **1. Start everything** (from the repo root):
 

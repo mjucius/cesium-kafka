@@ -93,3 +93,19 @@ services:
       CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS: "kafka:29092"
     volumes:
       - ./cesium-example.yaml:/etc/cesium/cesium.yaml:ro
+
+  # Self-driving demo (profile "demo", easiest via `make demo`). A kcat sidecar — so you
+  # need no tools on your host — submits five out-of-order delayed notifications and
+  # watches them arrive on schedule, re-ordered, exactly once. Not started by a plain
+  # `up`; run (once the stack is up) with:
+  #   docker compose -f config/docker-compose.yaml --profile demo run --rm --no-deps demo
+  demo:
+    image: edenhill/kcat:1.7.1
+    container_name: cesium-kafka-demo
+    profiles: ["demo"]
+    depends_on:
+      cesium:
+        condition: service_started
+    entrypoint: ["/bin/sh", "/demo/run-demo.sh"]
+    volumes:
+      - ./demo:/demo:ro
