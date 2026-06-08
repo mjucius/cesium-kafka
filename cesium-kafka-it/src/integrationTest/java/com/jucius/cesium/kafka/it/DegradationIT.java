@@ -1,7 +1,6 @@
 package com.jucius.cesium.kafka.it;
 
 import static org.awaitility.Awaitility.await;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
@@ -14,39 +13,29 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.apache.kafka.clients.admin.AlterConfigOp;
-import org.apache.kafka.clients.admin.ConfigEntry;
-import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.Producer;
-import org.apache.kafka.common.config.ConfigResource;
-import org.apache.kafka.common.config.TopicConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * Park-and-degrade and penalty-box isolation (design §3.8/R15 D-15, §11.3-10, §7.3/D22).
+ * Penalty-box isolation at the real broker (design §7.3/D22, §11.3-10): one source partition's
+ * payload fetch is forced {@code TRANSIENT} (a deterministic decorator over the real seek fetcher —
+ * the single broker cannot degrade one partition's leader alone, R21); that partition is
+ * penalty-boxed while the healthy partition keeps dispatching on time, and the degraded partition
+ * drains exactly once after the fault heals.
  *
- * <ul>
- *   <li><strong>Park-and-degrade:</strong> every dispatch relay is rejected by the destination (the
- *       deterministic, fast, definitively-abortable fault — a relay larger than the destination's
- *       {@code max.message.bytes}, broker-rejected immediately with no delivery-timeout churn); the
- *       loop aborts and retries with capped backoff and, after {@code parkThreshold} consecutive
- *       failures, parks-and-degrades — {@code cesium.degraded} rises, membership stays alive (no
- *       crash-loop, no replay storm, nothing double-sent), and it recovers the instant the
- *       destination accepts the relay again. (D-15 is abortable-retry <em>exhaustion</em>; an ISR
- *       shortage is just one example — an oversized relay is another and is far more stable to inject
- *       than a {@code min.insync.replicas} delivery-timeout storm.)
- *   <li><strong>Penalty-box isolation:</strong> one source partition's payload fetch is forced
- *       {@code TRANSIENT} (a deterministic decorator over the real seek fetcher — the single broker
- *       cannot degrade one partition's leader alone, R21); that partition is penalty-boxed while the
- *       healthy partition keeps dispatching on time, and the degraded partition drains exactly once
- *       after the fault heals.
- * </ul>
+ * <p><strong>Park-and-degrade (R15/D-15) is NOT exercised here</strong> — it has no clean real-broker
+ * trigger since M2: the one fast, definitively-abortable relay fault (an oversized relay →
+ * {@code RecordTooLargeException}) is now an "unrelayable" fault routed to the DLQ (see
+ * {@link UnrelayableDlqIT}), and every transient relay failure surfaces only as a delivery-timeout,
+ * which the loop classifies as in-doubt (§3.8), not abortable-retry exhaustion. The park-and-degrade
+ * mechanism (gauge raise/clear, membership-preserving, no crash-loop) is covered deterministically by
+ * {@code DispatchLoopTest.parkAndDegradeRaisesGaugeAtThresholdAndClearsOnSuccess}.
  *
- * <p>Class-{@code @Tag("nightly")}: the park-and-degrade and penalty-box backoff windows make this a
- * slow fault-injection scenario, pushed off the PR lane to nightly (design §13).
+ * <p>Class-{@code @Tag("nightly")}: the penalty-box backoff window makes this a slow fault-injection
+ * scenario, pushed off the PR lane to nightly (design §13).
  */
 @Tag("nightly")
 class DegradationIT extends KafkaIT {
@@ -60,86 +49,16 @@ class DegradationIT extends KafkaIT {
         }
     }
 
-    @Test
-    void dispatchParksAndDegradesWhenTheDestinationRejectsRelaysThenRecovers() {
-        String source = createTopic("src", 1);
-        // A destination whose max.message.bytes is far below the relay size ⇒ every relay is rejected
-        // immediately (RecordTooLargeException) — a definitively-abortable failure with no
-        // delivery-timeout wait. Relaxing the limit later "returns" the destination.
-        String destination = createTopic("dst", 1, Map.of(TopicConfig.MAX_MESSAGE_BYTES_CONFIG, "1024"));
-        String dlq = createTopic("dlq", 1);
-        harness = EngineHarness.builder()
-                .roles(Role.INGEST, Role.DISPATCH)
-                .source(source)
-                .destination(destination)
-                .dlq(dlq)
-                .build();
-        harness.start();
-
-        int total = 3;
-        // Incompressible (lz4 producer compression can't shrink it) so the relay genuinely exceeds
-        // the destination's 1 KiB ceiling — a repeated byte would compress to well under it and slip
-        // through.
-        String bigValue = incompressible(8192);
-        long ts = System.currentTimeMillis();
-        long deliverAt = ts + 3_000;
-        try (Producer<byte[], byte[]> producer = newProducer()) {
-            for (int i = 0; i < total; i++) {
-                produce(
-                        producer,
-                        source,
-                        0,
-                        ts,
-                        "k" + i,
-                        bigValue,
-                        h(CesiumHeaders.DELIVER_AT, Long.toString(deliverAt)));
-            }
-            producer.flush();
-        }
-
-        // The entries come due, every relay is rejected, and after the park threshold the loop degrades
-        // (no crash — a dead loop thread could not flip the gauge).
-        await("dispatch loop parked-and-degraded after the destination rejected every relay")
-                .atMost(Duration.ofSeconds(60))
-                .pollInterval(Duration.ofMillis(250))
-                .until(() ->
-                        EngineMetrics.gaugeIs(harness.meterRegistry(), "cesium.degraded", 1.0, "loop", "dispatch"));
-
-        // Membership stays alive while degraded: group B still has its member owning the partition.
-        ConsumerGroupDescription dispatchGroup = get(ADMIN.describeConsumerGroups(List.of(harness.dispatchGroupId()))
-                        .all())
-                .get(harness.dispatchGroupId());
-        assertEquals(
-                1,
-                dispatchGroup.members().size(),
-                "the degraded dispatch member must stay in the group (membership-preserving park, R15)");
-        assertTrue(
-                dispatchGroup.members().stream()
-                        .anyMatch(m -> !m.assignment().topicPartitions().isEmpty()),
-                "the degraded member must keep its tracker assignment (no fence, no crash-loop)");
-
-        // Nothing was *committed* while degraded — the batch is parked, not dropped, not double-sent
-        // (aborted relay attempts and their abort markers do advance the raw log end offset, but a
-        // read_committed consumer sees none of them).
-        assertEquals(
-                0,
-                drainCount(destination, "read_committed"),
-                "nothing committed to the destination while parked (aborted, never double-sent)");
-
-        // Relax the limit so relays fit; dispatch recovers, the flag clears, every entry lands once.
-        setTopicConfig(destination, TopicConfig.MAX_MESSAGE_BYTES_CONFIG, Integer.toString(1024 * 1024));
-
-        List<ConsumerRecord<byte[], byte[]>> delivered =
-                readExactlyCommitted(destination, total, Duration.ofSeconds(90), RETRY_GRACE);
-        byKey(delivered); // exactly-once across the whole park/retry/recover cycle
-
-        await("degraded flag cleared after recovery")
-                .atMost(Duration.ofSeconds(30))
-                .pollInterval(Duration.ofMillis(200))
-                .until(() ->
-                        EngineMetrics.gaugeIs(harness.meterRegistry(), "cesium.degraded", 0.0, "loop", "dispatch"));
-        harness.stop();
-    }
+    // A former real-broker `dispatchParksAndDegrades...` scenario was removed here. Its only clean
+    // trigger — an oversized relay rejected with RecordTooLargeException — is, since M2, a record-level
+    // "unrelayable" fault routed to the DLQ instead of parking (covered by UnrelayableDlqIT). No clean
+    // real-broker driver for park-and-degrade remains: every *transient* relay failure (e.g.
+    // min.insync.replicas not met) reaches the producer only as a delivery-timeout, which the loop
+    // classifies as IN-DOUBT (§3.8 drop-and-recover), not abortable-retry exhaustion. Park-and-degrade
+    // itself (R15 — gauge raise/clear, membership-preserving, no crash-loop) is covered deterministically
+    // by DispatchLoopTest.parkAndDegradeRaisesGaugeAtThresholdAndClearsOnSuccess (with the
+    // no-park-on-deterministic-rejection case beside it). A real-broker park test would need a
+    // producer-fault-injection harness hook — a future enhancement, not a v1 coverage gap.
 
     @Test
     void penaltyBoxIsolatesADegradedSourcePartitionFromHealthyOnes() {
@@ -202,22 +121,6 @@ class DegradationIT extends KafkaIT {
                     byKey.containsKey("p1-" + i), "degraded partition entry p1-" + i + " must dispatch after healing");
         }
         harness.stop();
-    }
-
-    /** A pseudo-random printable-ASCII string the producer's lz4 compression cannot shrink. */
-    private static String incompressible(int length) {
-        java.util.Random random = new java.util.Random(7);
-        StringBuilder sb = new StringBuilder(length);
-        for (int i = 0; i < length; i++) {
-            sb.append((char) ('!' + random.nextInt(94)));
-        }
-        return sb.toString();
-    }
-
-    private static void setTopicConfig(String topic, String key, String value) {
-        ConfigResource resource = new ConfigResource(ConfigResource.Type.TOPIC, topic);
-        AlterConfigOp op = new AlterConfigOp(new ConfigEntry(key, value), AlterConfigOp.OpType.SET);
-        get(ADMIN.incrementalAlterConfigs(Map.of(resource, List.of(op))).all());
     }
 
     /**
