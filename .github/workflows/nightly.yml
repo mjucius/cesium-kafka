@@ -29,7 +29,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
       - name: Reclaim any leaked containers before the run (self-hosted-runner safety; no-op on clean hosted)
         # The cumulative-shutdown ceiling note: a worker OS-killed under memory contention skips Ryuk
         # and leaks its broker container, starving the next run. GitHub-hosted ephemeral runners start
@@ -83,7 +83,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
       - name: Reclaim any leaked containers before the run
         run: docker system prune -f || true
       # The design §11.4 MACRO performance ITs against a real broker + EngineHarness. They are
@@ -134,7 +134,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
       - name: KIP-848 EOS-critical variants (@Tag("kip848"))
         # -Pkip848Only runs ONLY the consumer-protocol variants, so a 848 failure can never mask a
         # classic regression in the lane above. The variants build group.protocol=consumer harnesses
@@ -160,7 +160,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
       - name: Soak lane (the dedicated soakTest task includes ONLY @Tag("soak"); see java-conventions)
         # Runs every module's soakTest task: the KafkaTrackerStore JOL footprint
         # (ShardFootprintTest) and the published contract kit's 1M-entry memory-ceiling / O(log n)
@@ -200,7 +200,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
       - name: Run JMH hot-path benchmarks (design §11.4 table)
         # Micro-benchmarks only (no broker): index insert, drainDue, replay apply, ring binary-search
         # complete, sidecar encode/decode. Writes results/jmh/results.json + human.txt under the
