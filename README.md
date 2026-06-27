@@ -182,6 +182,12 @@ KIP-447 group-metadata fencing. A `read_uncommitted` consumer will observe abort
 The [design document](docs/design.md) is the deep, implementation-ready reference. The guides below
 extract and refine it into focused, audience-targeted entry points.
 
+**Start here**
+
+| Doc | What it covers |
+|---|---|
+| [Overview](docs/overview.md) | Manager-friendly explanation of what the relay does, how records move through it, and the key guarantees |
+
 **Run and operate it**
 
 | Doc | What it covers |
