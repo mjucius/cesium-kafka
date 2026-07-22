@@ -1,5 +1,7 @@
 package com.jucius.cesium.kafka.app.config;
 
+import com.fasterxml.jackson.core.JsonLocation;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -143,7 +145,7 @@ public final class CesiumConfigLoader {
         try (InputStream in = Files.newInputStream(yamlFile)) {
             root = mapper.readTree(in);
         } catch (IOException e) {
-            throw singleError(yamlFile.toString(), "failed to parse YAML: " + e.getMessage());
+            throw singleError(yamlFile.toString(), yamlParseError(e));
         }
         if (root == null || root.isNull() || root.isMissingNode()) {
             return mapper.createObjectNode(); // empty file: pure defaults + overlays
@@ -152,6 +154,23 @@ public final class CesiumConfigLoader {
             throw singleError(yamlFile.toString(), "the top-level YAML node must be a mapping.");
         }
         return objectRoot;
+    }
+
+    /**
+     * Renders a YAML parse failure using only its structured location (VULN-013). The underlying
+     * SnakeYAML message quotes the offending source line, which can include an inline secret and
+     * reaches the error log; the line/column is enough to locate the problem, so the snippet is
+     * dropped. This mirrors the value-suppressing decision {@link #bindingMessage} already makes (L6).
+     */
+    private static String yamlParseError(IOException e) {
+        if (e instanceof JsonProcessingException jpe && jpe.getLocation() != null) {
+            JsonLocation loc = jpe.getLocation();
+            return "failed to parse YAML at line " + loc.getLineNr() + ", column " + loc.getColumnNr()
+                    + " — check the syntax there. The offending source line is omitted so the file's contents"
+                    + " (which may include secrets) are never logged.";
+        }
+        return "failed to parse YAML: the document is malformed (source omitted so file contents are"
+                + " never logged).";
     }
 
     // ------------------------------------------------------------------ env overlay

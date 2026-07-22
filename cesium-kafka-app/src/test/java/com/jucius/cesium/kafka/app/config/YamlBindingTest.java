@@ -2,9 +2,11 @@ package com.jucius.cesium.kafka.app.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
+import com.jucius.cesium.kafka.core.config.ConfigValidationException;
 import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.config.KafkaConfig;
 import com.jucius.cesium.kafka.core.config.Role;
@@ -27,6 +29,30 @@ class YamlBindingTest {
 
     @TempDir
     Path dir;
+
+    @Test
+    void yamlParseErrorReportsLocationWithoutLeakingTheSourceLine() {
+        // VULN-013: SnakeYAML's parse message quotes the offending source line, which can carry an
+        // inline secret and reaches the error log. The reported error must give only the structured
+        // location (line/column), never the source snippet.
+        Path file = LoaderTestSupport.write(
+                dir,
+                """
+                kafka:
+                  properties:
+                    sasl.jaas.config: "SUPER-SECRET-PASSWORD
+                """);
+
+        ConfigValidationException e =
+                assertThrows(ConfigValidationException.class, () -> LoaderTestSupport.loader(Map.of())
+                        .load(file));
+
+        assertTrue(e.getMessage().contains("parse YAML"), e::getMessage);
+        assertTrue(e.getMessage().contains("line"), e::getMessage);
+        assertFalse(
+                e.getMessage().contains("SUPER-SECRET-PASSWORD"),
+                () -> "the source line (with its secret) leaked into the error: " + e.getMessage());
+    }
 
     @Test
     void fullYamlBindsToRecords() {

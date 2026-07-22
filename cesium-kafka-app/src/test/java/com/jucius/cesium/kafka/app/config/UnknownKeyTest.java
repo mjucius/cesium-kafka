@@ -1,5 +1,6 @@
 package com.jucius.cesium.kafka.app.config;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -7,7 +8,6 @@ import com.jucius.cesium.kafka.core.config.ConfigValidationException;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Finding;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -106,8 +106,10 @@ class UnknownKeyTest {
         ConfigValidationException exception =
                 assertThrows(ConfigValidationException.class, () -> LoaderTestSupport.loader(Map.of())
                         .load(file));
-        assertTrue(exception.getMessage().contains("delay"), exception::getMessage);
-        assertTrue(exception.getMessage().toLowerCase(Locale.ROOT).contains("duplicate"), exception::getMessage);
+        // The load is rejected (not last-wins). VULN-013: the parse error reports only the structured
+        // location — it must not echo the offending source line, which could carry a secret value.
+        assertTrue(exception.getMessage().contains("parse YAML"), exception::getMessage);
+        assertFalse(exception.getMessage().contains("PT2H"), exception::getMessage);
     }
 
     @Test

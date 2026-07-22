@@ -6,6 +6,7 @@ import java.time.format.DateTimeParseException;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The production {@link ConfigView} over the {@code store.properties} subtree (design §8) — the
@@ -15,8 +16,9 @@ import java.util.Set;
  *
  * <p>Keys are relative to the subtree and values follow the application config conventions:
  * durations are ISO-8601, booleans are {@code true}/{@code false}. A present-but-unparseable value
- * always throws {@link IllegalArgumentException} naming the fully-qualified key (so a store surfaces
- * the mistake from {@code validate()} at startup), and a required-but-absent key throws
+ * always throws {@link IllegalArgumentException} naming the fully-qualified key and the expected type
+ * — never the value itself, which may be a secret and reaches the error log (VULN-012 / L6) — so a
+ * store surfaces the mistake from {@code validate()} at startup; a required-but-absent key throws
  * {@link NoSuchElementException}.
  */
 public final class MapConfigView implements ConfigView {
@@ -100,7 +102,7 @@ public final class MapConfigView implements ConfigView {
         try {
             return Integer.parseInt(value.trim());
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("store.properties." + key + " must be an int, got '" + value + "'", e);
+            throw typeError(key, "an int", value, e);
         }
     }
 
@@ -108,7 +110,7 @@ public final class MapConfigView implements ConfigView {
         try {
             return Long.parseLong(value.trim());
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("store.properties." + key + " must be a long, got '" + value + "'", e);
+            throw typeError(key, "a long", value, e);
         }
     }
 
@@ -116,8 +118,7 @@ public final class MapConfigView implements ConfigView {
         try {
             return Duration.parse(value.trim());
         } catch (DateTimeParseException e) {
-            throw new IllegalArgumentException(
-                    "store.properties." + key + " must be an ISO-8601 duration, got '" + value + "'", e);
+            throw typeError(key, "an ISO-8601 duration", value, e);
         }
     }
 
@@ -129,6 +130,24 @@ public final class MapConfigView implements ConfigView {
         if (trimmed.equalsIgnoreCase("false")) {
             return false;
         }
-        throw new IllegalArgumentException("store.properties." + key + " must be true or false, got '" + value + "'");
+        throw typeError(key, "true or false", value, null);
+    }
+
+    /**
+     * Builds a type-mismatch error that names the key and the expected type but never echoes the
+     * value (VULN-012 / L6): a {@code store.properties.*} value can carry a secret, and this exception
+     * message reaches {@code log.error}, so it reports only the value's coarse shape.
+     */
+    private static IllegalArgumentException typeError(
+            String key, String expected, String value, @Nullable Throwable cause) {
+        return new IllegalArgumentException(
+                "store.properties." + key + " must be " + expected + ", but the value (" + describeValue(value)
+                        + ") could not be parsed",
+                cause);
+    }
+
+    /** A non-disclosing description of a value: shape only, never the content (VULN-012 / L6). */
+    private static String describeValue(String value) {
+        return value.isEmpty() ? "empty" : value.length() + " characters";
     }
 }

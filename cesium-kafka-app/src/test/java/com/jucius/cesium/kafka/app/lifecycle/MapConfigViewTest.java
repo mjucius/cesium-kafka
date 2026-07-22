@@ -58,6 +58,20 @@ class MapConfigViewTest {
     }
 
     @Test
+    void unparseableValueIsNeverEchoedIntoTheMessage() {
+        // VULN-012: a store.properties.* value may be a secret and the exception reaches log.error, so
+        // the type-mismatch message must name the key + expected type but never the value itself.
+        ConfigView secretView = new MapConfigView(Map.of("token-count", "s3cr3t-not-a-number"));
+
+        IllegalArgumentException e =
+                assertThrows(IllegalArgumentException.class, () -> secretView.getInt("token-count"));
+
+        assertTrue(e.getMessage().contains("store.properties.token-count"), e::getMessage);
+        assertTrue(e.getMessage().contains("int"), e::getMessage);
+        assertFalse(e.getMessage().contains("s3cr3t"), () -> "value leaked into message: " + e.getMessage());
+    }
+
+    @Test
     void keysExposesEveryPresentKey() {
         assertEquals(Set.of("name", "count", "size", "window", "enabled", "bad-int"), view.keys());
     }
