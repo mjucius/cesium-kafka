@@ -12,6 +12,7 @@ import com.jucius.cesium.kafka.api.store.StoreCapabilities.DispatchGuarantee;
 import com.jucius.cesium.kafka.api.store.StoreCapabilities.TransactionAffinity;
 import com.jucius.cesium.kafka.app.health.HealthAssessor;
 import com.jucius.cesium.kafka.app.health.ShardRecovery;
+import com.jucius.cesium.kafka.core.config.ObservabilityConfig;
 import com.jucius.cesium.kafka.core.config.Role;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
@@ -64,7 +65,8 @@ class ObservabilityServerTest {
 
     /** Starts the server against the current fixture state and records the bound ephemeral port. */
     private void startServer() throws Exception {
-        startServer("0.0.0.0", false);
+        // Bind the system default (now loopback, security L1) so the convenience helper tracks it.
+        startServer(ObservabilityConfig.DEFAULT_BIND_ADDRESS, false);
     }
 
     /** Starts the server honoring the given bind address and {@code /info} detail level. */
@@ -240,7 +242,7 @@ class ObservabilityServerTest {
     @Test
     void infoDetailedExposesBuildStoreRolesAndAcknowledgments() throws Exception {
         // Opt-in detailed mode (observability.detailed-info=true) discloses the operational fields.
-        startServer("0.0.0.0", true);
+        startServer("127.0.0.1", true);
 
         HttpResponse<String> response = get("/info");
         assertEquals(200, response.statusCode());
@@ -274,21 +276,41 @@ class ObservabilityServerTest {
     }
 
     @Test
+    void capsAcceptedConnectionsBeforeServerCreate() throws Exception {
+        // M1: the pool/queue only shed work items — a client that connects and sends nothing is never
+        // counted against them, so the accept-path connection cap must be set (both spellings) before
+        // HttpServer.create, or idle sockets accumulate until file descriptors are exhausted.
+        startServer();
+
+        String maxConn = System.getProperty(ObservabilityServer.MAX_CONNECTIONS_PROPERTY);
+        String legacyMaxConn = System.getProperty(ObservabilityServer.LEGACY_MAX_CONNECTIONS_PROPERTY);
+        assertNotNull(maxConn, "jdk.httpserver.maxConnections must be set before HttpServer.create");
+        assertNotNull(legacyMaxConn, "the legacy maxConnections spelling must also be set");
+        int cap = Integer.parseInt(maxConn);
+        assertTrue(cap > 0, maxConn);
+        // The cap must not refuse legitimate bursts: it sits above the pool + queue depth.
+        assertTrue(
+                cap > ObservabilityServer.DISPATCH_THREADS + ObservabilityServer.DISPATCH_QUEUE_CAPACITY,
+                () -> "cap " + cap + " must exceed pool+queue");
+    }
+
+    @Test
+    void defaultBindAddressIsWildcard() throws Exception {
+        // L1: the default keeps the wildcard bind so k8s probes reach the listener; operators set
+        // 127.0.0.1 (and/or a NetworkPolicy) to restrict.
+        startServer();
+
+        assertTrue(server.boundAddress().isAnyLocalAddress(), () -> "bound to " + server.boundAddress());
+    }
+
+    @Test
     void honorsConfiguredLoopbackBindAddress() throws Exception {
-        // L1: binding 127.0.0.1 restricts the listener to loopback rather than every interface.
+        // L1: binding 127.0.0.1 restricts the unauthenticated endpoints to loopback (the opt-in).
         startServer("127.0.0.1", false);
 
         assertTrue(server.boundAddress().isLoopbackAddress(), () -> "bound to " + server.boundAddress());
         // And it still answers on loopback.
         assertEquals(200, get("/health/live").statusCode());
-    }
-
-    @Test
-    void defaultBindAddressIsWildcard() throws Exception {
-        // L1: the default keeps the wildcard bind so k8s probes reach the listener.
-        startServer();
-
-        assertTrue(server.boundAddress().isAnyLocalAddress(), () -> "bound to " + server.boundAddress());
     }
 
     @Test

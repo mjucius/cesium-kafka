@@ -34,13 +34,17 @@ import org.slf4j.LoggerFactory;
  * <p><strong>Slow-client hardening (security M1).</strong> The endpoints are unauthenticated, so the
  * JDK HttpServer's lack of built-in slow-client protection is a DoS surface: a slowloris that
  * dribbles a request body-or-header can pin a dispatcher thread forever and starve health probes.
- * Two guards close it. (1) {@code start()} sets the JDK reaper properties {@code
+ * Three guards close it. (1) {@code start()} sets the JDK reaper properties {@code
  * sun.net.httpserver.maxReqTime}/{@code maxRspTime} ({@value #DEFAULT_SLOW_CLIENT_TIMEOUT_SECONDS}s)
  * <em>before</em> {@link HttpServer#create} — they are read once in a static initializer, and only
  * applied here when unset so an operator can override them with {@code -D}. (2) Handlers run on a
  * small fixed daemon pool ({@value #DISPATCH_THREADS} threads) fronting a bounded queue: a handful
  * of slow clients cannot occupy every thread, and excess connections beyond the queue are dropped
- * (the JDK closes the connection) rather than queued without limit.
+ * (the JDK closes the connection) rather than queued without limit. (3) The JDK accept-path
+ * connection cap {@code jdk.httpserver.maxConnections} ({@value #DEFAULT_MAX_CONNECTIONS}) is set the
+ * same unset-only way — the pool/queue only shed <em>work items</em>, so without this a client that
+ * connects and sends nothing is never counted against any limit and accumulates until file
+ * descriptors are exhausted.
  */
 public final class ObservabilityServer implements AutoCloseable {
 
@@ -72,6 +76,19 @@ public final class ObservabilityServer implements AutoCloseable {
     /** Default request/response reaping window applied when the operator has not set the property. */
     static final String DEFAULT_SLOW_CLIENT_TIMEOUT_SECONDS = "10";
 
+    /** JDK 21+ property capping simultaneously-accepted connections on the accept path (security M1). */
+    static final String MAX_CONNECTIONS_PROPERTY = "jdk.httpserver.maxConnections";
+
+    /** Pre-JDK-21 spelling of the same accept-path connection cap; set alongside for older runtimes. */
+    static final String LEGACY_MAX_CONNECTIONS_PROPERTY = "sun.net.httpserver.maxConnections";
+
+    /**
+     * Default accepted-connection ceiling applied when the operator has not set the property. Sits a
+     * little above {@link #DISPATCH_THREADS} + {@link #DISPATCH_QUEUE_CAPACITY} (= 40) so legitimate
+     * bursts are never refused, while a flood of idle sockets is bounded rather than unbounded.
+     */
+    static final String DEFAULT_MAX_CONNECTIONS = "64";
+
     private final String bindAddress;
     private final int requestedPort;
     private final boolean detailedInfo;
@@ -84,7 +101,8 @@ public final class ObservabilityServer implements AutoCloseable {
 
     /**
      * @param bindAddress the interface to bind ({@code observability.bind-address}, default {@code
-     *     0.0.0.0}; {@code 127.0.0.1} restricts the unauthenticated endpoints to loopback, security L1)
+     *     0.0.0.0} all interfaces; set {@code 127.0.0.1} to restrict to loopback, and on {@code
+     *     0.0.0.0} network-restrict the port, security L1)
      * @param port the listen port ({@code observability.port}, default 8081; {@code 0} binds an
      *     ephemeral port — used by tests, read back via {@link #port()})
      * @param detailedInfo whether {@code /info} discloses the sensitive fields (applicationId, roles,
@@ -130,7 +148,7 @@ public final class ObservabilityServer implements AutoCloseable {
             throw new IllegalStateException("observability server already started");
         }
         // Must precede HttpServer.create: the JDK reads these once in a static initializer.
-        applySlowClientReaping();
+        applyServerDefaults();
         HttpServer http = HttpServer.create(new InetSocketAddress(bindAddress, requestedPort), 0);
         http.createContext(MetricsHttpHandler.PATH, new MetricsHttpHandler(metricsScrape));
         http.createContext("/health/live", new HealthHttpHandler("/health/live", health::liveness));
@@ -190,13 +208,17 @@ public final class ObservabilityServer implements AutoCloseable {
     }
 
     /**
-     * Enables the JDK HttpServer's slow-client reaper (security M1). Only sets a property the operator
-     * has not already supplied (via {@code -Dsun.net.httpserver.maxReqTime=...}), so the default is a
-     * floor an operator can override, never an override of their choice.
+     * Applies the JDK HttpServer hardening defaults (security M1): the slow-client reaper windows and
+     * the accept-path connection cap. Each is only set when the operator has not already supplied it
+     * (via {@code -D...}), so every default is a floor an operator can override, never an override of
+     * their choice. Both {@code maxConnections} spellings are set so the cap applies on JDK 21+ and on
+     * older runtimes.
      */
-    private static void applySlowClientReaping() {
+    private static void applyServerDefaults() {
         defaultSystemProperty(MAX_REQ_TIME_PROPERTY, DEFAULT_SLOW_CLIENT_TIMEOUT_SECONDS);
         defaultSystemProperty(MAX_RSP_TIME_PROPERTY, DEFAULT_SLOW_CLIENT_TIMEOUT_SECONDS);
+        defaultSystemProperty(MAX_CONNECTIONS_PROPERTY, DEFAULT_MAX_CONNECTIONS);
+        defaultSystemProperty(LEGACY_MAX_CONNECTIONS_PROPERTY, DEFAULT_MAX_CONNECTIONS);
     }
 
     private static void defaultSystemProperty(String key, String value) {
