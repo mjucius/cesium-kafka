@@ -161,6 +161,31 @@ class DelayHeaderCodecTest {
         assertEquals(Long.MAX_VALUE, overMax.requestedDispatchAtMs());
     }
 
+    @Test
+    void delayMs_futureDatedTimestamp_withInRangeDelay_isOverMax() {
+        // VULN-003: the D2 base is the producer-controlled record timestamp, so an in-range delay on a
+        // far-future CREATE_TIME schedules the ABSOLUTE instant far beyond now + delay.max. The relative
+        // check passes (60s < 1d), so only the absolute bound stops it — otherwise delay.max is not an
+        // upper bound on when a record fires.
+        long farFuture = NOW + Duration.ofDays(36_500).toMillis(); // ~100 years ahead
+        HeaderParseResult result =
+                ascii.parse(headers(CesiumHeaders.DELAY_MS, ascii("60000")), farFuture, TimestampType.CREATE_TIME, NOW);
+        HeaderParseResult.OverMax overMax = assertInstanceOf(HeaderParseResult.OverMax.class, result);
+        assertEquals(farFuture + 60_000, overMax.requestedDispatchAtMs());
+        assertTrue(overMax.detail().contains("delay.max"), overMax.detail());
+    }
+
+    @Test
+    void delayMs_absoluteInstantJustOverMax_isOverMax() {
+        // Boundary of the new absolute check: base one ms in the future + an exactly-max delay lands the
+        // instant one ms past now + delay.max. The relative delay is within bound, so the absolute
+        // guard is the only thing that can reject it.
+        HeaderParseResult result = ascii.parse(
+                headers(CesiumHeaders.DELAY_MS, ascii(Long.toString(MAX_MS))), NOW + 1, TimestampType.CREATE_TIME, NOW);
+        HeaderParseResult.OverMax overMax = assertInstanceOf(HeaderParseResult.OverMax.class, result);
+        assertEquals(NOW + 1 + MAX_MS, overMax.requestedDispatchAtMs());
+    }
+
     // --- deliver-at: range (§2.3) ----------------------------------------------------------------
 
     @Test

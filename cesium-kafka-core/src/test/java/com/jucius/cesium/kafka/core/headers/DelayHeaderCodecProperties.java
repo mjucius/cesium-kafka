@@ -108,18 +108,25 @@ class DelayHeaderCodecProperties {
     void overflowSaturatesInsteadOfWrapping(
             @ForAll @LongRange(min = 0, max = Long.MAX_VALUE) long baseMs,
             @ForAll @LongRange(min = 0, max = Long.MAX_VALUE) long delayMs) {
-        // delay.max = Long.MAX ms: nothing is over-max, isolating the addition itself.
+        // delay.max = Long.MAX ms isolates the addition itself; now = -1 keeps every instant strictly
+        // future. The instant may land exactly on the saturation ceiling (Long.MAX), which the
+        // absolute-range check (VULN-003) treats as over-max — so accept either Schedule or OverMax and
+        // assert the saturation arithmetic on whichever dispatch instant the result carries.
         DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofMillis(Long.MAX_VALUE), false);
-        // now = -1 < every saturated sum of non-negatives, so the result is always Schedule.
         HeaderParseResult result =
                 codec.parse(single(CesiumHeaders.DELAY_MS, ascii(delayMs)), baseMs, TimestampType.CREATE_TIME, -1);
-        HeaderParseResult.Schedule schedule = (HeaderParseResult.Schedule) result;
+        long dispatchAt =
+                switch (result) {
+                    case HeaderParseResult.Schedule s -> s.dispatchAtMs();
+                    case HeaderParseResult.OverMax o -> o.requestedDispatchAtMs();
+                    default -> throw new AssertionError("expected Schedule or OverMax, got " + result);
+                };
         long expected = BigInteger.valueOf(baseMs)
                 .add(BigInteger.valueOf(delayMs))
                 .min(BigInteger.valueOf(Long.MAX_VALUE))
                 .longValueExact();
-        assertEquals(expected, schedule.dispatchAtMs());
-        assertTrue(schedule.dispatchAtMs() >= baseMs, "saturation must never move the instant before its base");
+        assertEquals(expected, dispatchAt);
+        assertTrue(dispatchAt >= baseMs, "saturation must never move the instant before its base");
     }
 
     /** saturatedAddMillis equals BigInteger addition clamped to the long range, for all inputs. */

@@ -154,12 +154,24 @@ public final class DelayHeaderCodec {
                 boolean hasSourceTimestamp = timestampType != TimestampType.NO_TIMESTAMP_TYPE && recordTimestampMs >= 0;
                 long baseMs = hasSourceTimestamp ? recordTimestampMs : ingestNowMs;
                 long dispatchAtMs = saturatedAddMillis(baseMs, delayMs);
+                long latestAllowedMs = saturatedAddMillis(ingestNowMs, delayMaxMs);
                 // Range check before the past-due fast path: a delay over the maximum violated the
                 // contract even when an old record timestamp would land the instant in the past.
                 if (delayMs > delayMaxMs) {
                     yield new HeaderParseResult.OverMax(
                             dispatchAtMs,
                             CesiumHeaders.DELAY_MS + ": " + delayMs + " ms exceeds delay.max " + delayMaxMs + " ms",
+                            conflicted);
+                }
+                // The D2 base is the producer-controlled record timestamp, so the relative check above
+                // does not bound the ABSOLUTE dispatch instant: a future-dated timestamp with an
+                // in-range delay would schedule far beyond now + delay.max. Bound it exactly as the
+                // deliver-at path does — otherwise delay.max is not an upper bound on when a record fires.
+                if (dispatchAtMs > latestAllowedMs) {
+                    yield new HeaderParseResult.OverMax(
+                            dispatchAtMs,
+                            CesiumHeaders.DELAY_MS + ": dispatch instant " + dispatchAtMs + " (source timestamp "
+                                    + baseMs + " + " + delayMs + " ms) exceeds now + delay.max = " + latestAllowedMs,
                             conflicted);
                 }
                 if (dispatchAtMs <= ingestNowMs) {
