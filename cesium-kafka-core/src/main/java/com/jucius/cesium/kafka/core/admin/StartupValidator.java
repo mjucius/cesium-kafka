@@ -62,12 +62,12 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>Broker offsets retention</strong> (D18, R6, KIP-211):
  *       {@code offsets.retention.minutes} vs {@code startup-checks.max-tolerated-outage} at
  *       {@code startup-checks.outage-check} strictness.
- *   <li><strong>Recorded identity</strong> (§3.1, R-10/R17): every non-blank metadata string in
+ *   <li><strong>Recorded identity</strong> (§3.1, R-10/R17): every metadata string in
  *       group A's committed offsets is decoded as an {@link IdentityBlob} and compared against
  *       the freshly captured live identity — a mismatch means the source topic was recreated
  *       under the same name (or the engine points at a different cluster) and is a fail-fast
- *       with the R-10 runbook; undecodable metadata is an integrity fail-fast (§3.6). Absent
- *       offsets and blank metadata (first run, operator-seeded offsets) pass.
+ *       with the R-10 runbook; undecodable <em>or blank</em> metadata on a committed offset is an
+ *       integrity fail-fast (§3.6, VULN-016). Only genuinely absent offsets (a first run) pass.
  * </ul>
  */
 public final class StartupValidator {
@@ -143,8 +143,8 @@ public final class StartupValidator {
      * nothing — if the source topic was deleted and recreated under the same name between runs,
      * resuming from the stale committed offsets against the new incarnation silently relays
      * wrong payloads (the exact R-10/R17 hazard); a mismatch is therefore a fail-fast with the
-     * source-was-recreated runbook. First runs (no committed offsets) and operator-seeded offsets
-     * (blank metadata) pass; metadata that cannot be decoded is an integrity fail-fast (§3.6).
+     * source-was-recreated runbook. Only a first run (no committed offsets) passes; a committed
+     * offset with blank or undecodable metadata is an integrity fail-fast (§3.6, VULN-006/016).
      */
     private void checkRecordedIdentity(CesiumConfig config, IdentityBlob live, List<Finding> findings) {
         String groupId = KafkaClientFactory.ingestGroupId(config.applicationId());
@@ -167,7 +167,19 @@ public final class StartupValidator {
             }
             String metadata = entry.getValue().metadata();
             if (metadata == null || metadata.isBlank()) {
-                continue; // first run or operator-seeded offsets carry no blob
+                // VULN-016: a committed offset that carries no identity blob used to be skipped, the
+                // same fail-open the ingest loop had at the offset-fetch boundary (VULN-006). A
+                // genuine first run has no committed offset at all, so a committed-but-blank offset
+                // means the group's offsets were externally reset/seeded or forged by a principal able
+                // to commit for the ingest group — refuse to start rather than resume unverified.
+                findings.add(Finding.error(
+                        "route.source.topic",
+                        "committed offset metadata for " + partition + " (group '" + groupId + "') is blank/absent"
+                                + " (§3.1/R-10): refusing to start on an unverifiable identity. A committed offset"
+                                + " must carry cesium's identity blob; a blank one means the group's offsets were"
+                                + " externally reset/seeded or forged. Clear the ingest group so cesium bootstraps"
+                                + " from a clean state, or re-seed with a valid identity blob, then retry."));
+                continue;
             }
             IdentityBlob recorded;
             try {
@@ -486,33 +498,45 @@ public final class StartupValidator {
     }
 
     /**
-     * R12 tracker write-ACL verification, run on <em>every</em> startup once the topic exists —
-     * for both bootstrap modes, including {@code FAIL} (L3). Kafka enforces ACLs continuously
-     * regardless of whether cesium re-applies them, so the actionable gap the {@code CREATE}-only
-     * apply left open is <em>detection/UX</em>: cesium DESCRIBEs the live grant and emits a WARN
-     * (never a hard fail — the pipeline stays alive while the unenforced-control state is loud and
-     * surfaced) when the configured principal's exclusive WRITE grant is missing, when a foreign
-     * principal holds WRITE, or when {@code acl-principal} is unset entirely. A cluster with no
-     * authorizer downgrades to a WARN exactly like the ACL-apply path. A forged ADD is a
-     * duplicate-injection primitive and a forged tombstone is a data-loss primitive, so the
-     * restriction being absent or drifted is worth surfacing on every boot.
+     * R12 tracker write-ACL verification, run on <em>every</em> startup once the topic exists — for
+     * both bootstrap modes. Kafka enforces ACLs continuously regardless of whether cesium re-applies
+     * them, so cesium DESCRIBEs the live grant and, at the {@code startup-checks.tracker-acl}
+     * strictness, reports when the configured principal's exclusive WRITE grant is missing, when a
+     * foreign principal holds WRITE, when {@code acl-principal} is unset entirely, or when the cluster
+     * has no authorizer to verify against. The default {@code WARN} surfaces any of these on every
+     * boot without blocking (backward-compatible); {@code FAIL} — recommended for production — refuses
+     * to start unless the R12 restriction is verifiably in force, since the whole security posture
+     * delegates to this ACL and a forged ADD is a duplicate-injection primitive while a forged
+     * tombstone is a data-loss primitive; {@code SKIP} omits the check for operators who enforce the
+     * restriction out of band.
      */
     private void checkTrackerAcl(CesiumConfig config, String topic, List<Finding> findings) {
+        CheckMode mode = config.startupChecks().trackerAcl();
+        if (mode == CheckMode.SKIP) {
+            findings.add(Finding.info(
+                    "startup-checks.tracker-acl",
+                    "SKIP: the R12 tracker write-ACL restriction was not verified — restricting tracker write access"
+                            + " to the cesium principal is the operator's responsibility (a forged ADD is a"
+                            + " duplicate-injection primitive and a forged tombstone is a data-loss primitive)."));
+            return;
+        }
         Optional<String> principal = config.route().tracker().aclPrincipal().filter(p -> !p.isBlank());
         Set<String> writePrincipals;
         try {
             writePrincipals = admin.describeTrackerWritePrincipals(topic);
         } catch (ClusterAdminException e) {
             if (e.hasCause(SecurityDisabledException.class) || e.hasCause(UnsupportedVersionException.class)) {
-                findings.add(Finding.warning(
+                findings.add(finding(
+                        mode,
                         "route.tracker.acl-principal",
                         "the cluster has no authorizer, so the tracker write ACL (R12) cannot be verified ("
                                 + e.getMessage() + "). A forged ADD is a duplicate-injection primitive and a forged"
                                 + " tombstone is a data-loss primitive — enable an authorizer and restrict tracker"
-                                + " write access to the cesium principal, or enforce the restriction by other"
-                                + " means."));
+                                + " write access to the cesium principal, or set startup-checks.tracker-acl: WARN/SKIP"
+                                + " once you enforce the restriction by other means."));
             } else {
-                findings.add(Finding.warning(
+                findings.add(finding(
+                        mode,
                         "route.tracker.acl-principal",
                         "could not describe the tracker write ACL on '" + topic + "' to verify R12: " + e.getMessage()
                                 + " — verify manually that tracker write access is restricted to the cesium"
@@ -521,20 +545,21 @@ public final class StartupValidator {
             return;
         }
         if (principal.isEmpty()) {
-            // L3(c): the normative R12 control is not configured. Mirror the no-authorizer WARN
-            // rather than staying silent (the size-based-retention pattern: an unenforced control
-            // is named and surfaced, never silently accepted).
+            // L3(c): the normative R12 control is not configured. Under the default FAIL this blocks
+            // startup; WARN surfaces it without blocking (the escape hatch for out-of-band enforcement).
             String liveState = writePrincipals.isEmpty()
                     ? "no ALLOW WRITE ACL is present on the topic, so on a permissive authorizer any principal can"
                             + " forge tracker records"
                     : "the topic currently grants ALLOW WRITE to " + new TreeSet<>(writePrincipals)
                             + ", none of which cesium asserts or verifies";
-            findings.add(Finding.warning(
+            findings.add(finding(
+                    mode,
                     "route.tracker.acl-principal",
                     "route.tracker.acl-principal is unset, so cesium neither applies nor verifies the R12 tracker"
                             + " write restriction — " + liveState
                             + ". Set route.tracker.acl-principal to the cesium principal (a forged ADD is a"
-                            + " duplicate-injection primitive and a forged tombstone is a data-loss primitive)."));
+                            + " duplicate-injection primitive and a forged tombstone is a data-loss primitive), or"
+                            + " set startup-checks.tracker-acl: WARN/SKIP if you enforce it out of band."));
             return;
         }
         String configured = principal.get();
@@ -542,7 +567,8 @@ public final class StartupValidator {
         foreign.remove(configured);
         if (!writePrincipals.contains(configured)) {
             // L3(a): the operator asked for the restriction but it is not actually in force.
-            findings.add(Finding.warning(
+            findings.add(finding(
+                    mode,
                     "route.tracker.acl-principal",
                     "route.tracker.acl-principal='" + configured + "' is configured but no matching ALLOW WRITE ACL"
                             + " exists on tracker topic '" + topic + "' (live ALLOW WRITE principals: "
@@ -554,7 +580,8 @@ public final class StartupValidator {
         if (!foreign.isEmpty()) {
             // L3(b): a principal other than the configured cesium principal can write tracker
             // records — a duplicate-injection / data-loss primitive.
-            findings.add(Finding.warning(
+            findings.add(finding(
+                    mode,
                     "route.tracker.acl-principal",
                     "foreign principal(s) " + foreign + " hold ALLOW WRITE on tracker topic '" + topic + "' besides"
                             + " the configured cesium principal '" + configured + "' — a non-cesium writer can forge"

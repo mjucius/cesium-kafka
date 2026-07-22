@@ -41,7 +41,7 @@ class HeapBudgetValidationTest {
 
     @Test
     void warnModeDowngradesTheBreachToAWarning() {
-        StartupChecks warnChecks = new StartupChecks(null, null, null, null, CheckMode.WARN);
+        StartupChecks warnChecks = new StartupChecks(null, null, null, null, CheckMode.WARN, null);
         CesiumConfig config = TestConfigs.withDispatch(DispatchConfig.defaults(), warnChecks);
         ValidationReport report = validator.validate(config, new ValidationContext(ONE_GIB, 10));
         assertFalse(report.hasErrors(), report::render);

@@ -105,7 +105,7 @@ class DispatchLoopTest {
     @Test
     void barrierFutureIsEpochTaggedAndDiscardedOnRevoke() {
         Harness h = new Harness();
-        h.seedCommitted(0, 0L, "");
+        h.seedCommitted(0, 0L, "sidecar");
         CompletableFuture<Long> stale = h.admin.pend(0);
         h.start(0);
         h.loop.runOnce();
@@ -127,7 +127,7 @@ class DispatchLoopTest {
     @Test
     void replayPromotesViaPositionReportsAcrossEveryPoll() {
         Harness h = new Harness();
-        h.seedCommitted(0, 0L, "");
+        h.seedCommitted(0, 0L, "sidecar");
         h.admin.barrierValues.put(0, 3L);
         h.start(0);
         h.loop.runOnce();
@@ -178,9 +178,25 @@ class DispatchLoopTest {
     }
 
     @Test
+    void committedCursorWithBlankMetadataIsFailFast() {
+        // VULN-011: a committed cursor carrying no sidecar metadata used to be mapped to an empty
+        // cursor, which beginRecovery treats as "no sidecar" — skipping the identity check and pinned
+        // entry seeding. The sidecar always encodes identity + state, so a committed-but-blank cursor
+        // means the dispatch group's offsets were externally reset/seeded or forged; a genuine first
+        // run has no committed offset at all. Fail closed rather than recover unverified.
+        Harness h = new Harness();
+        h.seedCommitted(0, 7L, ""); // committed cursor, but no sidecar
+        h.start(0);
+
+        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        assertTrue(failure.getMessage().contains("no sidecar metadata"), failure.getMessage());
+        assertTrue(h.store.recoveries.isEmpty(), "never recover on an unverifiable cursor");
+    }
+
+    @Test
     void committedCursorBelowBeginningIsFailFast() {
         Harness h = new Harness();
-        h.seedCommitted(0, 5L, "");
+        h.seedCommitted(0, 5L, "sidecar");
         h.start(0);
         h.consumer.updateBeginningOffsets(Map.of(tracker(0), 10L)); // tracker truncated
 
@@ -191,7 +207,7 @@ class DispatchLoopTest {
     @Test
     void committedCursorAboveBarrierIsFailFast() {
         Harness h = new Harness();
-        h.seedCommitted(0, 50L, "");
+        h.seedCommitted(0, 50L, "sidecar");
         h.admin.barrierValues.put(0, 10L); // live end below the committed cursor: recreated
         h.start(0);
 
@@ -961,7 +977,7 @@ class DispatchLoopTest {
         /** Starts with committed cursors at 0 and immediate barriers: ACTIVE after one iteration. */
         void startActive(int... partitions) {
             for (int partition : partitions) {
-                seedCommitted(partition, 0L, "");
+                seedCommitted(partition, 0L, "sidecar");
             }
             start(partitions);
             loop.runOnce();

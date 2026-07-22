@@ -89,11 +89,17 @@ class StartupValidatorTest {
         admin.addTopic(DLQ, 1, Map.of());
         admin.addTopic(TRACKER, PARTITIONS, goodTrackerConfigs());
         admin.brokerConfigs.put("offsets.retention.minutes", "10080");
+        // A correctly-deployed cluster has the R12 tracker write ACL in force, restricted to the
+        // cesium principal, so the tracker-acl check produces no finding in any mode; the TrackerAcl
+        // tests remove/adjust it to exercise the missing/foreign/unset cases.
+        admin.putTrackerWriteAcl(TRACKER, "User:cesium");
     }
 
     private static final class ConfigBuilder {
         TrackerConfig.Bootstrap bootstrap = TrackerConfig.Bootstrap.FAIL;
-        String aclPrincipal;
+        // The R12 principal a correctly-deployed cluster grants exclusive tracker WRITE to; tests that
+        // exercise a missing/foreign/unset principal override this and adjust the live ACL to match.
+        String aclPrincipal = "User:cesium";
         DelayConfig delay;
         RelayConfig relay;
         DispatchConfig dispatch;
@@ -172,14 +178,11 @@ class StartupValidatorTest {
 
     @Test
     void healthyClusterPassesAndCapturesIdentity() {
+        // The healthy baseline already has the R12 tracker write ACL in force and acl-principal set to
+        // the cesium principal, so the default FAIL ACL verification adds no finding.
         givenHealthyCluster();
-        // A genuinely healthy cluster has the R12 tracker write ACL configured and in force, so
-        // the L3 ACL verification adds no finding (the matching-grant case).
-        admin.putTrackerWriteAcl(TRACKER, "User:cesium");
-        ConfigBuilder builder = new ConfigBuilder();
-        builder.aclPrincipal = "User:cesium";
 
-        StartupValidationResult result = validator.validate(builder.build());
+        StartupValidationResult result = validator.validate(defaultConfig());
 
         assertNoErrors(result);
         assertTrue(result.report().warnings().isEmpty(), () -> result.report().render());
@@ -274,7 +277,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.topicConfigs.get(SOURCE).put("retention.ms", "1000");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(CheckMode.WARN, null, null, null, null);
+            builder.startupChecks = new StartupChecks(CheckMode.WARN, null, null, null, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -288,7 +291,7 @@ class StartupValidatorTest {
             admin.topicConfigs.get(SOURCE).put("retention.ms", "1000");
             admin.topicConfigs.get(SOURCE).put("retention.bytes", "1073741824");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(CheckMode.SKIP, null, null, null, null);
+            builder.startupChecks = new StartupChecks(CheckMode.SKIP, null, null, null, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -329,7 +332,7 @@ class StartupValidatorTest {
             admin.topicConfigs.get(SOURCE).put("retention.bytes", "1073741824");
             ConfigBuilder builder = new ConfigBuilder();
             builder.startupChecks =
-                    new StartupChecks(null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null);
+                    new StartupChecks(null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -416,6 +419,9 @@ class StartupValidatorTest {
             ConfigBuilder builder = new ConfigBuilder();
             builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
             builder.aclPrincipal = "User:cesium";
+            // Default tracker-acl is WARN, so both the ACL *apply* failure and the every-startup
+            // verification surface as warnings here — startup is not blocked on an authorizerless
+            // cluster. (FAIL-mode enforcement is covered in the TrackerAcl nested class.)
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -569,39 +575,32 @@ class StartupValidatorTest {
             assertNoFindingAt(result, ACL_PATH);
         }
 
+        private ConfigBuilder failMode(String principal) {
+            ConfigBuilder builder = withPrincipal(principal);
+            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.FAIL);
+            return builder;
+        }
+
+        // --- default (WARN): the R12 gap is surfaced on every boot, never blocking ---------------
+
         @Test
-        void describeRunsInFailModeNotOnlyOnCreate() {
-            // The whole point of L3: FAIL mode (topic pre-provisioned out of band) still verifies
-            // the live ACL on every startup. No grant is ever applied here, yet the missing
-            // restriction is detected.
+        void missingConfiguredGrantWarnsByDefault() {
+            // The every-startup DESCRIBE (L3) surfaces a missing R12 grant. No grant is ever applied
+            // on the FAIL-bootstrap validate path.
             givenHealthyCluster();
+            admin.trackerWriteAcls.remove(TRACKER);
 
             StartupValidationResult result =
                     validator.validate(withPrincipal("User:cesium").build());
 
-            assertTrue(admin.aclGrants.isEmpty(), "FAIL mode never applies an ACL");
+            assertTrue(admin.aclGrants.isEmpty(), "verification never applies an ACL");
             assertNoErrors(result);
             assertWarningContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
         }
 
         @Test
-        void configuredPrincipalWithoutMatchingGrantWarns() {
+        void foreignWriterAlongsideTheConfiguredPrincipalWarnsByDefault() {
             givenHealthyCluster();
-            // Some other principal holds write, but not the configured cesium principal.
-            admin.putTrackerWriteAcl(TRACKER, "User:intruder");
-
-            StartupValidationResult result =
-                    validator.validate(withPrincipal("User:cesium").build());
-
-            assertNoErrors(result);
-            assertWarningContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
-            assertWarningContains(result, ACL_PATH, "User:intruder");
-        }
-
-        @Test
-        void foreignWriterAlongsideTheConfiguredPrincipalWarns() {
-            givenHealthyCluster();
-            admin.putTrackerWriteAcl(TRACKER, "User:cesium");
             admin.putTrackerWriteAcl(TRACKER, "User:intruder");
 
             StartupValidationResult result =
@@ -615,8 +614,10 @@ class StartupValidatorTest {
         @Test
         void unsetPrincipalWarnsThatTheR12ControlIsUnenforced() {
             givenHealthyCluster();
+            admin.trackerWriteAcls.remove(TRACKER);
 
-            StartupValidationResult result = validator.validate(defaultConfig());
+            StartupValidationResult result =
+                    validator.validate(withPrincipal(null).build());
 
             assertNoErrors(result);
             assertWarningContains(result, ACL_PATH, "unset");
@@ -626,9 +627,11 @@ class StartupValidatorTest {
         @Test
         void unsetPrincipalNamesExistingForeignWriters() {
             givenHealthyCluster();
+            admin.trackerWriteAcls.remove(TRACKER);
             admin.putTrackerWriteAcl(TRACKER, "User:intruder");
 
-            StartupValidationResult result = validator.validate(defaultConfig());
+            StartupValidationResult result =
+                    validator.validate(withPrincipal(null).build());
 
             assertNoErrors(result);
             assertWarningContains(result, ACL_PATH, "unset");
@@ -659,6 +662,73 @@ class StartupValidatorTest {
 
             assertNoErrors(result);
             assertWarningContains(result, ACL_PATH, "verify manually");
+        }
+
+        // --- FAIL (opt-in): startup refuses an unverified R12 restriction (VULN-015) -------------
+
+        @Test
+        void failModeErrorsWhenTheConfiguredGrantIsMissing() {
+            givenHealthyCluster();
+            admin.trackerWriteAcls.remove(TRACKER);
+
+            StartupValidationResult result =
+                    validator.validate(failMode("User:cesium").build());
+
+            assertErrorContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
+        }
+
+        @Test
+        void failModeErrorsOnAForeignWriter() {
+            givenHealthyCluster();
+            admin.putTrackerWriteAcl(TRACKER, "User:intruder");
+
+            StartupValidationResult result =
+                    validator.validate(failMode("User:cesium").build());
+
+            assertErrorContains(result, ACL_PATH, "foreign principal");
+            assertErrorContains(result, ACL_PATH, "User:intruder");
+        }
+
+        @Test
+        void failModeErrorsWhenPrincipalIsUnset() {
+            givenHealthyCluster();
+            admin.trackerWriteAcls.remove(TRACKER);
+
+            StartupValidationResult result = validator.validate(failMode(null).build());
+
+            assertErrorContains(result, ACL_PATH, "unset");
+        }
+
+        @Test
+        void failModeErrorsWhenNoAuthorizerCanVerify() {
+            givenHealthyCluster();
+            admin.describeAclsFailure =
+                    new ClusterAdminException("describeAcls failed", new SecurityDisabledException("no authorizer"));
+
+            StartupValidationResult result =
+                    validator.validate(failMode("User:cesium").build());
+
+            assertErrorContains(result, ACL_PATH, "no authorizer");
+        }
+
+        // --- SKIP: omitted entirely, but named in the report -------------------------------------
+
+        @Test
+        void skipModeOmitsTheAclCheckButNamesTheSkip() {
+            givenHealthyCluster();
+            admin.trackerWriteAcls.remove(TRACKER);
+            ConfigBuilder builder = withPrincipal(null);
+            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.SKIP);
+
+            StartupValidationResult result = validator.validate(builder.build());
+
+            assertNoErrors(result);
+            assertNoFindingAt(result, ACL_PATH);
+            // The skip is named in the report, never silent.
+            assertTrue(
+                    findingsAt(result.report().infos(), "startup-checks.tracker-acl")
+                            .contains("SKIP"),
+                    () -> result.report().render());
         }
     }
 
@@ -722,11 +792,22 @@ class StartupValidatorTest {
         }
 
         @Test
-        void blankMetadataAndForeignTopicOffsetsAreTolerated() {
+        void blankMetadataOnASourceOffsetIsAnIntegrityError() {
             givenHealthyCluster();
-            // Operator-seeded first-run offsets carry no blob; offsets a group holds for other
-            // topics are out of scope for the source identity check.
+            // VULN-016: a committed source offset that carries no identity blob is fail-closed. A
+            // genuine first run has no committed offset at all, so a committed-but-blank one means the
+            // offsets were externally reset/seeded or forged.
             admin.putGroupOffset(GROUP_A, new TopicPartition(SOURCE, 0), new OffsetAndMetadata(0L, ""));
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertErrorContains(result, "route.source.topic", "blank/absent");
+        }
+
+        @Test
+        void offsetsForOtherTopicsAreOutOfScope() {
+            givenHealthyCluster();
+            // Offsets a group holds for other topics are out of scope for the source identity check.
             admin.putGroupOffset(
                     GROUP_A, new TopicPartition("some-other-topic", 0), new OffsetAndMetadata(7L, "not-a-blob"));
 
@@ -909,7 +990,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.brokerConfigs.put("offsets.retention.minutes", "60");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(null, null, null, CheckMode.WARN, null);
+            builder.startupChecks = new StartupChecks(null, null, null, CheckMode.WARN, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -922,7 +1003,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.brokerConfigs.put("offsets.retention.minutes", "60");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(null, null, Duration.ofMinutes(30), null, null);
+            builder.startupChecks = new StartupChecks(null, null, Duration.ofMinutes(30), null, null, null);
 
             assertNoErrors(validator.validate(builder.build()));
         }

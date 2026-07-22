@@ -839,7 +839,9 @@ final class EngineHarness implements AutoCloseable {
                             dispatchMaxPendingPerPartition,
                             null),
                     null,
-                    new StartupChecks(retentionCheck, sizeBasedRetention, null, null, null));
+                    // The integration brokers run PLAINTEXT with no authorizer, so the R12 tracker-ACL
+                    // check cannot be verified there; SKIP it (the fix's default is FAIL in production).
+                    new StartupChecks(retentionCheck, sizeBasedRetention, null, null, null, CheckMode.SKIP));
             EngineHarness harness = new EngineHarness(config);
             harness.seekFetcherDecorator = seekFetcherDecorator;
             return harness;

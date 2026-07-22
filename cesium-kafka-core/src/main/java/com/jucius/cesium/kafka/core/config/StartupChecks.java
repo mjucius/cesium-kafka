@@ -19,13 +19,21 @@ import java.util.Objects;
  *     default FAIL
  * @param heapBudget strictness of the worst-case index-footprint vs heap-budget check (§5.3,
  *     R7/R18) — "fails (or warns, configurable)"; FAIL or WARN only; default FAIL
+ * @param trackerAcl strictness of the R12 tracker write-ACL verification: the normative requirement
+ *     that tracker write access is restricted to the cesium principal (a forged ADD is a
+ *     duplicate-injection primitive and a forged tombstone is a data-loss primitive). FAIL refuses
+ *     to start when the restriction is not verifiably in force (missing/foreign grant, unset
+ *     acl-principal, or no authorizer to verify it); WARN surfaces the same conditions without
+ *     blocking; SKIP omits the check. Default WARN — set FAIL to have cesium refuse to start unless
+ *     the R12 restriction is verifiably in force (recommended for production; see SECURITY.md §4)
  */
 public record StartupChecks(
         CheckMode retention,
         SizeBasedRetention sizeBasedRetention,
         Duration maxToleratedOutage,
         CheckMode outageCheck,
-        CheckMode heapBudget) {
+        CheckMode heapBudget,
+        CheckMode trackerAcl) {
 
     /** Default maximum tolerated outage (§8 defaults table). */
     public static final Duration DEFAULT_MAX_TOLERATED_OUTAGE = Duration.ofDays(7);
@@ -45,11 +53,19 @@ public record StartupChecks(
         maxToleratedOutage = Objects.requireNonNullElse(maxToleratedOutage, DEFAULT_MAX_TOLERATED_OUTAGE);
         outageCheck = Objects.requireNonNullElse(outageCheck, CheckMode.FAIL);
         heapBudget = Objects.requireNonNullElse(heapBudget, CheckMode.FAIL);
+        // Default WARN (not FAIL): surfacing the unenforced R12 control on every boot without blocking
+        // is backward-compatible; operators opt into FAIL to have startup refuse an unverified ACL.
+        trackerAcl = Objects.requireNonNullElse(trackerAcl, CheckMode.WARN);
     }
 
     /** Returns a {@code StartupChecks} populated entirely from the §8 defaults table. */
     public static StartupChecks defaults() {
         return new StartupChecks(
-                CheckMode.FAIL, SizeBasedRetention.FAIL, DEFAULT_MAX_TOLERATED_OUTAGE, CheckMode.FAIL, CheckMode.FAIL);
+                CheckMode.FAIL,
+                SizeBasedRetention.FAIL,
+                DEFAULT_MAX_TOLERATED_OUTAGE,
+                CheckMode.FAIL,
+                CheckMode.FAIL,
+                CheckMode.WARN);
     }
 }

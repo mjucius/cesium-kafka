@@ -493,7 +493,7 @@ class CesiumConfigValidatorTest {
     @ParameterizedTest
     @EnumSource(value = CheckMode.class, names = "SKIP")
     void heapBudgetAndOutageChecksRejectSkip(CheckMode skip) {
-        StartupChecks checks = new StartupChecks(null, null, null, skip, skip);
+        StartupChecks checks = new StartupChecks(null, null, null, skip, skip, null);
         CesiumConfig config = TestConfigs.withDispatch(DispatchConfig.defaults(), checks);
         List<String> paths = errorPaths(validate(config));
         assertTrue(paths.contains("startup-checks.outage-check"));

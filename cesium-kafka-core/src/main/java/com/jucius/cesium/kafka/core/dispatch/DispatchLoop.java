@@ -613,8 +613,22 @@ public final class DispatchLoop implements Runnable {
                         + " lies below the partition beginning " + beginning + ": the tracker was truncated or"
                         + " recreated (§3.6 integrity, R-9). Never auto-reset — follow the tracker DR runbook");
             }
+            // VULN-011: a committed cursor with blank/absent metadata used to be mapped to an empty
+            // cursor, which beginRecovery then treats as "no sidecar" — skipping the identity check and
+            // pinned-entry seeding entirely. The sidecar codec always encodes identity + state, so a
+            // committed-but-blank cursor is never something cesium wrote: it means the dispatch group's
+            // offsets were externally reset/seeded or forged. A genuine first run has no committed
+            // offset (the offset == null branch), so fail closed here rather than recover unverified.
             String metadata = offset.metadata();
-            cursor = new TrackerCursor(offset.offset(), metadata == null ? "" : metadata);
+            if (metadata == null || metadata.isBlank()) {
+                throw new DispatchLoopFatalException("committed cursor for " + tp + " at offset " + offset.offset()
+                        + " carries no sidecar metadata (§3.6 integrity, R-9): the cursor sidecar always encodes the"
+                        + " identity and recovery state, so a blank committed cursor means the dispatch group's"
+                        + " offsets were externally reset/seeded or forged. Never auto-reset — clear the dispatch"
+                        + " group to bootstrap a provable first run, or restore the cursor out of band; see the"
+                        + " offset-reset runbook (§3.6, D18).");
+            }
+            cursor = new TrackerCursor(offset.offset(), metadata);
         }
         // Step 3 (I8/D19): the barrier snapshot is requested strictly AFTER the committed fetch
         // resolved, epoch-tagged so a revoke discards it. The cursor-sidecar identity is

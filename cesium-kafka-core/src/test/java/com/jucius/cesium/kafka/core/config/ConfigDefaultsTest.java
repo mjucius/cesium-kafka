@@ -154,7 +154,7 @@ class ConfigDefaultsTest {
     @Test
     void observabilityDefaults() {
         assertEquals(8081, allDefaults().observability().port());
-        // L1: wildcard bind by default for k8s probe compatibility.
+        // L1: wildcard bind by default for k8s probe compatibility; operators set 127.0.0.1 to restrict.
         assertEquals("0.0.0.0", allDefaults().observability().bindAddress());
         // M3: the unauthenticated /info hides the sensitive fields unless explicitly enabled.
         assertFalse(allDefaults().observability().detailedInfo());
@@ -168,6 +168,8 @@ class ConfigDefaultsTest {
         assertEquals(Duration.ofDays(7), checks.maxToleratedOutage()); // P7D
         assertEquals(CheckMode.FAIL, checks.outageCheck());
         assertEquals(CheckMode.FAIL, checks.heapBudget());
+        // R12: the tracker write-ACL check defaults to WARN (backward-compatible); FAIL is opt-in.
+        assertEquals(CheckMode.WARN, checks.trackerAcl());
     }
 
     @Test
