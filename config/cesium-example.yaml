@@ -129,9 +129,10 @@ observability:
   # HTTP port for /metrics, /health/live, /health/ready, /info (design §9).
   port: 8081
   # Interface to bind. Default 0.0.0.0 (all interfaces) keeps k8s liveness/readiness probes working.
-  # The endpoints are UNAUTHENTICATED — restrict to 127.0.0.1 for a loopback-only sidecar scrape, and
-  # otherwise network-restrict the port (e.g. a k8s NetworkPolicy) (security L1).
-  # bind-address: 0.0.0.0
+  # The endpoints are UNAUTHENTICATED and MUST be network-restricted — set 127.0.0.1 for a loopback-only
+  # sidecar scrape (recommended when off-host probes are not required), or keep 0.0.0.0 and apply a k8s
+  # NetworkPolicy scoping 8081 to the monitoring namespace (security L1).
+  # bind-address: 127.0.0.1
   # /info is unauthenticated. By default it exposes only version/build + store type. Set to true to
   # also disclose applicationId (the fencing-id seed), roles, store capabilities, and acknowledgments
   # — only behind a network-restricted endpoint (security M3).

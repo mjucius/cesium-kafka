@@ -279,11 +279,13 @@ restart re-polls and re-fails — a pipeline-wide, **restart-persistent outage**
 ### Observability port is unauthenticated (L1)
 
 The observability HTTP server ([§13](#13-metrics-and-alerting); default port 8081) is read-only but
-**completely unauthenticated** and binds all interfaces in v1. It **MUST be network-restricted** — on
-Kubernetes apply a NetworkPolicy scoping port 8081 to the monitoring namespace (the scraper) only, or
-bind it to loopback for a co-located sidecar. An `observability.bind-address` option (to bind
-`127.0.0.1`) is being added; until then rely on the network policy. `/info` discloses the
-`application-id` (which seeds the M3 fencing ids), so the network restriction is part of the M3 control.
+**completely unauthenticated** and **binds all interfaces by default** (`observability.bind-address:
+0.0.0.0`) so k8s probes reach it. It now caps accepted connections (`jdk.httpserver.maxConnections`,
+default 64) on top of the slow-client reaper (M1). **It MUST be network-restricted** — set
+`observability.bind-address: 127.0.0.1` to restrict it to a loopback sidecar scrape (recommended when
+off-host probes are not required), or keep `0.0.0.0` and apply a NetworkPolicy scoping port 8081 to the
+monitoring namespace (the scraper) only. `/info` discloses the `application-id` (which seeds the M3
+fencing ids), so that restriction is part of the M3 control.
 
 See also [SECURITY.md](../SECURITY.md).
 
@@ -541,10 +543,11 @@ are absent. Do not write alerts against them; to obtain JVM/client metrics, run 
 exporter sidecar against the JVM.
 
 > **This port is unauthenticated and MUST be network-restricted** — all four endpoints (and the
-> `application-id` `/info` discloses) are readable by anyone with network reach, with no built-in
-> slow-client protection (M1). Scope it with a Kubernetes NetworkPolicy (monitoring namespace only) or
-> bind it to loopback ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L1; an
-> `observability.bind-address` option is being added).
+> `application-id` `/info` discloses) are readable by anyone with network reach. It binds all
+> interfaces by default (`0.0.0.0`) and now caps accepted connections (`jdk.httpserver.maxConnections`,
+> default 64) on top of the slow-client reaper (M1). Set `observability.bind-address: 127.0.0.1` to
+> restrict it to loopback, or scope it with a Kubernetes NetworkPolicy (monitoring namespace only)
+> ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L1).
 
 ### Metric inventory (as emitted — verified against the code)
 

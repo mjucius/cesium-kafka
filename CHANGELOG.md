@@ -11,6 +11,11 @@ All notable changes to this project will be documented in this file. The format 
   watches them arrive re-ordered and on schedule, exactly once — needs only Docker (a `kcat`
   sidecar provides the tooling). Added a `Makefile` (`demo`/`up`/`down`/`logs`/`build`/`test`/
   `image`), `config/demo/run-demo.sh`, and a `demo`-profile service in `config/docker-compose.yaml`.
+- `startup-checks.tracker-acl` config knob (`WARN`|`FAIL`|`SKIP`, default `WARN`): opt into `FAIL` to
+  have cesium refuse to start unless the R12 tracker write-ACL is verifiably in force (recommended for
+  production). Defaulting to `WARN` preserves the previous surface-but-proceed behaviour.
+- Observability listener now caps accepted connections (`jdk.httpserver.maxConnections`, default 64)
+  on top of the slow-client reaper, closing the M1 idle-socket file-descriptor exhaustion vector.
 
 ### Fixed
 - The Docker image / `docker compose ... up --build` quickstart failed to configure because
@@ -20,6 +25,36 @@ All notable changes to this project will be documented in this file. The format 
 - Stopped tracking stray Gradle build output (`build-logic/.iso-*-build/`) and ignored it.
 - Dev/source-build version aligned to `1.0.0-SNAPSHOT` (was `0.1.0-SNAPSHOT`); release builds still
   derive the version from the git tag.
+
+### Security
+Security hardening from an internal audit. **No default is changed in a backward-incompatible way** —
+the two controls that would break an existing deployment (the observability bind address and the
+tracker-ACL strictness) are opt-in, so an upgrade with an unchanged config behaves as before. The
+fixes below either add defence in depth for a normally-operating deployment or close a fail-open path
+that only a non-conforming producer / external offset reset could reach.
+
+- **`delay.max` now bounds the absolute dispatch instant on the `cesium-delay-ms` path**, matching the
+  `cesium-deliver-at` path. A producer-controlled future-dated record timestamp with an in-range delay
+  can no longer schedule a record beyond `now + delay.max`; over-bound records take the configured
+  `on-over-max` policy (DLQ by default). Conforming producers are unaffected.
+- **Blank/absent offset-commit metadata now fails closed.** The §3.1/R-10 identity checks on the
+  ingest group offset (runtime and startup) and the dispatch-group cursor sidecar no longer silently
+  tolerate blank metadata — a committed-but-blank offset (external reset/seed or forgery) is now an
+  integrity fail-fast rather than an unverified resume. Normal exactly-once operation always carries
+  the identity blob, so only a deliberate external offset reset is affected: clear the group (clean
+  first-run bootstrap) or re-seed with a valid identity blob.
+- **Reserved `cesium-` header namespace is fully stripped on relay.** A producer can no longer forge
+  `cesium-source-*` / `cesium-relayed-at` / `cesium-clamped` / `cesium-scheduled-for` provenance on
+  the source record; cesium re-stamps its own authoritative headers. DLQ records still preserve the
+  offending control headers for diagnosis.
+- **Config errors no longer echo values into logs.** `MapConfigView` type-mismatch messages and YAML
+  parse errors now report the key/expected type and the structured source location without quoting the
+  offending value or source line, which could carry a secret.
+- **Optional hardening (opt-in, see Added):** `startup-checks.tracker-acl: FAIL` makes a missing R12
+  tracker ACL a startup failure, and `observability.bind-address: 127.0.0.1` restricts the
+  unauthenticated endpoints to loopback. Both are **recommended for production** and documented in
+  [SECURITY.md](SECURITY.md); neither is the default, so existing deployments are unaffected until you
+  opt in.
 
 ## [1.0.0] - 2026-06-06
 

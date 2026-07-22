@@ -123,12 +123,20 @@ Topic ownership splits cleanly; restrict each accordingly:
 - **Tracker topic — cesium writes and reads it; nothing else should.** This is the durable scheduler
   state. **Write access restricted to the cesium principal is a normative deployment requirement
   (R12).** A forged ADD record is a duplicate-injection primitive; a forged completion tombstone is a
-  data-loss primitive. Ideally restrict `READ` as well — it is internal state, not a user surface.
+  data-loss primitive. **cesium verifies this at startup** via `startup-checks.tracker-acl`: the
+  default `WARN` surfaces a missing/foreign/unset grant (or a cluster with no authorizer to verify
+  against) on every boot without blocking. **Set it to `FAIL` in production** to have cesium refuse to
+  start unless the exclusive-write restriction is verifiably in force; `SKIP` omits the check for
+  operators who enforce the restriction out of band. Ideally restrict `READ` as well — it is internal
+  state, not a user surface.
 
 ### 4. Tracker integrity: the ACL is the v1 control; the invalid-records counter is not a forgery detector
 
-The write-restricting tracker ACL (above) is the **v1 integrity control**. cesium provides **no
-in-band cryptographic integrity** on tracker records in v1.
+The write-restricting tracker ACL (above) is the **v1 integrity control**. cesium verifies it on every
+startup and reports a missing/foreign/unset grant; set `startup-checks.tracker-acl: FAIL` (default
+`WARN`) to have a deployment missing the normative grant **fail closed** at startup instead of running
+with an unauthenticated tracker channel. cesium provides **no in-band cryptographic integrity** on
+tracker records in v1.
 
 `cesium_tracker_invalid_records_total` is frequently useful but is **not** a tamper canary against a
 capable adversary. It increments **only on structurally malformed or version-skewed writes** (bad
@@ -170,16 +178,21 @@ malformed-record flood can fill an unbounded DLQ.
 
 The observability HTTP server (default `observability.port: 8081`, serving `/metrics`, `/info`,
 `/health/live`, `/health/ready`) is **read-only but completely unauthenticated** — no token, no mTLS,
-no source-IP gate — and in v1 binds all interfaces. `/info` and `/metrics` disclose the build version,
-the `application-id`, per-partition operational gauges, and store capabilities (reconnaissance that
-also seeds the M3 fencing ids). It also has no built-in slow-client protection (finding M1).
+no source-IP gate. `/info` and `/metrics` disclose the build version, the `application-id`,
+per-partition operational gauges, and store capabilities (reconnaissance that also seeds the M3
+fencing ids).
 
-**The port MUST be network-restricted.** Operators have no in-process auth to fall back on:
+The listener **binds all interfaces by default** (`observability.bind-address: 0.0.0.0`) so k8s probes
+reach it, and it now caps accepted connections (`jdk.httpserver.maxConnections`, default 64) on top of
+the existing slow-client reaper, closing the M1 idle-socket exhaustion vector.
 
-- On Kubernetes, apply a **NetworkPolicy** scoping ingress to port 8081 to your monitoring namespace
-  (the Prometheus scraper) only.
-- For a co-located sidecar scrape, bind it to loopback. A `observability.bind-address` option (to bind
-  `127.0.0.1` instead of all interfaces) **is being added**; until then, rely on the network policy.
+**The port MUST be network-restricted** — operators have no in-process auth to fall back on:
+
+- **Set `observability.bind-address: 127.0.0.1`** to restrict the unauthenticated endpoints to a
+  loopback sidecar scrape (the strongest and simplest control; recommended when off-host probes are
+  not required).
+- On Kubernetes where you need off-host probes, keep `0.0.0.0` and apply a **NetworkPolicy** scoping
+  ingress to port 8081 to your monitoring namespace (the Prometheus scraper) only.
 
 See [docs/operations.md §5](docs/operations.md#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix)
 and [§13](docs/operations.md#13-metrics-and-alerting).
