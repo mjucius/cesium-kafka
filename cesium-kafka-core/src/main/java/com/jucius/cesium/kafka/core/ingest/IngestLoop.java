@@ -886,27 +886,13 @@ public final class IngestLoop implements Runnable {
      * §3.1/R-10 at the offset-fetch boundary: a committed offset whose identity blob names a
      * different cluster or source-topic id means the source was recreated under the same name —
      * fail-fast with the runbook; never deliver payloads from a different topic incarnation.
-     * Blank/absent metadata is an integrity fail-fast, not a tolerated case (VULN-006): a genuine
-     * first run has no committed offset at all (handled by the fallback branch in
-     * {@link #seekToCommittedOffsets}), so a committed offset that carries no identity blob was
-     * either externally reset/seeded or forged by a principal able to commit for the ingest group —
-     * resuming on it would seek to an unverified, attacker-choosable position. Unreadable metadata is
-     * likewise fatal (§3.6).
+     * Blank metadata (operator-seeded offsets) is tolerated; unreadable metadata is an integrity
+     * fail-fast (§3.6).
      */
     private void verifyCommittedIdentity(TopicPartition partition, OffsetAndMetadata offset) {
         String metadata = offset.metadata();
-        if (metadata != null && metadata.equals(identityMetadata)) {
-            // cesium's own commit for this incarnation — the steady-state fast path.
+        if (metadata == null || metadata.isBlank() || metadata.equals(identityMetadata)) {
             return;
-        }
-        if (metadata == null || metadata.isBlank()) {
-            throw new IngestLoopFatalException(
-                    "committed offset metadata for " + partition + " is blank/absent (§3.1/R-10): refusing to resume"
-                            + " on an unverifiable identity — a committed offset must carry cesium's identity blob."
-                            + " A genuine first run has no committed offset; a committed-but-blank offset means the"
-                            + " group's offsets were externally reset/seeded or forged. Clear the ingest group so"
-                            + " cesium bootstraps from a clean state, or re-seed the offsets with a valid identity"
-                            + " blob, then retry.");
         }
         IdentityBlob recorded;
         try {

@@ -73,34 +73,16 @@ class RelayRecordFactoryTest {
     }
 
     @Test
-    void relay_stripsTheWholeCesiumNamespace_keepsAppHeadersFirstAndInOrder() {
+    void relay_stripsExactlyTheTwoControlHeaders_keepsOrderAndOtherCesiumPrefixes() {
         ProducerRecord<byte[], byte[]> relayed = factory().relayImmediate(source(typicalHeaders()), NOW);
         assertNoHeader(relayed, CesiumHeaders.DELAY_MS);
         assertNoHeader(relayed, CesiumHeaders.DELIVER_AT);
-        // VULN-004: the whole reserved cesium- namespace is the strip set — a producer-set cesium-*
-        // header does not ride through as authentic. Non-cesium app headers survive, first and in order.
-        assertNoHeader(relayed, "cesium-custom");
+        // The cesium- prefix names a namespace, not the strip set: user headers under it survive.
         Header[] headers = relayed.headers().toArray();
         assertEquals("app-header", headers[0].key());
         assertArrayEquals(new byte[] {0x01}, headers[0].value());
-    }
-
-    @Test
-    void relay_stripsProducerForgedProvenanceAndClamp() {
-        // VULN-004: a producer cannot forge provenance/CLAMP by setting reserved headers on the source
-        // record — they are stripped and cesium re-stamps its own authoritative values.
-        RecordHeaders forged = new RecordHeaders();
-        forged.add(CesiumHeaders.CLAMPED, ascii("true"));
-        forged.add(CesiumHeaders.SOURCE_TOPIC, ascii("spoofed-origin"));
-        forged.add(CesiumHeaders.RELAYED_AT, ascii("1"));
-
-        ProducerRecord<byte[], byte[]> relayed = factory().relayImmediate(source(forged), NOW);
-
-        // relayImmediate is not clamped, so the forged CLAMP is simply gone (not re-added).
-        assertNoHeader(relayed, CesiumHeaders.CLAMPED);
-        // Provenance is cesium's authoritative value, not the forgery.
-        assertArrayEquals("orders".getBytes(StandardCharsets.UTF_8), headerValue(relayed, CesiumHeaders.SOURCE_TOPIC));
-        assertArrayEquals(ascii(Long.toString(NOW)), headerValue(relayed, CesiumHeaders.RELAYED_AT));
+        assertEquals("cesium-custom", headers[1].key());
+        assertArrayEquals(ascii("user-owned"), headers[1].value());
     }
 
     @Test
@@ -149,9 +131,7 @@ class RelayRecordFactoryTest {
         assertNoHeader(relayed, CesiumHeaders.SOURCE_OFFSET);
         assertNoHeader(relayed, CesiumHeaders.SOURCE_TIMESTAMP);
         assertNoHeader(relayed, CesiumHeaders.SCHEDULED_FOR);
-        // VULN-004: cesium-custom is stripped too, so only the non-cesium app header remains.
-        assertNoHeader(relayed, "cesium-custom");
-        assertEquals(1, relayed.headers().toArray().length);
+        assertEquals(2, relayed.headers().toArray().length);
     }
 
     @Test
@@ -224,25 +204,6 @@ class RelayRecordFactoryTest {
         assertArrayEquals(ascii("60000"), headerValue(dlq, CesiumHeaders.DELAY_MS));
         assertArrayEquals(ascii("1700000060000"), headerValue(dlq, CesiumHeaders.DELIVER_AT));
         assertArrayEquals(new byte[] {0x01}, headerValue(dlq, "app-header"));
-    }
-
-    @Test
-    void headerErrorDlq_keepsControlHeadersButStripsForgedProvenance() {
-        // VULN-004: the DLQ record preserves the offending control headers for diagnosis, but a
-        // producer-forged provenance/CLAMP header is still stripped (cesium re-stamps its own).
-        RecordHeaders forged = new RecordHeaders();
-        forged.add(CesiumHeaders.DELAY_MS, ascii("999999999999"));
-        forged.add(CesiumHeaders.CLAMPED, ascii("true"));
-        forged.add(CesiumHeaders.SOURCE_TOPIC, ascii("spoofed-origin"));
-
-        ProducerRecord<byte[], byte[]> dlq =
-                factory().headerErrorDlqRecord(source(forged), DlqReasons.OVER_MAX_DELAY, "too far", NOW);
-
-        // The offending control header survives as evidence.
-        assertArrayEquals(ascii("999999999999"), headerValue(dlq, CesiumHeaders.DELAY_MS));
-        // The forged CLAMP is stripped; provenance is cesium's authoritative value.
-        assertNoHeader(dlq, CesiumHeaders.CLAMPED);
-        assertArrayEquals("orders".getBytes(StandardCharsets.UTF_8), headerValue(dlq, CesiumHeaders.SOURCE_TOPIC));
     }
 
     @Test

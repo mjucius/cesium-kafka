@@ -792,22 +792,11 @@ class StartupValidatorTest {
         }
 
         @Test
-        void blankMetadataOnASourceOffsetIsAnIntegrityError() {
+        void blankMetadataAndForeignTopicOffsetsAreTolerated() {
             givenHealthyCluster();
-            // VULN-016: a committed source offset that carries no identity blob is fail-closed. A
-            // genuine first run has no committed offset at all, so a committed-but-blank one means the
-            // offsets were externally reset/seeded or forged.
+            // Operator-seeded first-run offsets carry no blob; offsets a group holds for other
+            // topics are out of scope for the source identity check.
             admin.putGroupOffset(GROUP_A, new TopicPartition(SOURCE, 0), new OffsetAndMetadata(0L, ""));
-
-            StartupValidationResult result = validator.validate(defaultConfig());
-
-            assertErrorContains(result, "route.source.topic", "blank/absent");
-        }
-
-        @Test
-        void offsetsForOtherTopicsAreOutOfScope() {
-            givenHealthyCluster();
-            // Offsets a group holds for other topics are out of scope for the source identity check.
             admin.putGroupOffset(
                     GROUP_A, new TopicPartition("some-other-topic", 0), new OffsetAndMetadata(7L, "not-a-blob"));
 

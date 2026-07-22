@@ -29,12 +29,10 @@ package com.jucius.cesium.kafka.api.headers;
 public final class CesiumHeaders {
 
     /**
-     * Namespace prefix of every header cesium owns, and the relay strip set (VULN-004): the entire
-     * {@code cesium-} namespace is stripped from a relayed record, so a producer cannot forge
-     * provenance/CLAMP headers that ride through as authentic. cesium re-stamps its own authoritative
-     * provenance/CLAMP after stripping. A DLQ record additionally preserves the offending control
-     * headers ({@link #DELAY_MS}, {@link #DELIVER_AT}) for diagnosis. Producers should not set
-     * {@code cesium-}-prefixed headers other than the two control headers.
+     * Namespace prefix of every header cesium owns. Note this names the <em>namespace</em>, not
+     * the strip set: only the two control headers ({@link #DELAY_MS}, {@link #DELIVER_AT}) are
+     * stripped on relay; provenance and DLQ headers are stamped by cesium and delivered. Producers
+     * should not set {@code cesium-}-prefixed headers other than the two control headers.
      */
     public static final String CONTROL_HEADER_PREFIX = "cesium-";
 

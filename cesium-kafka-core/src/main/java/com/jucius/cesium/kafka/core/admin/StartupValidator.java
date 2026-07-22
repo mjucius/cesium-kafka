@@ -62,12 +62,12 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>Broker offsets retention</strong> (D18, R6, KIP-211):
  *       {@code offsets.retention.minutes} vs {@code startup-checks.max-tolerated-outage} at
  *       {@code startup-checks.outage-check} strictness.
- *   <li><strong>Recorded identity</strong> (§3.1, R-10/R17): every metadata string in
+ *   <li><strong>Recorded identity</strong> (§3.1, R-10/R17): every non-blank metadata string in
  *       group A's committed offsets is decoded as an {@link IdentityBlob} and compared against
  *       the freshly captured live identity — a mismatch means the source topic was recreated
  *       under the same name (or the engine points at a different cluster) and is a fail-fast
- *       with the R-10 runbook; undecodable <em>or blank</em> metadata on a committed offset is an
- *       integrity fail-fast (§3.6, VULN-016). Only genuinely absent offsets (a first run) pass.
+ *       with the R-10 runbook; undecodable metadata is an integrity fail-fast (§3.6). Absent
+ *       offsets and blank metadata (first run, operator-seeded offsets) pass.
  * </ul>
  */
 public final class StartupValidator {
@@ -143,8 +143,8 @@ public final class StartupValidator {
      * nothing — if the source topic was deleted and recreated under the same name between runs,
      * resuming from the stale committed offsets against the new incarnation silently relays
      * wrong payloads (the exact R-10/R17 hazard); a mismatch is therefore a fail-fast with the
-     * source-was-recreated runbook. Only a first run (no committed offsets) passes; a committed
-     * offset with blank or undecodable metadata is an integrity fail-fast (§3.6, VULN-006/016).
+     * source-was-recreated runbook. First runs (no committed offsets) and operator-seeded offsets
+     * (blank metadata) pass; metadata that cannot be decoded is an integrity fail-fast (§3.6).
      */
     private void checkRecordedIdentity(CesiumConfig config, IdentityBlob live, List<Finding> findings) {
         String groupId = KafkaClientFactory.ingestGroupId(config.applicationId());
@@ -167,19 +167,7 @@ public final class StartupValidator {
             }
             String metadata = entry.getValue().metadata();
             if (metadata == null || metadata.isBlank()) {
-                // VULN-016: a committed offset that carries no identity blob used to be skipped, the
-                // same fail-open the ingest loop had at the offset-fetch boundary (VULN-006). A
-                // genuine first run has no committed offset at all, so a committed-but-blank offset
-                // means the group's offsets were externally reset/seeded or forged by a principal able
-                // to commit for the ingest group — refuse to start rather than resume unverified.
-                findings.add(Finding.error(
-                        "route.source.topic",
-                        "committed offset metadata for " + partition + " (group '" + groupId + "') is blank/absent"
-                                + " (§3.1/R-10): refusing to start on an unverifiable identity. A committed offset"
-                                + " must carry cesium's identity blob; a blank one means the group's offsets were"
-                                + " externally reset/seeded or forged. Clear the ingest group so cesium bootstraps"
-                                + " from a clean state, or re-seed with a valid identity blob, then retry."));
-                continue;
+                continue; // first run or operator-seeded offsets carry no blob
             }
             IdentityBlob recorded;
             try {

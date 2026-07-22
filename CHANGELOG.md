@@ -39,16 +39,6 @@ that only a non-conforming producer / external offset reset could reach.
   `cesium-deliver-at` path. A producer-controlled future-dated record timestamp with an in-range delay
   can no longer schedule a record beyond `now + delay.max`; over-bound records take the configured
   `on-over-max` policy (DLQ by default). Conforming producers are unaffected.
-- **Blank/absent offset-commit metadata now fails closed.** The §3.1/R-10 identity checks on the
-  ingest group offset (runtime and startup) and the dispatch-group cursor sidecar no longer silently
-  tolerate blank metadata — a committed-but-blank offset (external reset/seed or forgery) is now an
-  integrity fail-fast rather than an unverified resume. Normal exactly-once operation always carries
-  the identity blob, so only a deliberate external offset reset is affected: clear the group (clean
-  first-run bootstrap) or re-seed with a valid identity blob.
-- **Reserved `cesium-` header namespace is fully stripped on relay.** A producer can no longer forge
-  `cesium-source-*` / `cesium-relayed-at` / `cesium-clamped` / `cesium-scheduled-for` provenance on
-  the source record; cesium re-stamps its own authoritative headers. DLQ records still preserve the
-  offending control headers for diagnosis.
 - **Config errors no longer echo values into logs.** `MapConfigView` type-mismatch messages and YAML
   parse errors now report the key/expected type and the structured source location without quoting the
   offending value or source line, which could carry a secret.

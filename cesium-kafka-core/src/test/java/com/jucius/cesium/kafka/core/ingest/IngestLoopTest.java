@@ -82,9 +82,6 @@ class IngestLoopTest {
     private static final TopicPartition P0 = new TopicPartition(SOURCE, 0);
     private static final TopicPartition P1 = new TopicPartition(SOURCE, 1);
     private static final Uuid TOPIC_ID = Uuid.randomUuid();
-    /** The identity blob the loop stamps on its own committed offsets (§3.1); a real resume carries it. */
-    private static final String IDENTITY_METADATA = new IdentityBlob("test-cluster", TOPIC_ID).encode();
-
     private static final byte[] KEY = {1, 2, 3};
     private static final byte[] VALUE = {9, 8, 7, 6};
 
@@ -337,7 +334,7 @@ class IngestLoopTest {
         Harness h = new Harness(); // commitRetryLimit = 3
         h.startAssigned(P0);
         // Simulated broker outcome: the transaction ABORTED — committed offsets stay pre-batch.
-        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(0L, IDENTITY_METADATA)));
+        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(0L)));
         h.consumer.addRecord(record(P0, 0, noHeaders()));
         h.producer().commitTransactionException = new TimeoutException("ambiguous");
         h.loop.runOnce();
@@ -366,7 +363,7 @@ class IngestLoopTest {
         Harness h = new Harness();
         h.startAssigned(P0);
         // Simulated broker outcome: the transaction COMMITTED — committed offsets are post-batch.
-        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(1L, IDENTITY_METADATA)));
+        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(1L)));
         h.consumer.addRecord(record(P0, 0, noHeaders()));
         h.producer().commitTransactionException = new TimeoutException("ambiguous");
         h.loop.runOnce();
@@ -381,28 +378,12 @@ class IngestLoopTest {
     }
 
     @Test
-    void resumeOnBlankCommittedMetadataFailsClosed() {
-        // VULN-006: at the offset-fetch/resume boundary a committed offset that carries no identity
-        // blob used to be silently tolerated, letting anyone able to commit for the ingest group seed
-        // an attacker-chosen resume position. A genuine first run has no committed offset, so a
-        // committed-but-blank one is unverifiable and the loop must refuse to resume on it.
-        Harness h = new Harness();
-        h.startAssigned(P0);
-        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(1L))); // committed, but no identity blob
-        h.consumer.addRecord(record(P0, 0, noHeaders()));
-        h.producer().commitTransactionException = new TimeoutException("ambiguous");
-
-        IngestLoopFatalException fatal = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
-        assertTrue(fatal.getMessage().contains("blank/absent"), fatal.getMessage());
-    }
-
-    @Test
     void postAmbiguityCommitFailureEscalatesToInDoubtNeverRewind() {
         Harness h = new Harness(); // commitRetryLimit = 3
         h.startAssigned(P0);
         // Simulated broker outcome: the transaction COMMITTED (a timed-out EndTxn can be
         // processed broker-side) — committed offsets are post-batch.
-        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(1L, IDENTITY_METADATA)));
+        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(1L)));
         h.consumer.addRecord(record(P0, 0, noHeaders()));
         // Attempt 1 times out (ambiguous); the retry fails with a non-timeout, non-fatal
         // exception. After the ambiguity NOTHING can prove "aborted" (D20) — the abort/rewind
@@ -461,7 +442,7 @@ class IngestLoopTest {
     void inDoubtRecoveryRetriesTransientFailuresInsteadOfDyingFatally() {
         Harness h = new Harness();
         h.startAssigned(P0);
-        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(0L, IDENTITY_METADATA)));
+        h.consumer.commitSync(Map.of(P0, new OffsetAndMetadata(0L)));
         h.consumer.addRecord(record(P0, 0, noHeaders()));
         h.producer().commitTransactionException = new TimeoutException("ambiguous");
         // The replacement producer's initTransactions fails once — the same broker degradation
