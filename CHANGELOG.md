@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-22
+
 ### Added
 - One-command self-driving demo (`make demo`): submits five out-of-order delayed notifications and
   watches them arrive re-ordered and on schedule, exactly once — needs only Docker (a `kcat`
@@ -140,5 +142,6 @@ re-delivers each record to a destination topic **at the time the producer asked 
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/mjucius/cesium-kafka/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mjucius/cesium-kafka/releases/tag/v1.0.0
