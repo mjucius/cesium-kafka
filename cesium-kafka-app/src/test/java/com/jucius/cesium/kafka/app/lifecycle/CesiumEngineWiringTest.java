@@ -6,8 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine.LoopSpec;
+import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.config.IngestConfig;
@@ -18,8 +20,11 @@ import com.jucius.cesium.kafka.core.config.TopicRef;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.apache.kafka.common.Uuid;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -105,6 +110,82 @@ class CesiumEngineWiringTest {
                         .anyMatch(f -> f.path().equals("dispatch.max-pending-per-partition")
                                 && f.message().contains("exceeds the heap budget")),
                 report::render);
+    }
+
+    // ------------------------------------------------------------------ route descriptor
+
+    /**
+     * {@link CesiumEngine#buildRouteDescriptor} re-describes the source, destination and tracker
+     * <em>after</em> startup validation already described them successfully. An unknown-topic answer
+     * there is therefore broker metadata lag — possibly from a different node than validation asked —
+     * not a vanished topic, so the path must wait it out rather than fail startup.
+     *
+     * <p>These are the regression guard for that: reverting the call to a single-shot
+     * {@code describeTopic} turns them red.
+     */
+    @Nested
+    class BuildRouteDescriptor {
+
+        private final LaggingClusterAdmin admin = new LaggingClusterAdmin();
+        private final CesiumConfig config = config(Set.of(Role.INGEST), 1, 1);
+        private final IdentityBlob identity = new IdentityBlob("cluster-1", Uuid.randomUuid());
+
+        private String tracker() {
+            return config.route().tracker().resolvedTopic(config.applicationId());
+        }
+
+        private void givenAllTopicsExist() {
+            admin.addTopic("src", 3);
+            admin.addTopic("dst", 3);
+            admin.addTopic(tracker(), 3);
+        }
+
+        @Test
+        void aVisibleClusterCostsExactlyOneDescribePerTopic() {
+            givenAllTopicsExist();
+
+            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
+
+            assertEquals("src", route.sourceTopic());
+            assertEquals("dst", route.destinationTopic());
+            assertEquals(tracker(), route.trackerTopic());
+            assertEquals(
+                    Map.of("src", 1, "dst", 1, tracker(), 1), admin.describeCalls, "the happy path must not add RPCs");
+        }
+
+        @Test
+        void aTransientlyInvisibleTopicIsWaitedOutRatherThanReportedVanished() {
+            givenAllTopicsExist();
+            // The tracker is the one cesium itself just created, so it is the likeliest to lag.
+            admin.invisibleForDescribes(tracker(), 2);
+
+            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
+
+            assertEquals(tracker(), route.trackerTopic());
+            assertEquals(3, admin.describeCalls.get(tracker()), "two lagging answers, then the real one");
+        }
+
+        @Test
+        void everyRouteTopicIsAwaitedNotJustTheTracker() {
+            givenAllTopicsExist();
+            admin.invisibleForDescribes("src", 1);
+            admin.invisibleForDescribes("dst", 1);
+
+            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
+
+            assertEquals("src", route.sourceTopic());
+            assertEquals("dst", route.destinationTopic());
+            assertEquals(2, admin.describeCalls.get("src"));
+            assertEquals(2, admin.describeCalls.get("dst"));
+        }
+
+        // The terminal case — a topic that NEVER becomes visible must still fail startup rather than
+        // wait forever — is deliberately not asserted here. Reaching it means spending the whole
+        // TopicVisibility budget, which costs ~10 s of real sleeping in this module (there is no
+        // clock/waiter seam across the module boundary, and widening TopicVisibility's API for one
+        // test is not worth it). Budget expiry is already pinned in TopicVisibilityTest
+        // (aTopicThatTrulyDoesNotExistReturnsEmptyAfterTheBudget); all that is left uncovered here is
+        // describeOrFail's three-line orElseThrow.
     }
 
     // ------------------------------------------------------------------ helper
