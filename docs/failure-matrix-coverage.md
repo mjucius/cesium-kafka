@@ -85,7 +85,7 @@ Legend for the **Lane** column:
 | 8 | Compaction | `CompactionIT` + broker-free backstop `TrackerBackedStoreContract` pre-compacted-log | nightly + contract |
 | 9 | Integrity & environment checks | `StartupChecksIT`, `PayloadExpiryDlqIT`, `HeaderPolicyIT` | PR |
 | 10 | Degradation (park + penalty box) | `DegradationIT` | nightly |
-| 11 | **KIP-848 lane** | restart-recovery / LSO / barrier-ordering kip848 variants (pass); zombie + rebalance are [findings](#gaps-and-concerns) | nightly (continue-on-error) |
+| 11 | **KIP-848 lane** | LSO + barrier-ordering kip848 variants (pass); zombie, rebalance **and kill-and-restart** are [findings](#gaps-and-concerns) (gap 2) | nightly (continue-on-error) |
 | 12 | Crash-loop soak (true SIGKILL, separate JVMs) | **Not built** | [gap 1](#gaps-and-concerns) |
 
 ---
@@ -139,10 +139,24 @@ consumer protocol when the §8 tuning or the K8s static-membership recipe sets t
      `RebalanceScaleIT` scale-in both wait out that eviction and exceed their drain windows
      (observed: exactly one partition's worth delivered before timeout). The protocol-agnostic
      takeover/replay-to-barrier path **is** verified under consumer by `BarrierOrderingI8IT` (which
-     uses fast client-side `max.poll.interval.ms` eviction). Promotion of the consumer protocol to a
-     gating lane is **ADR-0006** tracked; closing these two scenarios would need either a broker with
-     a lowered `group.consumer.min.session.timeout.ms` or a fence primitive that does not depend on
-     session eviction.
+     uses fast client-side `max.poll.interval.ms` eviction).
+   - *Kill-and-restart on the same `group.instance.id` stalls for a full session timeout.* The first
+     two bullets compounding, and the most operationally relevant of the three because it is what a
+     **restarted pod** does. `DispatchRestartRecoveryIT`'s kill-and-restart body reuses the static id
+     the killed incumbent still holds. Classic fences the incumbent immediately and the successor takes
+     over at once; under the consumer protocol the successor is rejected with
+     `UnreleasedInstanceIdException` and cannot join until the incumbent is evicted — **measured at
+     ~42.5 s** against `apache/kafka:4.3.0` defaults (successor rejected at `T+0.2 s`, incumbent fenced
+     at `T+42.7 s`). Entries therefore dispatch ~30 s past their due time, past the test's lateness
+     bound. The recovery logic itself is protocol-agnostic and unaffected — only the takeover latency
+     differs — so the variant was removed rather than given a larger budget, which would have hidden
+     the finding instead of recording it. **Operator consequence:** under `group.protocol=consumer`
+     with static membership, a hard pod restart pauses that partition's dispatch for up to
+     `group.consumer.session.timeout.ms`.
+
+     Promotion of the consumer protocol to a gating lane is **ADR-0006** tracked; closing these three
+     scenarios would need either a broker with a lowered `group.consumer.min.session.timeout.ms` or a
+     fence primitive that does not depend on session eviction.
 
 3. **R-6 clock skew — no EOS test by design.** Skew shifts firing time by the skew amount with no
    exactly-once impact (NTP assumed); it is surfaced through the `dispatch_lag` histogram, not gated
