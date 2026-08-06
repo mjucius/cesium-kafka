@@ -34,6 +34,8 @@ import org.apache.kafka.common.resource.PatternType;
 import org.apache.kafka.common.resource.ResourcePattern;
 import org.apache.kafka.common.resource.ResourcePatternFilter;
 import org.apache.kafka.common.resource.ResourceType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The production {@link ClusterAdmin}: a thin synchronous adapter over a real
@@ -41,6 +43,8 @@ import org.apache.kafka.common.resource.ResourceType;
  * {@code cesium-admin} thread, §6) creates and closes the {@code Admin}.
  */
 public final class KafkaClusterAdmin implements ClusterAdmin {
+
+    private static final Logger log = LoggerFactory.getLogger(KafkaClusterAdmin.class);
 
     /** Default per-call timeout. */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
@@ -84,6 +88,11 @@ public final class KafkaClusterAdmin implements ClusterAdmin {
                     description.partitions().size()));
         } catch (ClusterAdminException e) {
             if (e.hasCause(UnknownTopicOrPartitionException.class)) {
+                // This collapses a retriable metadata condition (the broker we asked has not
+                // published the topic's record yet) and a genuinely absent topic into the same
+                // empty answer — the callers cannot tell them apart, so log the real cause here or
+                // it is lost. TopicVisibility is what waits the former out where it is safe to.
+                log.debug("describeTopics({}) reported the topic unknown", topic, e);
                 return Optional.empty();
             }
             throw e;

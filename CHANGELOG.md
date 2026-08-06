@@ -6,6 +6,31 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+- Startup no longer fails when the tracker topic it just created is not yet visible in the metadata a
+  broker serves. `CreateTopics` is acknowledged by the KRaft controller, but the broker answering the
+  next describe publishes that record asynchronously — a normal, usually sub-millisecond window that
+  a loaded cluster can stretch. cesium now waits it out (bounded: 10 s, capped-exponential backoff)
+  wherever a topic's existence is already proven, and any wait above 1 s is surfaced as a startup
+  warning rather than absorbed silently. The error text no longer misdiagnoses this as a degraded
+  cluster. Topics cesium did **not** create — source, DLQ, destination, and the `FAIL`-mode tracker —
+  still fail fast on the first answer, so a genuinely missing topic is still reported immediately.
+  See [ADR-0018](docs/adr/0018-bounded-wait-for-proven-topic-metadata.md).
+- The nightly integration and soak lanes no longer resolve `UP-TO-DATE`/`FROM-CACHE`. Gradle's `Test`
+  task is cacheable, but a broker-backed run's real inputs (Docker, the KRaft container, wall-clock)
+  are not modelled — so an unchanged commit produced a guaranteed-wrong cache hit. Seven consecutive
+  nightlies (2026-07-24 … 07-30) reported green in under 95 s without executing a single integration
+  test.
+
+### Changed
+- `DispatchRestartRecoveryIT`'s kill-and-restart scenario no longer has a KIP-848 variant: restarting
+  on the same `group.instance.id` stalls ~42.5 s under `group.protocol=consumer` (the successor is
+  rejected with `UnreleasedInstanceIdException` until the killed incumbent is evicted by
+  `group.consumer.session.timeout.ms`), where the classic protocol fences the incumbent immediately.
+  A documented protocol incompatibility, now recorded in `docs/failure-matrix-coverage.md` gap 2
+  rather than masked by a larger timeout. **Operator note:** under the consumer protocol with static
+  membership, a hard pod restart pauses that partition's dispatch for up to the session timeout.
+
 ## [1.1.0] - 2026-07-22
 
 ### Added

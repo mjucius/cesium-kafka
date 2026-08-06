@@ -13,6 +13,7 @@ import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
 import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -102,10 +103,28 @@ public final class StartupValidator {
     private static final String DEFAULT_TIMESTAMP_TYPE = "CreateTime";
 
     private final ClusterAdmin admin;
+    private final TopicVisibility visibility;
 
     /** Creates a validator over the given admin boundary. */
     public StartupValidator(ClusterAdmin admin) {
         this.admin = Objects.requireNonNull(admin, "admin");
+        this.visibility = new TopicVisibility(admin);
+    }
+
+    /** Test seam: a virtual clock and a non-sleeping waiter make the metadata waits deterministic. */
+    StartupValidator(ClusterAdmin admin, Clock clock, TopicVisibility.Waiter waiter) {
+        this.admin = Objects.requireNonNull(admin, "admin");
+        this.visibility = new TopicVisibility(admin, clock, waiter);
+    }
+
+    /**
+     * A topic's effective configs, waiting out metadata-propagation lag.
+     *
+     * <p>Every call site runs <em>after</em> the topic was described successfully, so an
+     * unknown-topic error here is lag rather than absence — see {@link TopicVisibility}.
+     */
+    private Map<String, String> topicConfigs(String topic) {
+        return visibility.awaitTopicConfigs(topic);
     }
 
     /** Runs every startup check, aggregating all findings; the caller fail-fasts on errors. */
@@ -244,7 +263,7 @@ public final class StartupValidator {
                         "source topic '" + topic + "' does not exist (§2.1); create it or fix the configuration."));
                 return null;
             }
-            Map<String, String> topicConfig = admin.topicConfigs(topic);
+            Map<String, String> topicConfig = topicConfigs(topic);
             if (cleanupPolicies(topicConfig).contains(TopicConfig.CLEANUP_POLICY_COMPACT)) {
                 findings.add(Finding.error(
                         "route.source.topic",
@@ -365,14 +384,39 @@ public final class StartupValidator {
                 "created tracker topic '" + topic + "' with " + source.partitionCount()
                         + " partition(s) (mirroring the source) and the §2.1 configs " + configs + "."));
         applyTrackerAcl(config, topic, findings);
-        Optional<TopicFacts> created = admin.describeTopic(topic);
+        // The topic provably exists — CreateTopics was acknowledged by the controller above. A broker
+        // still serving a metadata image from before that record answers UNKNOWN_TOPIC_OR_PARTITION,
+        // which describeTopic necessarily reports as empty; wait that window out rather than calling a
+        // healthy cluster degraded. See TopicVisibility for why the wait lives there and not here.
+        Optional<TopicFacts> created = visibility.awaitCreated(topic, source.partitionCount());
         if (created.isEmpty()) {
             findings.add(Finding.error(
                     "route.tracker",
-                    "tracker topic '" + topic + "' was created but is not yet describable; the cluster may be"
-                            + " degraded — retry startup."));
+                    "tracker topic '" + topic + "' was created, but " + TopicVisibility.BUDGET.toMillis()
+                            + " ms later no broker will describe it with its " + source.partitionCount()
+                            + " partition(s) — far longer than normal asynchronous metadata propagation."
+                            + " Retry startup; if it recurs, investigate broker metadata lag (a stalled"
+                            + " metadata publisher) or controller availability."));
+        } else if (visibility.lastWaitedMillis() > 0) {
+            // Never absorb the wait silently: a cluster whose propagation has degraded from
+            // sub-millisecond to seconds is something the operator has to hear about, even though
+            // startup succeeded.
+            findings.add(trackerVisibilityWaitFinding(topic, visibility.lastWaitedMillis()));
         }
         return created;
+    }
+
+    /** Reports how long the tracker's metadata took to propagate — a warning once it is non-trivial. */
+    private static Finding trackerVisibilityWaitFinding(String topic, long waitedMillis) {
+        String message = "tracker topic '" + topic + "' became describable only after waiting " + waitedMillis
+                + " ms for metadata propagation (normally sub-millisecond).";
+        return waitedMillis > TopicVisibility.WARN_THRESHOLD_MS
+                ? Finding.warning(
+                        "route.tracker",
+                        message + " Startup succeeded, but a metadata publisher this slow is a sign of a"
+                                + " loaded or degrading cluster — investigate before it crosses the"
+                                + " startup budget.")
+                : Finding.info("route.tracker", message);
     }
 
     private void applyTrackerAcl(CesiumConfig config, String topic, List<Finding> findings) {
@@ -419,7 +463,7 @@ public final class StartupValidator {
                             + " ingest fail-fasts when a source partition has no tracker partition (I-7)."));
         }
 
-        Map<String, String> topicConfig = admin.topicConfigs(tracker.name());
+        Map<String, String> topicConfig = topicConfigs(tracker.name());
 
         Set<String> policies = cleanupPolicies(topicConfig);
         String rawPolicy = topicConfig.getOrDefault(TopicConfig.CLEANUP_POLICY_CONFIG, DEFAULT_CLEANUP_POLICY);
@@ -609,7 +653,7 @@ public final class StartupValidator {
      * (§7.4) — so warn (never hard-fail; the DLQ is operator-owned) when the topic has no bound.
      */
     private void checkDlqRetention(String topic, List<Finding> findings) {
-        Map<String, String> topicConfig = admin.topicConfigs(topic);
+        Map<String, String> topicConfig = topicConfigs(topic);
         long retentionMs =
                 parseLongConfig(topicConfig, TopicConfig.RETENTION_MS_CONFIG, DEFAULT_RETENTION_MS, findings);
         long retentionBytes =

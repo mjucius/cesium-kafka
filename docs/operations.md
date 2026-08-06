@@ -48,7 +48,11 @@ cesium serves one **route** per process: a user-owned **source** and **destinati
 - **`CREATE`** (default) — cesium creates the tracker topic if absent, with the `§2.1` configs
   (compaction-only cleanup, the tombstone-retention floor, the compaction-lag floor, ~1 h
   `segment.ms`, `LogAppendTime`), **mirroring the source partition count**, and applies the write ACL
-  when `route.tracker.acl-principal` is set.
+  when `route.tracker.acl-principal` is set. After creating it, cesium waits (bounded, up to 10 s) for
+  the topic to become describable: `createTopics` is acknowledged by the KRaft controller, but the
+  broker that answers the next describe publishes that metadata asynchronously, so a freshly created
+  topic can be briefly invisible on a healthy cluster. The wait is silent only when it is trivial —
+  anything above 1 s is surfaced as a startup warning ([ADR-0018](adr/0018-bounded-wait-for-proven-topic-metadata.md)).
 - **`FAIL`** — cesium requires a pre-provisioned tracker topic and **validates** its configs,
   failing fast on any drift (wrong partition count, wrong `cleanup.policy`, `delete.retention.ms`
   below the floor, `min.compaction.lag.ms` below the floor). Use `FAIL` where topic creation is
@@ -678,6 +682,8 @@ Discovered after config binds, against the live cluster:
 | Broker `offsets.retention.minutes` < `max-tolerated-outage` (`outage-check: FAIL`) | Raise broker `offsets.retention.minutes`, lower `max-tolerated-outage`, or set the check to `WARN` — [§7](#7-offsets-retention-vs-outage-tolerance). |
 | `SOURCE_PARTITION` relay but destination partition count ≠ source | Grow the destination to match, or use `BY_KEY`. |
 | **Source topic identity mismatch** (recreated under the same name) | The source was deleted and recreated (new topic id) — delivering old-offset payloads would be wrong (R-10/R17). Reset the tracker (accept loss) or restore the original source, as an explicit decision. |
+| Tracker topic created but never became describable within the metadata-propagation budget | cesium created the tracker, then waited out normal KRaft propagation (10 s) and still could not get any broker to describe it with its full partition count. This is **not** the ordinary sub-millisecond window — that is already absorbed. Retry startup; if it recurs, investigate broker metadata lag (a stalled metadata publisher) or controller availability. A `WARNING` naming a multi-second propagation wait on a startup that *succeeded* is the early form of the same problem — [ADR-0018](adr/0018-bounded-wait-for-proven-topic-metadata.md). |
+| A topic is reported as not existing that you are sure exists | cesium fails fast on operator-provisioned topics by design and does **not** wait out metadata propagation for them (the common cause is a typo, and waiting would slow that diagnosis down). If your provisioning pipeline creates the topic and starts cesium in the same breath, have it wait for the topic to become *describable* — not merely for `createTopics` to return — before launching cesium. |
 
 ### 14.3 Runtime fail-fast (exit 1, readiness false)
 

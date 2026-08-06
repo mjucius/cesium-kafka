@@ -32,6 +32,7 @@ failure matrix need a corresponding test and an ADR.
 | [0015](0015-penalty-box-and-enforced-fetch-budgets.md) | Penalty box + enforced fetch budgets | Accepted | D8, D22, R8/R9, §7 |
 | [0016](0016-fastutil-backed-primitive-index.md) | fastutil-backed primitive index | Accepted | Post-approval rev 1, §5 |
 | [0017](0017-kafka-4-floor-and-repo-only-publishing.md) | Kafka 4.0 floor + repo-only publishing + app as product surface | Accepted | Post-approval rev 2, §13 |
+| [0018](0018-bounded-wait-for-proven-topic-metadata.md) | Bounded wait for proven-existing topic metadata | Accepted | §2.1, §7.6 |
 
 ADRs 0001–0015 are the §12 documentation-plan set. 0016 and 0017 capture the three post-approval
 project-owner decisions (the fastutil index backing, and the Kafka-4.0 broker floor /

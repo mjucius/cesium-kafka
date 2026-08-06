@@ -12,6 +12,7 @@ import com.jucius.cesium.kafka.core.admin.KafkaClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.admin.TopicFacts;
+import com.jucius.cesium.kafka.core.admin.TopicVisibility;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.CesiumConfigValidator;
 import com.jucius.cesium.kafka.core.config.CheckMode;
@@ -421,11 +422,13 @@ final class EngineHarness implements AutoCloseable {
 
     /** The route identity triple + topic facts, from the same admin plane production uses (§3.5). */
     private RouteDescriptor routeDescriptor() {
-        KafkaClusterAdmin clusterAdmin = new KafkaClusterAdmin(admin);
-        TopicFacts source = describeOrFail(clusterAdmin, sourceTopic());
-        TopicFacts destination = describeOrFail(clusterAdmin, destinationTopic());
+        // Mirrors production (CesiumEngine.buildRouteDescriptor): all three topics were described
+        // successfully during validation, so an unknown-topic answer now is broker metadata lag.
+        TopicVisibility visibility = new TopicVisibility(new KafkaClusterAdmin(admin));
+        TopicFacts source = describeOrFail(visibility, sourceTopic());
+        TopicFacts destination = describeOrFail(visibility, destinationTopic());
         // The tracker exists here: the CREATE bootstrap ran inside the startup validation.
-        TopicFacts tracker = describeOrFail(clusterAdmin, trackerTopic());
+        TopicFacts tracker = describeOrFail(visibility, trackerTopic());
         String dlq = config.route().hasDlq() ? config.route().dlq().get().topic() : null;
         return new RouteDescriptor(
                 config.applicationId(),
@@ -440,9 +443,9 @@ final class EngineHarness implements AutoCloseable {
                 source.partitionCount());
     }
 
-    private static TopicFacts describeOrFail(KafkaClusterAdmin clusterAdmin, String topic) {
-        return clusterAdmin
-                .describeTopic(topic)
+    private static TopicFacts describeOrFail(TopicVisibility visibility, String topic) {
+        return visibility
+                .awaitVisible(topic)
                 .orElseThrow(() -> new AssertionError("topic vanished between validation and store build: " + topic));
     }
 
