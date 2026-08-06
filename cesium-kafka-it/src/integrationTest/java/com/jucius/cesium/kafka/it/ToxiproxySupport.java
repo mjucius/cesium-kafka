@@ -1,5 +1,6 @@
 package com.jucius.cesium.kafka.it;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import eu.rekawek.toxiproxy.model.ToxicDirection;
@@ -10,6 +11,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -22,6 +24,7 @@ import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.testcontainers.containers.Network;
@@ -181,7 +184,28 @@ final class ToxiproxySupport {
         } catch (Exception e) {
             throw new AssertionError("createTopic " + name + " failed", e);
         }
+        // Same reason as KafkaIT.createNamedTopic: the controller's ack does not mean a broker will
+        // describe it yet, and this cluster's topics also go straight into an engine harness.
+        await("topic " + name + " describable").atMost(KafkaIT.WAIT).until(() -> topicExists(name));
         return name;
+    }
+
+    /** True when this cluster will describe {@code topic}; false when it reports it unknown. */
+    private boolean topicExists(String topic) {
+        try {
+            admin.describeTopics(List.of(topic)).allTopicNames().get(30, java.util.concurrent.TimeUnit.SECONDS);
+            return true;
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof UnknownTopicOrPartitionException) {
+                return false;
+            }
+            throw new AssertionError("describeTopics(" + topic + ") failed", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted describing " + topic, e);
+        } catch (Exception e) {
+            throw new AssertionError("describeTopics(" + topic + ") failed", e);
+        }
     }
 
     /** A plain byte-array producer on the given bootstrap (direct or proxied). Caller closes it. */

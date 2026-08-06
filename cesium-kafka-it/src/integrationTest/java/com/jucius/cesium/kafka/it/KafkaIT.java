@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -32,11 +34,14 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.slf4j.LoggerFactory;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -57,8 +62,13 @@ abstract class KafkaIT {
     /** Latest 4.x KRaft image (verified available; matches the kafka-clients 4.3.0 in the catalog). */
     static final DockerImageName KAFKA_IMAGE = DockerImageName.parse("apache/kafka:4.3.0");
 
-    static final KafkaContainer KAFKA =
-            new KafkaContainer(KAFKA_IMAGE).withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
+    // The broker's own log is piped into the test log so a metadata/propagation anomaly leaves
+    // broker-side evidence in the archived CI report. Without it, a client that sees
+    // UNKNOWN_TOPIC_OR_PARTITION has no way to show whether the broker had published the record yet,
+    // and every past occurrence had to be diagnosed by inference alone.
+    static final KafkaContainer KAFKA = new KafkaContainer(KAFKA_IMAGE)
+            .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")
+            .withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger("kafka-broker")));
 
     /** Shared admin client over the singleton broker; closed by the JVM exiting (test-only). */
     static final Admin ADMIN;
@@ -99,6 +109,31 @@ abstract class KafkaIT {
     static void createNamedTopic(String name, int partitions, Map<String, String> configs) {
         NewTopic topic = new NewTopic(name, partitions, (short) 1).configs(configs);
         get(ADMIN.createTopics(List.of(topic)).all());
+        // createTopics is acknowledged by the KRaft controller once the record is committed; a broker
+        // publishes it into the metadata it serves asynchronously. Tests hand the name straight to
+        // EngineHarness.start() microseconds later, and cesium's startup checks correctly treat an
+        // unknown operator-provisioned topic as absent — so without this wait a stalled metadata
+        // publisher makes a topic we just created look like one the operator forgot. That is a test
+        // artifact, not a product defect, so it is fixed here rather than by retrying in production.
+        await("topic " + name + " describable").atMost(WAIT).until(() -> topicExists(name));
+    }
+
+    /** True when the cluster will describe {@code topic}; false when it reports it unknown. */
+    static boolean topicExists(String topic) {
+        try {
+            ADMIN.describeTopics(List.of(topic)).allTopicNames().get(30, TimeUnit.SECONDS);
+            return true;
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof UnknownTopicOrPartitionException) {
+                return false;
+            }
+            throw new AssertionError("describeTopics(" + topic + ") failed", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted describing " + topic, e);
+        } catch (Exception e) {
+            throw new AssertionError("describeTopics(" + topic + ") failed", e);
+        }
     }
 
     /** A plain (non-transactional) byte-array test producer; caller closes it. */
