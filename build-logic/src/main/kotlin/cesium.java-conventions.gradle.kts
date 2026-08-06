@@ -103,6 +103,11 @@ tasks.register<Test>("soakTest") {
     group = "verification"
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
+    // A soak measures the JVM's actual runtime behaviour (JOL footprint, 1M-entry memory ceilings,
+    // O(log n) timing) — none of which Gradle models as a task input. Re-running an unchanged commit
+    // on a nightly is the entire point of the lane, so never let it resolve UP-TO-DATE/FROM-CACHE.
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
     shouldRunAfter(tasks.test)
 }
 

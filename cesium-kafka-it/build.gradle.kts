@@ -43,6 +43,15 @@ testing {
                     // headroom; the dump flag makes any OOM diagnosable.
                     maxHeapSize = "1024m"
                     jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
+                    // NEVER cache or skip an integration run. Gradle's Test task is @CacheableTask,
+                    // but the things this suite actually exercises — the Docker daemon, the KRaft
+                    // broker container, real wall-clock timing — are not modelled inputs, so an
+                    // unchanged commit is a guaranteed-wrong cache hit. That is not hypothetical:
+                    // integration-full reported `> Task :cesium-kafka-it:integrationTest FROM-CACHE`
+                    // and finished in <1m34s on seven consecutive nightlies (2026-07-24..07-30) versus
+                    // ~13m20s either side — a week of green nightlies that never ran a single test.
+                    outputs.upToDateWhen { false }
+                    outputs.cacheIf { false }
                 }
             }
         }
@@ -86,6 +95,10 @@ tasks.register<Test>("soakPerf") {
             systemProperty(knob, value)
         }
     }
+    // Same never-cache rule as the integrationTest task above: a broker-backed run has unmodelled
+    // inputs (Docker, the container, wall-clock), so a cache hit would silently skip the soak.
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
     shouldRunAfter(tasks.named("integrationTest"))
 }
 
