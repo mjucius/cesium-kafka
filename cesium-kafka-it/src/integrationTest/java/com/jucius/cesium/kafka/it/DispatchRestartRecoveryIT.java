@@ -16,7 +16,6 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -46,17 +45,20 @@ class DispatchRestartRecoveryIT extends KafkaIT {
         killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnce(KafkaConfig.GroupProtocol.CLASSIC);
     }
 
-    /**
-     * KIP-848 variant (design §11.3-11, D12): the same restart-recovery body under
-     * {@code group.protocol=consumer}. Non-blocking nightly lane ({@code @Tag("kip848")}); proves the
-     * committed-cursor + sidecar replay and the {@code initTransactions()} in-doubt resolution are
-     * protocol-agnostic (the shard state machine is, per §3.4.5).
-     */
-    @Test
-    @Tag("kip848")
-    void killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnceUnderConsumerProtocol() {
-        killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnce(KafkaConfig.GroupProtocol.CONSUMER);
-    }
+    // NO KIP-848 VARIANT OF THE KILL-AND-RESTART BODY — a documented protocol incompatibility, not a
+    // gap in cesium (docs/failure-matrix-coverage.md gap 2, ADR-0006). This scenario restarts with the
+    // SAME group.instance.id the killed incumbent still holds, which is exactly what a restarted pod
+    // does. Under the classic protocol that fences the incumbent immediately (FencedInstanceIdException)
+    // and the successor takes over at once. Under group.protocol=consumer the broker instead rejects
+    // the NEWCOMER (UnreleasedInstanceIdException) and the successor cannot join until the incumbent
+    // is evicted by group.consumer.session.timeout.ms — measured at ~42.5 s against apache/kafka:4.3.0
+    // broker defaults, versus the engine-stripped client session.timeout.ms the classic lane sets.
+    // The entries therefore dispatch ~30 s past their due time, breaking LATENESS_BOUND_MS: raising the
+    // budget would not make the test meaningful, it would only hide the real finding. The
+    // protocol-agnostic half of what this variant used to assert — committed-cursor + sidecar replay
+    // and initTransactions() in-doubt resolution — is still covered under the consumer protocol by
+    // BarrierOrderingI8IT (takeover via fast client-side max.poll.interval.ms eviction) and
+    // LsoBarrierHazardIT.
 
     private void killBeforeDueTimeThenRestartDispatchesOnTimeExactlyOnce(KafkaConfig.GroupProtocol protocol) {
         String source = createTopic("src", 1);

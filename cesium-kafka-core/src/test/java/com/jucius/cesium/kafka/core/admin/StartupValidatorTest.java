@@ -343,6 +343,128 @@ class StartupValidatorTest {
 
     // ------------------------------------------------------------------ tracker bootstrap + validation
 
+    /**
+     * The §2.1 {@code CREATE} bootstrap against a broker whose metadata image lags the controller's
+     * commit — the nightly-flake class of failure. {@code createTopics} is acknowledged by the
+     * controller; the describe that follows is answered by a broker that may not have published the
+     * record yet, so a healthy cluster can transiently report the topic it just created as unknown.
+     * See {@link TopicVisibility}.
+     */
+    @Nested
+    class TrackerMetadataPropagation {
+
+        /** A validator whose metadata waits advance a virtual clock instead of sleeping. */
+        private StartupValidator validatorWith(VirtualWaits waits) {
+            return new StartupValidator(admin, waits.clock(), waits.waiter());
+        }
+
+        private CesiumConfig createBootstrapConfig() {
+            givenHealthyCluster();
+            admin.topics.remove(TRACKER);
+            admin.topicConfigs.remove(TRACKER);
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
+            return builder.build();
+        }
+
+        @Test
+        void createdTrackerInvisibleForThreeDescribesStillValidates() {
+            CesiumConfig config = createBootstrapConfig();
+            // The broker publishes the new topic only on the fourth describe.
+            admin.invisibleForDescribes(TRACKER, 3);
+            VirtualWaits waits = new VirtualWaits();
+
+            StartupValidationResult result = validatorWith(waits).validate(config);
+
+            assertNoErrors(result);
+            assertEquals(List.of(50L, 100L, 200L), waits.waits(), "capped-exponential backoff");
+        }
+
+        @Test
+        void createdTrackerNeverDescribableFailsAfterTheBudgetWithoutClaimingDegradation() {
+            CesiumConfig config = createBootstrapConfig();
+            admin.invisibleForDescribes(TRACKER, Integer.MAX_VALUE);
+            VirtualWaits waits = new VirtualWaits();
+
+            StartupValidationResult result = validatorWith(waits).validate(config);
+
+            assertErrorContains(result, "route.tracker", "asynchronous metadata propagation");
+            assertErrorContains(result, "route.tracker", "broker metadata lag");
+            assertFalse(
+                    result.report().render().contains("may be degraded"),
+                    "a propagation window must not be reported as a degraded cluster");
+            assertEquals(TopicVisibility.BUDGET.toMillis(), waits.elapsedMillis());
+        }
+
+        @Test
+        void aShortTrackerDescriptionIsRetriedRatherThanReportedAsAPartitionMismatch() {
+            // A partially reassembled DescribeTopicPartitions response reports 1 partition for a
+            // 3-partition tracker; accepting it would tell the operator to grow their topics.
+            CesiumConfig config = createBootstrapConfig();
+            admin.shortForDescribes(TRACKER, 2);
+
+            StartupValidationResult result = validatorWith(new VirtualWaits()).validate(config);
+
+            assertNoErrors(result);
+        }
+
+        @Test
+        void trackerConfigsUnknownAfterASuccessfulDescribeIsRetried() {
+            // describeConfigs picks its node independently of describeTopics, so it can hit a laggier
+            // broker even once the topic is describable.
+            CesiumConfig config = createBootstrapConfig();
+            admin.configsUnknownForCalls(TRACKER, 2);
+
+            StartupValidationResult result = validatorWith(new VirtualWaits()).validate(config);
+
+            assertNoErrors(result);
+        }
+
+        @Test
+        void aTrivialVisibilityWaitIsReportedAsInfo() {
+            CesiumConfig config = createBootstrapConfig();
+            admin.invisibleForDescribes(TRACKER, 1);
+
+            StartupValidationResult result = validatorWith(new VirtualWaits()).validate(config);
+
+            assertNoErrors(result);
+            assertTrue(
+                    findingsAt(result.report().findings(), "route.tracker").contains("waiting 50 ms"),
+                    () -> result.report().render());
+        }
+
+        @Test
+        void aNonTrivialVisibilityWaitIsReportedAsAWarning() {
+            // Startup succeeds, but a publisher this slow is a degrading cluster the operator must
+            // hear about — the anti-silence guard on the retry.
+            CesiumConfig config = createBootstrapConfig();
+            admin.invisibleForDescribes(TRACKER, 6);
+
+            StartupValidationResult result = validatorWith(new VirtualWaits()).validate(config);
+
+            assertNoErrors(result);
+            assertWarningContains(result, "route.tracker", "metadata propagation");
+            assertWarningContains(result, "route.tracker", "loaded or degrading cluster");
+        }
+
+        @Test
+        void anInvisibleDlqIsStillReportedMissingImmediately() {
+            // The deliberate asymmetry: cesium never waits to establish that an OPERATOR-PROVISIONED
+            // topic exists. Retrying here would only make cesium slower at telling an operator the
+            // truth about a topic they forgot to create. Do not "helpfully" generalise the retry.
+            givenHealthyCluster();
+            admin.topics.remove(DLQ);
+            admin.topicConfigs.remove(DLQ);
+            admin.invisibleForDescribes(DLQ, 2);
+            VirtualWaits waits = new VirtualWaits();
+
+            StartupValidationResult result = validatorWith(waits).validate(defaultConfig());
+
+            assertErrorContains(result, "route.dlq.topic", "does not exist");
+            assertEquals(0L, waits.elapsedMillis(), "an absent operator-provisioned topic fails fast");
+        }
+    }
+
     @Nested
     class TrackerTopic {
 

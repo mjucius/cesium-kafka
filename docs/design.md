@@ -176,6 +176,16 @@ DISPATCH (group B subscribes tracker): tails tracker to build the in-memory inde
 - `min.compaction.lag.ms ≥ max(2 × transaction.timeout.ms, 1h)` (keeps the cleaner away from the active tail/LSO region).
 - `segment.ms ≈ 1h` (so cleaning actually happens), `message.timestamp.type=LogAppendTime`.
 
+`CREATE` bootstrap then waits — bounded, 10 s, capped-exponential backoff — for the topic it just
+created to become describable with its full partition count before validating it. `CreateTopics` is
+acknowledged by the KRaft controller; the broker answering the subsequent describe publishes that
+metadata asynchronously, so a healthy cluster can transiently report the topic as unknown. The wait
+applies **only** where existence is already proven (the topic cesium itself created, and the
+`describeConfigs` that follows a successful describe); existence checks for operator-provisioned
+topics — source, DLQ, destination, and the `FAIL`-mode tracker — still fail fast on the first answer.
+Any wait above 1 s is surfaced as a startup warning rather than absorbed silently
+([ADR-0018](adr/0018-bounded-wait-for-proven-topic-metadata.md)).
+
 ### 2.2 Tracker record schema (versioned binary; owned by `KafkaTrackerStore`, opaque to the engine)
 
 - **Key** (8 bytes): source offset, big-endian long. Unique forever per partition (offsets never recycle) — the compaction identity. Partition identity is implicit (same partition number as source).

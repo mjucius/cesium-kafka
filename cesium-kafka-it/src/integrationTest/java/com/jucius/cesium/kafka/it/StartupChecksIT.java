@@ -14,8 +14,6 @@ import com.jucius.cesium.kafka.core.ingest.IngestLoopFatalException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.RemoveMembersFromConsumerGroupOptions;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -23,7 +21,6 @@ import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.ConfigResource;
-import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -282,23 +279,6 @@ class StartupChecksIT extends KafkaIT {
         IngestLoopFatalException fatal = assertInstanceOf(IngestLoopFatalException.class, death);
         assertTrue(fatal.getMessage().contains("auto.offset.reset=none"), fatal.getMessage());
         assertTrue(fatal.getMessage().contains("offset-reset runbook"), fatal.getMessage());
-    }
-
-    private static boolean topicExists(String topic) {
-        try {
-            ADMIN.describeTopics(List.of(topic)).allTopicNames().get(30, TimeUnit.SECONDS);
-            return true;
-        } catch (ExecutionException e) {
-            if (e.getCause() instanceof UnknownTopicOrPartitionException) {
-                return false;
-            }
-            throw new AssertionError("describeTopics(" + topic + ") failed", e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new AssertionError("interrupted describing " + topic, e);
-        } catch (Exception e) {
-            throw new AssertionError("describeTopics(" + topic + ") failed", e);
-        }
     }
 
     private static Uuid topicId(String topic) {

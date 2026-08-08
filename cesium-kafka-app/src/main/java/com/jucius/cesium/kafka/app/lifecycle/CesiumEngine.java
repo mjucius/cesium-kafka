@@ -10,11 +10,13 @@ import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.health.EngineHealth;
 import com.jucius.cesium.kafka.app.health.MutableEngineHealth;
+import com.jucius.cesium.kafka.core.admin.ClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.admin.KafkaClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.admin.TopicFacts;
+import com.jucius.cesium.kafka.core.admin.TopicVisibility;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.CesiumConfigValidator;
 import com.jucius.cesium.kafka.core.config.Role;
@@ -221,7 +223,7 @@ public final class CesiumEngine implements AutoCloseable {
 
             TrackerBackedStore resolved = resolveStore(config.store().type());
             this.store = resolved;
-            RouteDescriptor route = buildRouteDescriptor(clusterAdmin, identity, partitionCount);
+            RouteDescriptor route = buildRouteDescriptor(clusterAdmin, config, identity, partitionCount);
             resolved.configure(new EngineStoreContext(
                     route, new MapConfigView(config.store().properties())));
             this.storeCapabilities = resolved.capabilities();
@@ -383,14 +385,23 @@ public final class CesiumEngine implements AutoCloseable {
         }
     }
 
-    /** The route identity triple + topic facts from the same admin plane production uses (§3.5). */
-    private RouteDescriptor buildRouteDescriptor(
-            KafkaClusterAdmin clusterAdmin, IdentityBlob identity, int partitions) {
-        TopicFacts source = describeOrFail(clusterAdmin, config.route().source().topic());
+    /**
+     * The route identity triple + topic facts from the same admin plane production uses (§3.5).
+     *
+     * <p>Package-private and static so the wiring test can drive it over a fake {@link ClusterAdmin}
+     * — in particular to prove the bounded metadata wait below is really on this path.
+     */
+    static RouteDescriptor buildRouteDescriptor(
+            ClusterAdmin clusterAdmin, CesiumConfig config, IdentityBlob identity, int partitions) {
+        // All three topics were described successfully moments ago during startup validation, so an
+        // unknown-topic answer here is a laggy broker's metadata image — possibly a different node
+        // than validation asked — not a vanished topic. Wait it out before declaring the latter.
+        TopicVisibility visibility = new TopicVisibility(clusterAdmin);
+        TopicFacts source = describeOrFail(visibility, config.route().source().topic());
         TopicFacts destination =
-                describeOrFail(clusterAdmin, config.route().destination().topic());
+                describeOrFail(visibility, config.route().destination().topic());
         // The tracker exists by now: the CREATE bootstrap ran inside startup validation.
-        TopicFacts tracker = describeOrFail(clusterAdmin, trackerTopic());
+        TopicFacts tracker = describeOrFail(visibility, trackerTopic(config));
         String dlq = config.route().hasDlq() ? config.route().dlq().get().topic() : null;
         return new RouteDescriptor(
                 config.applicationId(),
@@ -405,9 +416,9 @@ public final class CesiumEngine implements AutoCloseable {
                 partitions);
     }
 
-    private static TopicFacts describeOrFail(KafkaClusterAdmin clusterAdmin, String topic) {
-        return clusterAdmin
-                .describeTopic(topic)
+    private static TopicFacts describeOrFail(TopicVisibility visibility, String topic) {
+        return visibility
+                .awaitVisible(topic)
                 .orElseThrow(() -> new EngineStartupException(
                         "topic '" + topic + "' vanished between startup validation and store build"));
     }
@@ -490,6 +501,10 @@ public final class CesiumEngine implements AutoCloseable {
     }
 
     private String trackerTopic() {
+        return trackerTopic(config);
+    }
+
+    private static String trackerTopic(CesiumConfig config) {
         return config.route().tracker().resolvedTopic(config.applicationId());
     }
 

@@ -11,7 +11,9 @@ import com.jucius.cesium.kafka.core.testing.CrashPoints;
 import com.jucius.cesium.kafka.store.tracker.TrackerWireFormat;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
@@ -21,6 +23,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -231,11 +234,11 @@ class BarrierOrderingI8IT extends KafkaIT {
      * {@code null} when the group does not have exactly one member owning it.
      */
     private static String soleOwnerOf(String groupId, String trackerTopic, int partition) {
-        ConsumerGroupDescription description = describe(groupId);
-        if (description.members().size() != 1) {
+        Optional<ConsumerGroupDescription> described = describe(groupId);
+        if (described.isEmpty() || described.get().members().size() != 1) {
             return null;
         }
-        MemberDescription member = description.members().iterator().next();
+        MemberDescription member = described.get().members().iterator().next();
         return member.assignment().topicPartitions().contains(new TopicPartition(trackerTopic, partition))
                 ? member.consumerId()
                 : null;
@@ -243,7 +246,11 @@ class BarrierOrderingI8IT extends KafkaIT {
 
     /** True once a member <em>other</em> than {@code notThisConsumerId} owns the partition (= N took over). */
     private static boolean ownedByOther(String groupId, String trackerTopic, int partition, String notThisConsumerId) {
-        for (MemberDescription member : describe(groupId).members()) {
+        Optional<ConsumerGroupDescription> described = describe(groupId);
+        if (described.isEmpty()) {
+            return false;
+        }
+        for (MemberDescription member : described.get().members()) {
             if (!member.consumerId().equals(notThisConsumerId)
                     && member.assignment().topicPartitions().contains(new TopicPartition(trackerTopic, partition))) {
                 return true;
@@ -252,12 +259,31 @@ class BarrierOrderingI8IT extends KafkaIT {
         return false;
     }
 
-    private static ConsumerGroupDescription describe(String groupId) {
+    /**
+     * Describes the group, or empty when the broker does not know it yet.
+     *
+     * <p>Both callers are Awaitility poll conditions waiting for a group that a consumer is in the
+     * middle of joining. Under the classic protocol an unknown group is described as {@code DEAD};
+     * under the KIP-848 consumer protocol the broker instead fails the call with {@code
+     * GroupIdNotFoundException} until the first heartbeat completes. Awaitility does not ignore
+     * exceptions by default, so turning that into an {@code AssertionError} killed the poll on its
+     * first attempt — which is why this only ever failed in the {@code kip848} lane. Every other
+     * failure still fails loudly.
+     */
+    private static Optional<ConsumerGroupDescription> describe(String groupId) {
         try {
-            return ADMIN.describeConsumerGroups(List.of(groupId))
+            return Optional.ofNullable(ADMIN.describeConsumerGroups(List.of(groupId))
                     .all()
                     .get(20, TimeUnit.SECONDS)
-                    .get(groupId);
+                    .get(groupId));
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof GroupIdNotFoundException) {
+                return Optional.empty();
+            }
+            throw new AssertionError("describeConsumerGroups(" + groupId + ") failed", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted describing " + groupId, e);
         } catch (Exception e) {
             throw new AssertionError("describeConsumerGroups(" + groupId + ") failed", e);
         }
