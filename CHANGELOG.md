@@ -46,6 +46,11 @@ All notable changes to this project will be documented in this file. The format 
   surface for any consumer — hence a patch release. Every pin was verified against upstream before
   merge: the Gradle distribution and `gradle-wrapper.jar` against Gradle's published SHA-256s, and
   each action SHA dereferenced to its release tag.
+- Error Prone 2.50.0 newly reports `ReferenceEquality` at all six self-referential-cause guards
+  (`t.getCause() == t`, which stops a Throwable whose cause is itself from looping forever). Identity
+  is the intended comparison and the suggested `.equals()` rewrite would be incorrect, so each is
+  suppressed at its method with the reasoning recorded. Annotations and comments only — no executable
+  line changed, and the taxonomy classifiers behave exactly as before.
 
 ## [1.1.0] - 2026-07-22
 

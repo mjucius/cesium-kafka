@@ -519,6 +519,10 @@ public final class KafkaSeekFetcher implements SeekFetcher {
      * per-partition transport trouble the tri-state classifies (§7.3). Walks the cause chain like
      * the §3.8 taxonomy classifiers.
      */
+    // ReferenceEquality: `t.getCause() == t` is the self-referential-cause guard — a Throwable
+    // whose getCause() returns itself would loop forever. Identity is the intended test, and Error
+    // Prone's suggested .equals() is wrong (Throwable does not override it). Flagged from 2.50.0.
+    @SuppressWarnings("ReferenceEquality")
     private static boolean isFatal(RuntimeException error) {
         for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
             if (t instanceof WakeupException
