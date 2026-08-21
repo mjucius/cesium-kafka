@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-21
+
 ### Fixed
 - The README quickstart no longer fails for a first-time visitor. "Try it — one command" opened
   straight at `make demo` with no `git clone`/`cd` ahead of it (the string `git clone` appeared
@@ -171,6 +173,7 @@ re-delivers each record to a destination topic **at the time the producer asked 
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/mjucius/cesium-kafka/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mjucius/cesium-kafka/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mjucius/cesium-kafka/releases/tag/v1.0.0
