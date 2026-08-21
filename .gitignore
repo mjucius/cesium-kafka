@@ -58,3 +58,8 @@ credentials.json
 *-credentials.json
 service-account*.json
 gcloud-*.json
+
+# Security-scanner output dropped in the repo root by /vulnhunt runs
+# (cesium-kafka_VULNHUNT_RESULTS_<timestamp>/). Local triage artefacts: they can restate findings
+# verbatim, including not-yet-fixed ones, so they must never be committed.
+*_VULNHUNT_RESULTS_*/

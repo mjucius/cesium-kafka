@@ -30,6 +30,16 @@ All notable changes to this project will be documented in this file. The format 
   A documented protocol incompatibility, now recorded in `docs/failure-matrix-coverage.md` gap 2
   rather than masked by a larger timeout. **Operator note:** under the consumer protocol with static
   membership, a hard pod restart pauses that partition's dispatch for up to the session timeout.
+- Dependency refresh (grouped Dependabot PRs [#10] and [#17]). Runtime: kafka-clients 4.3.0 → 4.3.1,
+  micrometer 1.16.5 → 1.17.0, fastutil 8.5.18 → 8.5.19, logback 1.5.34 → 1.6.2, jspecify 1.0.0 →
+  1.0.1. Build/test only: Gradle 9.5.1 → 9.7.0, JUnit 6.1.0 → 6.1.3, Error Prone 2.49.0 → 2.50.0,
+  NullAway 0.13.6 → 0.13.8, and the SHA-pinned GitHub Actions (checkout v6.0.3 → v7.0.1, setup-java
+  v5.2.0 → v5.7.0, gradle/actions v6.1.0 → v6.3.0, action-gh-release v3.0.0 → v3.0.2). No API
+  change: per [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md) this project
+  publishes distribution archives only, so micrometer's minor bump is not a transitive compile
+  surface for any consumer — hence a patch release. Every pin was verified against upstream before
+  merge: the Gradle distribution and `gradle-wrapper.jar` against Gradle's published SHA-256s, and
+  each action SHA dereferenced to its release tag.
 
 ## [1.1.0] - 2026-07-22
 

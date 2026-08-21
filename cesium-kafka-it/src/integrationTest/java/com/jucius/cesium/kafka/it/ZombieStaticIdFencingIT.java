@@ -143,6 +143,11 @@ class ZombieStaticIdFencingIT {
     }
 
     /** Walks the cause chain for a fencing classification (the §3.8 fatal path; no restore, I9). */
+    // ReferenceEquality: `t != t.getCause()` is the self-referential-cause guard — a Throwable whose
+    // getCause() returns itself would loop forever. Identity is exactly the intended test, and Error
+    // Prone's suggested .equals() is wrong here (Throwable does not override equals). Newly flagged
+    // by Error Prone 2.50.0; 2.49.0 did not report it.
+    @SuppressWarnings("ReferenceEquality")
     private static void assertFencingFatal(Throwable death) {
         assertNotNull(death, "the fenced member's loop must have died");
         for (Throwable t = death; t != null && t != t.getCause(); t = t.getCause()) {
