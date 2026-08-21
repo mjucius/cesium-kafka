@@ -7,6 +7,10 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Fixed
+- The README quickstart no longer fails for a first-time visitor. "Try it — one command" opened
+  straight at `make demo` with no `git clone`/`cd` ahead of it (the string `git clone` appeared
+  nowhere in the file), so following the README verbatim ran `make` in whatever directory the reader
+  happened to be in, and `make: *** No rule to make target 'demo'` was the first thing they saw.
 - Startup no longer fails when the tracker topic it just created is not yet visible in the metadata a
   broker serves. `CreateTopics` is acknowledged by the KRaft controller, but the broker answering the
   next describe publishes that record asynchronously — a normal, usually sub-millisecond window that

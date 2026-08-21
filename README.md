@@ -67,6 +67,8 @@ What is supported, and how stable, in v1:
 ## Try it — one command (Docker; `make` optional)
 
 ```bash
+git clone https://github.com/mjucius/cesium-kafka.git
+cd cesium-kafka
 make demo
 ```
 
