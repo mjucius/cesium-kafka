@@ -6,6 +6,46 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-25
+
+Documentation only — no executable line changed, no behaviour difference. Three places where the
+docs described intended design as though it were shipped behaviour, or stated a Kafka semantic
+backwards. Each is the kind of claim a reader would act on: write an alert, implement against an
+SPI, or size an offsets-retention budget.
+
+### Fixed
+- **`docs/delivery-semantics.md` §8.1 stated KIP-211's offset-expiry semantics backwards.** It said
+  the retention clock "runs from the last commit, even for a live-but-idle group" — that is the
+  *pre*-KIP-211 behaviour the KIP removed in Kafka 2.1. For a subscribing group the clock starts when
+  the group becomes **empty**; a group with live members does not lose its offsets however idle its
+  partitions. Both cesium groups `subscribe()`, so expiry can only begin once cesium is fully down,
+  which is precisely why the guard is an outage budget (`startup-checks.max-tolerated-outage`) and
+  not a commit-interval floor. The surrounding section already assumed the correct model, so only the
+  parenthetical was wrong — but an operator reading it could have concluded that a healthy, idle
+  deployment was at risk of silent offset expiry.
+
+### Changed
+- **The two-dispatch-loop `switch` in design §4.2 and [`docs/store-spi.md`](docs/store-spi.md) §2 is
+  now labelled as design intent rather than current code.** Both showed
+  `switch (store) { case TrackerBackedStore -> new TrackerDispatchLoop(...); case
+  ExternalSchedulerStore -> new ExternalDispatchLoop(...); }`. Neither loop type exists: there is one
+  `DispatchLoop`, and `CesiumEngine.resolveStore` narrows to `TrackerBackedStore` and rejects any
+  other archetype at startup ("this app build orchestrates tracker-backed stores only"). The snippets
+  are kept — sealing the hierarchy ([ADR-0003](docs/adr/0003-sealed-two-archetype-store-spi.md)) is
+  what makes that the wiring when the external archetype lands — but each now carries an as-shipped
+  note, and store-spi.md states plainly that a store must implement `TrackerBackedStore` to be
+  runnable by the shipped app today.
+- **Design §9's metric inventory now agrees with [`docs/operations.md`](docs/operations.md) §13 about
+  which series exist.** operations.md has always carried the honest "not yet emitted (deferred past
+  M8)" block; design §9 listed the same nine series with no marker, so the two documents disagreed
+  and the design doc read as a promise of live telemetry. The nine deferred series (`cesium_lso_lag`,
+  `cesium_shard_state`, `cesium_replay_remaining_records`, `cesium_store_recovery_duration_seconds`,
+  `cesium_store_replay_records_total`, `cesium_retention_margin_seconds`, `cesium_tracker_cursor_lag`
+  / `_age_seconds`, `cesium_pending_oldest_deadline_seconds`, `cesium_index_bytes_estimate`) are now
+  marked **[not yet emitted]** row by row, with a note naming operations.md §13 as authoritative and
+  pointing at the documented proxies. `cesium_shard_paused` is emitted and is called out separately
+  from `cesium_shard_state`, which is not.
+
 ## [1.1.1] - 2026-08-21
 
 ### Fixed
@@ -178,7 +218,8 @@ re-delivers each record to a destination topic **at the time the producer asked 
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/mjucius/cesium-kafka/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/mjucius/cesium-kafka/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mjucius/cesium-kafka/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mjucius/cesium-kafka/releases/tag/v1.0.0

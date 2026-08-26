@@ -69,6 +69,13 @@ DispatchLoop loop = switch (store) {
 };
 ```
 
+> **As shipped (1.1.x):** consistent with "v1 ships the SPI fixed but no external implementation"
+> above, the external branch has no loop behind it yet — the app build accepts a
+> `TrackerBackedStore` and rejects any other archetype at startup (`CesiumEngine.resolveStore`).
+> A store you write today must therefore implement `TrackerBackedStore` to be runnable by the
+> shipped app; `ExternalSchedulerStore` is a stable, contract-tested surface you can build against,
+> but wiring it needs the external dispatch loop that lands with the archetype.
+
 ---
 
 ## 3. The SPI types

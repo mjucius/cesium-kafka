@@ -224,9 +224,13 @@ over — they are stated so operators configure for them.
 
 cesium's entire knowledge of "where am I" lives in **committed consumer offsets** (group A's source
 position, group B's cursor + sidecar). Kafka expires committed offsets after
-`offsets.retention.minutes` of group inactivity (KIP-211: the clock runs from the last commit, even
-for a live-but-idle group). If a group's offsets expire — say after an outage longer than broker
-retention — the next fetch finds **no committed offset.**
+`offsets.retention.minutes` — but since **KIP-211** (Kafka 2.1) the retention clock for a
+*subscribing* group starts when the group becomes **empty**, not at its last commit: a group that
+still has members does not lose its offsets, however idle its partitions. Both cesium groups
+`subscribe()` (`IngestLoop`, `DispatchLoop`), so the clock only starts once cesium is fully down —
+which is why the guard is an **outage budget** (`startup-checks.max-tolerated-outage`) rather than a
+commit-interval floor. If a group's offsets expire — after an outage longer than the broker's
+offsets retention — the next fetch finds **no committed offset.**
 
 cesium refuses to guess. **`auto.offset.reset=none` is locked on both groups (D18).** A missing
 offset surfaces as `NoOffsetForPartitionException` and is a **fail-fast with a runbook**, not a

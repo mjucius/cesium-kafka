@@ -557,6 +557,16 @@ DispatchLoop loop = switch (store) {
 };
 ```
 
+> **As shipped (1.1.x) — design intent, not current code.** No external-archetype dispatch loop
+> exists yet, so neither does the switch: `TrackerDispatchLoop`/`ExternalDispatchLoop` are not types
+> in this repo, and there is exactly one `DispatchLoop`
+> (`cesium-kafka-core/.../core/dispatch/DispatchLoop.java`). The app build resolves the provider and
+> accepts the tracker-backed archetype only — `CesiumEngine.resolveStore`
+> (`cesium-kafka-app/.../app/lifecycle/CesiumEngine.java`) narrows to `TrackerBackedStore` and
+> rejects anything else at startup with *"this app build orchestrates tracker-backed stores only"*.
+> Sealing the hierarchy (ADR-0003) is what makes this the wiring — exhaustive, no `instanceof`
+> chain — on the day the second archetype ships.
+
 ### 4.3 Archetype-to-transaction mapping (normative; goes in store-spi.md)
 
 | Phase | TrackerBackedStore (EOS) | ExternalSchedulerStore |
@@ -777,6 +787,11 @@ Key defaults (durations ISO-8601):
 
 **Metric inventory** (final names, `cesium_` prefix):
 
+> **Not all of these ship in 1.1.x.** Rows marked **[not yet emitted]** are specified here but were
+> deferred past M8 — the series do **not** exist in the release, so no alert may be written against
+> them. [`docs/operations.md`](operations.md) §13 is the **authoritative** inventory of what a
+> running cesium actually exposes, and lists the proxy metrics to use until these land.
+
 | Metric | Type | Tags | Meaning |
 |---|---|---|---|
 | `cesium_ingest_records_total` | counter | `outcome=relayed_immediate\|scheduled\|dlq\|clamped` | ingest dispositions |
@@ -784,14 +799,14 @@ Key defaults (durations ISO-8601):
 | `cesium_dispatch_lag_seconds` | histogram | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | max time between group-B polls; alert ≪ `max.poll.interval.ms` (§6) |
 | `cesium_pending_entries` | gauge | `partition` | live index size; alert on step-collapse (tracker-integrity canary, R-9) |
-| `cesium_pending_oldest_deadline_seconds` | gauge | | now − earliest deadline |
-| `cesium_tracker_cursor_lag` / `_age_seconds` | gauge | `partition` | position − committed cursor / cursor age; alert vs `delete.retention.ms` |
+| `cesium_pending_oldest_deadline_seconds` | gauge | | **[not yet emitted]** now − earliest deadline |
+| `cesium_tracker_cursor_lag` / `_age_seconds` | gauge | `partition` | **[not yet emitted]** position − committed cursor / cursor age; alert vs `delete.retention.ms` |
 | `cesium_pinned_entries` | gauge | `partition` | sidecar occupancy; sustained at max ⇒ overflow mode (§3.5) |
 | `cesium_cursor_sidecar_bytes` | gauge | `partition` | encoded sidecar size vs budget |
-| `cesium_replay_remaining_records` | gauge | `partition` | barrier − position, live during recovery; feeds replay-ETA alert |
-| `cesium_shard_state` / `cesium_shard_paused` | gauge | `partition` | ASSIGNED/RECOVERING/ACTIVE; backpressure pause state |
-| `cesium_store_recovery_duration_seconds` | timer | `partition` | replay time per assignment |
-| `cesium_store_replay_records_total` | counter | `kind=add\|complete\|seeded` | replay volume |
+| `cesium_replay_remaining_records` | gauge | `partition` | **[not yet emitted]** barrier − position, live during recovery; feeds replay-ETA alert |
+| `cesium_shard_state` / `cesium_shard_paused` | gauge | `partition` | ASSIGNED/RECOVERING/ACTIVE (`cesium_shard_state` is **[not yet emitted]**); backpressure pause state |
+| `cesium_store_recovery_duration_seconds` | timer | `partition` | **[not yet emitted]** replay time per assignment |
+| `cesium_store_replay_records_total` | counter | `kind=add\|complete\|seeded` | **[not yet emitted]** replay volume |
 | `cesium_transactions_total` | counter | `loop`, `result=committed\|aborted\|in_doubt`, `cause` | fencing aborts ⇒ duplicates prevented; in-doubt occurrences |
 | `cesium_txn_commit_seconds` | timer | `loop` | |
 | `cesium_fetch_attempts_total` / `_misses_total` / `_unfetchable_total` | counter | | seek-fetch outcomes; sustained misses = alert |
@@ -802,11 +817,11 @@ Key defaults (durations ISO-8601):
 | `cesium_ingest_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-A rebalance churn; `lost` = fenced/unclean |
 | `cesium_dispatch_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-B rebalance churn; `lost` = fenced/unclean |
 | `cesium_dlq_records_total` | counter | `reason` | |
-| `cesium_retention_margin_seconds` | gauge | | **observed** earliest-available age − delay.max (honest under size/tier eviction); alert < 0 |
+| `cesium_retention_margin_seconds` | gauge | | **[not yet emitted]** **observed** earliest-available age − delay.max (honest under size/tier eviction); alert < 0 |
 | `cesium_tracker_invalid_records_total` | counter | | wire-format violations on tracker (malformed/version-skew); foreign-writer canary — **does not detect well-formed forgeries** (L2; competent tampering needs broker authorizer audit logging or the reserved `store.kafka.hmac.*`) |
 | `cesium_degraded` | gauge | `loop` | park-and-degrade state (§3.8); the triggering cause is logged, not tagged — a gauge's identity must be stable across cause changes (Micrometer registration) |
-| `cesium_lso_lag` | gauge | `partition` | HW − LSO: detects stuck-transaction stalls |
-| `cesium_index_bytes_estimate` | gauge | | capacity tracking vs global cap |
+| `cesium_lso_lag` | gauge | `partition` | **[not yet emitted]** HW − LSO: detects stuck-transaction stalls |
+| `cesium_index_bytes_estimate` | gauge | | **[not yet emitted]** capacity tracking vs global cap |
 | `cesium_loop_last_iteration_timestamp_seconds` | gauge | `loop` | feeds liveness |
 
 Operations runbook ties alerts to remedies: cursor age vs tombstone retention, pinned-entry overflow (raise sidecar budget / inspect long-delay producers), abort-rate and in-doubt spikes, LSO stalls, replay ETA over budget, DLQ drain, partition-count drift (grow tracker first), tracker-size growth vs worksheet, penalty-box dwell, pending-collapse (tracker integrity), degraded-state procedures. **Lag-tooling note:** group B's committed offsets now track position closely (v2 cursor), so standard consumer-lag tooling reads approximately correctly; only sidecar-overflow mode shows inflated lag (documented).
