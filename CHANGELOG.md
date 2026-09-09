@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-09-08
+
+Dependency and build-infrastructure only — no executable line of the engine changed, no behaviour
+difference. The runtime libraries that ship inside the distribution archives (jackson, logback,
+slf4j, micrometer) move to current patch releases, and a latent Gradle plugin-classloader defect
+that had been misdiagnosed as a Spotless incompatibility is fixed, unpinning the formatter.
+
 ### Fixed
 - **The benchmarks module was splitting the Gradle plugin classloader**, which had held Spotless at
   7.x since 2026-06-07. Gradle caches one plugin classloader per distinct plugin classpath.
@@ -262,7 +269,8 @@ re-delivers each record to a destination topic **at the time the producer asked 
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/mjucius/cesium-kafka/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/mjucius/cesium-kafka/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/mjucius/cesium-kafka/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mjucius/cesium-kafka/compare/v1.0.0...v1.1.0
