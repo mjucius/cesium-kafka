@@ -1,8 +1,10 @@
 import net.ltgt.gradle.errorprone.errorprone
 
 plugins {
-    id("cesium.java-conventions")
-    alias(libs.plugins.jmh)
+    // Brings in cesium.java-conventions AND the JMH plugin from build-logic. Applying JMH here
+    // directly would give this module a plugin classpath its siblings lack, splitting the Gradle
+    // plugin classloader and breaking Spotless's shared BuildService — see the convention plugin.
+    id("cesium.jmh-conventions")
 }
 
 description = "JMH micro-benchmarks for the KafkaTrackerStore hot paths (design §11.4). " +
