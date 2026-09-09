@@ -32,10 +32,10 @@ All notable changes to this project will be documented in this file. The format 
   below this project's. `palantirJavaFormat` stays pinned to the catalog's 2.68.0 rather than tracking
   the plugin default, so **no source file was reformatted** — `spotlessApply` on 8.10.2 is a no-op
   against the 7.0.4 output.
-- Dependency refresh (grouped Dependabot PRs [#20] and [#22]). Runtime: micrometer 1.17.0 → 1.17.1,
-  jackson 2.22.0 → 2.22.2, logback 1.6.2 → 1.6.3. Build/test only: Gradle 9.7.0 → 9.7.1, NullAway
-  0.13.8 → 0.14.0, and the SHA-pinned GitHub Actions (setup-java v5.7.0 → v6.0.0, action-gh-release
-  v3.0.2 → v3.0.3). No API change: per
+- Dependency refresh (grouped Dependabot PRs [#20], [#22] and [#24]). Runtime: micrometer 1.17.0 →
+  1.17.1, jackson 2.22.0 → 2.22.2, logback 1.6.2 → 1.6.3, slf4j 2.0.18 → 2.0.19. Build/test only:
+  Gradle 9.7.0 → 9.7.1, NullAway 0.13.8 → 0.14.1, and the SHA-pinned GitHub Actions (setup-java
+  v5.7.0 → v6.0.0, action-gh-release v3.0.2 → v3.0.3). No API change: per
   [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md) this project publishes
   distribution archives only, so micrometer's patch bump is not a transitive compile surface for any
   consumer. Every pin was verified against upstream before merge: the Gradle distribution against
