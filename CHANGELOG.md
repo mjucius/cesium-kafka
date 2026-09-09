@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+- Dependency refresh (grouped Dependabot PRs [#20] and [#22]). Runtime: micrometer 1.17.0 → 1.17.1,
+  jackson 2.22.0 → 2.22.2, logback 1.6.2 → 1.6.3. Build/test only: Gradle 9.7.0 → 9.7.1, NullAway
+  0.13.8 → 0.14.0, and the SHA-pinned GitHub Actions (setup-java v5.7.0 → v6.0.0, action-gh-release
+  v3.0.2 → v3.0.3). No API change: per
+  [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md) this project publishes
+  distribution archives only, so micrometer's patch bump is not a transitive compile surface for any
+  consumer. Every pin was verified against upstream before merge: the Gradle distribution against
+  Gradle's published SHA-256, and each action SHA dereferenced to its release tag (action-gh-release
+  v3.0.3 through its annotated tag object). `gradle-wrapper.jar` is byte-identical between 9.7.0 and
+  9.7.1, so Dependabot was right to leave it untouched.
+- `actions/setup-java` v6.0.0 is a major bump, but it preserves the `JAVA_HOME` ordering the unit
+  lane depends on. `ci.yml` installs the matrix test JVM **and** 21 with 21 *last*, so Gradle — and
+  therefore Spotless/palantir-java-format, which hooks javac internals that newer JDKs change —
+  always runs on 21, while the suites run on the matrix JVM via `-PtestToolchain`. The JDK 25 lane of
+  [#22] confirms the ordering survives v6: `JAVA_HOME` resolves to the 21 toolchain with 25 installed
+  alongside. v6's split of the wrapper cache from the dependency cache does not reach this repo — no
+  workflow passes setup-java a `cache:` input, since caching is `gradle/actions/setup-gradle`.
+
 ## [1.1.2] - 2026-08-25
 
 Documentation only — no executable line changed, no behaviour difference. Three places where the
