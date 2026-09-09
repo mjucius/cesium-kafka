@@ -6,7 +6,32 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+- **The benchmarks module was splitting the Gradle plugin classloader**, which had held Spotless at
+  7.x since 2026-06-07. Gradle caches one plugin classloader per distinct plugin classpath.
+  `cesium-kafka-benchmarks` was the only module applying a plugin its siblings lacked — it added
+  `alias(libs.plugins.jmh)` on top of the shared `cesium.java-conventions` — so it received its own
+  classloader, and `SpotlessTaskService` (a build-scoped Gradle `BuildService`) was loaded twice.
+  Spotless 8.x checks for exactly this and failed the build at configuration time
+  (`Cannot set the value of task ':cesium-kafka-benchmarks:spotlessJava' property 'taskService' …
+  loaded with …project-cesium-kafka-benchmarks … using a provider … loaded with
+  …project-cesium-kafka-api`); 7.x never performed the check, so the defect sat latent and was
+  misread as a Spotless incompatibility. The JMH plugin now reaches the module through a new
+  `cesium.jmh-conventions` precompiled script plugin in `build-logic`, putting it on the runtime
+  classpath every subproject already shares — one classpath, one classloader, one
+  `SpotlessTaskService`. The `[plugins]` block in `gradle/libs.versions.toml` is gone; every plugin
+  jar is now a build-logic `implementation` dependency, and the catalog comment says why.
+
 ### Changed
+- **Spotless 7.0.4 → 8.10.2**, and the `ignore:` rule holding it at 7.x is removed from
+  `.github/dependabot.yml` — the classloader fix above was the real blocker. (That rule was not doing
+  its job regardless: it was added 2026-06-07 yet Dependabot still opened a major-version Spotless PR
+  on 2026-08-23.) Nothing in the 8.x breaking-change list reaches this build: the renamed
+  `removeWildcardImports`, the root-only `spotlessInstallGitPrePushHook`, the `LintSuppression` path
+  change and the ktfmt/ktlint changes are all unused, and the raised floors (Gradle 8.1, Java 17) sit
+  below this project's. `palantirJavaFormat` stays pinned to the catalog's 2.68.0 rather than tracking
+  the plugin default, so **no source file was reformatted** — `spotlessApply` on 8.10.2 is a no-op
+  against the 7.0.4 output.
 - Dependency refresh (grouped Dependabot PRs [#20] and [#22]). Runtime: micrometer 1.17.0 → 1.17.1,
   jackson 2.22.0 → 2.22.2, logback 1.6.2 → 1.6.3. Build/test only: Gradle 9.7.0 → 9.7.1, NullAway
   0.13.8 → 0.14.0, and the SHA-pinned GitHub Actions (setup-java v5.7.0 → v6.0.0, action-gh-release

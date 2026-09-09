@@ -18,7 +18,7 @@ jol = "0.17"
 errorprone = "2.50.0"
 nullaway = "0.14.0"
 palantir-java-format = "2.68.0"
-spotless-plugin = "7.0.4"
+spotless-plugin = "8.10.2"
 errorprone-plugin = "5.1.0"
 jmh-plugin = "0.7.3"
 
@@ -45,10 +45,12 @@ jol-core = { module = "org.openjdk.jol:jol-core", version.ref = "jol" }
 errorprone-core = { module = "com.google.errorprone:error_prone_core", version.ref = "errorprone" }
 nullaway = { module = "com.uber.nullaway:nullaway", version.ref = "nullaway" }
 
-# Plugin jars consumed by build-logic as implementation dependencies.
+# Plugin jars consumed by build-logic as implementation dependencies. ALL of them belong here, not in
+# a [plugins] block applied per-module: Gradle caches one plugin classloader per distinct classpath,
+# so a module that adds a plugin its siblings lack gets its OWN classloader — and a plugin holding a
+# shared BuildService (Spotless's SpotlessTaskService) then sees two distinct Class objects for it and
+# fails the build. Routing every plugin through build-logic keeps one classpath for every subproject.
 spotless-plugin = { module = "com.diffplug.spotless:spotless-plugin-gradle", version.ref = "spotless-plugin" }
 errorprone-plugin = { module = "net.ltgt.gradle:gradle-errorprone-plugin", version.ref = "errorprone-plugin" }
-
-[plugins]
-# Applied only by the cesium-kafka-benchmarks module (M8); version pinned by the jmh-plugin entry above.
-jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }
+# Resolves from gradlePluginPortal (not Central); build-logic/settings.gradle.kts declares both.
+jmh-plugin = { module = "me.champeau.jmh:jmh-gradle-plugin", version.ref = "jmh-plugin" }
