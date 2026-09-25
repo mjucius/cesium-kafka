@@ -44,6 +44,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+          # v6.0.1 only warns on a failed JDK signature check unless this is set explicitly; the
+          # release lane builds shipped artifacts, so keep verification fatal as it was in v6.0.0.
+          verify-signature: true
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - name: Derive version from tag

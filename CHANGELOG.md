@@ -6,6 +6,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+- SHA-pinned `actions/setup-java` v6.0.0 → v6.0.1 (Dependabot PR [#25]). The pin was dereferenced to
+  its release tag (`v6.0.1` is a lightweight ref straight to `de7274f`; the floating `v6` tag points
+  there too), and the upstream compare is a clean eight-commit fast-forward matching the release
+  notes. The one behaviour change is to Temurin signature verification: v6.0.0 checked a downloaded
+  archive's GPG signature by default and failed the step on a bad signature, a missing signature URL
+  or a missing `gpg`; v6.0.1 still checks by default but only **warns** on those failures unless
+  `verify-signature: true` is set explicitly. That is inert today — every lane resolves JDK 21/25
+  from the hosted runner tool cache (the PR's JDK 25 lane logs `Resolved Java 25.0.4+1 from
+  tool-cache` / `Resolved Java 21.0.12+1 from tool-cache`), and setup-java verifies nothing on that
+  path — but `release.yml` now sets `verify-signature: true` so that a JDK download in the lane that
+  builds shipped artifacts fails closed. The CI and nightly lanes keep the warn-only default so an
+  Adoptium signing-key rotation the action has not yet picked up cannot break routine builds. The
+  unit lane's `JAVA_HOME` ordering is unchanged: 21 is still installed last and remains the default.
+
 ## [1.1.3] - 2026-09-08
 
 Dependency and build-infrastructure only — no executable line of the engine changed, no behaviour
