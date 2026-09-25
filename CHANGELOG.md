@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-09-25
+
+CI-infrastructure only — no executable line of the engine and no shipped dependency changed, so the
+distribution archives are functionally identical to 1.1.3. The SHA-pinned `actions/setup-java` moves
+to v6.0.1, and the release lane now enforces JDK signature verification explicitly.
+
 ### Changed
 - SHA-pinned `actions/setup-java` v6.0.0 → v6.0.1 (Dependabot PR [#25]). The pin was dereferenced to
   its release tag (`v6.0.1` is a lightweight ref straight to `de7274f`; the floating `v6` tag points
@@ -284,7 +290,8 @@ re-delivers each record to a destination topic **at the time the producer asked 
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/mjucius/cesium-kafka/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/mjucius/cesium-kafka/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/mjucius/cesium-kafka/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/mjucius/cesium-kafka/compare/v1.1.0...v1.1.1
