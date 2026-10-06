@@ -33,7 +33,7 @@ jobs:
           java-version: |
             ${{ matrix.test-jvm }}
             21
-      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       - name: Build and test
         run: ./gradlew build -PtestToolchain=${{ matrix.test-jvm }}
 
@@ -47,7 +47,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       - name: Integration tests (representative lane)
         # Design §13: the PR lane runs the representative classic-protocol suite. The java-conventions
         # plugin excludes three tag families from every default lane:
