@@ -47,7 +47,7 @@ class GrowthBoundaryTest {
                 break;
             }
             drained += got;
-            shard.finalizeCommitted(slots.elements(), slots.size());
+            slots.forEach(shard::finalizeSlot);
         }
         assertEquals(N - 3, drained);
         assertEquals(0, shard.pendingCount());

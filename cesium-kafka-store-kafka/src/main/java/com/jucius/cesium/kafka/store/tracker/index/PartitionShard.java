@@ -222,13 +222,6 @@ public final class PartitionShard {
         pendingCount++;
     }
 
-    /** Batch form of {@link #restoreSlot}. */
-    public void restoreAfterAbort(int[] slotIds, int count) {
-        for (int i = 0; i < count; i++) {
-            restoreSlot(slotIds[i]);
-        }
-    }
-
     /**
      * Finalizes one in-flight slot after a definitive transaction commit: marks it completed and
      * advances the log head, freeing every departing slot (the slot-lifetime invariant's only
@@ -240,13 +233,6 @@ public final class PartitionShard {
         inFlightCount--;
         log.noteCompleted();
         log.advanceHead();
-    }
-
-    /** Batch form of {@link #finalizeSlot}. */
-    public void finalizeCommitted(int[] slotIds, int count) {
-        for (int i = 0; i < count; i++) {
-            finalizeSlot(slotIds[i]);
-        }
     }
 
     /**
@@ -287,21 +273,12 @@ public final class PartitionShard {
     }
 
     /**
-     * Visits pending entries from the log head in {@code trackerAddOffset} order — the greedy
-     * sidecar-encoding order for the M3 cursor computation. Amortized O(1) per visit (skipped
-     * completed slots are bounded by the sweep threshold).
-     */
-    public void oldestPending(PendingVisitor visitor) {
-        log.forEachPending(visitor);
-    }
-
-    /**
      * Visits pending <em>and in-flight</em> entries from the log head in {@code trackerAddOffset}
-     * order — the cursor-computation input once in-flight entries must be classified against the
+     * order — the cursor-computation input: in-flight entries must be classified against the
      * committing batch (an in-flight entry the transaction does <em>not</em> settle is still
      * pending durable truth and must reach the sidecar encoder; design §3.5,
-     * {@code TrackerBackedStore.committedCursor}). Same amortized cost as
-     * {@link #oldestPending}.
+     * {@code TrackerBackedStore.committedCursor}). Amortized O(1) per visit: skipped completed
+     * slots are bounded by the sweep threshold.
      */
     public void oldestUnsettled(PendingVisitor visitor) {
         log.forEachUnsettled(visitor);
@@ -328,7 +305,7 @@ public final class PartitionShard {
 
     /**
      * The CLAMP marker of a live slot (design §2.3) — valid for any slot id surfaced by
-     * {@link #drainDue} or {@link #oldestPending} while the slot remains log-resident. Callers
+     * {@link #drainDue} or {@link #oldestUnsettled} while the slot remains log-resident. Callers
      * read it alongside the sink/visitor callback (the slot id is the handle), keeping those
      * functional interfaces stable.
      */
@@ -412,6 +389,11 @@ public final class PartitionShard {
     /** Counts a stale-batch resolution attempt detected by the epoch check (see {@link #epoch()}). */
     void noteStaleResolution() {
         anomalies++;
+    }
+
+    /** Test hook: whether a live slot is in flight (drained, unresolved). */
+    boolean inFlight(int slotId) {
+        return pool.state(slotId) == EntryPool.IN_FLIGHT;
     }
 
     int allocatedSlotCount() {

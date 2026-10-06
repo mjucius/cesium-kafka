@@ -128,7 +128,7 @@ final class ReferenceIndex {
         return min;
     }
 
-    /** Pending entries of one partition in trackerAddOffset order (oldestPending oracle). */
+    /** Pending entries of one partition in trackerAddOffset order (pending-visitation oracle). */
     List<RefEntry> pendingByTrackerOffset(int partition) {
         List<RefEntry> list = new ArrayList<>(shards.get(partition).pending.values());
         list.sort(Comparator.comparingLong(r -> r.trackerAddOffset));

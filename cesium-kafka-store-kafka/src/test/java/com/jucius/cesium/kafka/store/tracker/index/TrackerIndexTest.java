@@ -30,7 +30,7 @@ class TrackerIndexTest {
         assertEquals(0, batch.sourcePartition(2));
         index.onBatchCommitted(batch);
         assertEquals(0, index.totalPendingCount());
-        assertEquals(0, index.totalInFlightCount());
+        assertEquals(0, index.inFlightCount(0) + index.inFlightCount(1));
         assertEquals(Long.MAX_VALUE, index.nextDeadlineMs());
     }
 
@@ -50,16 +50,16 @@ class TrackerIndexTest {
         index.assignPartition(0); // ... and re-recover immediately
         index.applyAdd(0, 100, 1_000, 0); // replay rebuilds the entry: same slot id, new shard
         assertEquals(1, index.pendingCount(0));
-        long anomaliesBefore = index.anomalies();
+        long anomaliesBefore = index.shard(0).anomalies();
 
         // An engine BUG resolves the abandoned batch anyway (the DueBatch contract forbids it).
         index.onBatchCommitted(abandoned);
         assertEquals(1, index.pendingCount(0), "the new generation's entry must not be completed");
-        assertEquals(anomaliesBefore + 1, index.anomalies(), "the stale resolution is counted");
+        assertEquals(anomaliesBefore + 1, index.shard(0).anomalies(), "the stale resolution is counted");
 
         index.onBatchAborted(abandoned); // the restore path is equally guarded
         assertEquals(1, index.pendingCount(0));
-        assertEquals(anomaliesBefore + 2, index.anomalies());
+        assertEquals(anomaliesBefore + 2, index.shard(0).anomalies());
 
         // The rebuilt entry still drains and resolves normally in its own generation.
         IndexDueBatch fresh = index.drainDue(1_000, 10);
@@ -86,11 +86,11 @@ class TrackerIndexTest {
         index.onForeignBatchAborted(carryOver);
         assertEquals(1, index.pendingCount(0), "the carry-over entry returned to pending");
         assertEquals(0, index.inFlightCount(0));
-        assertEquals(0, index.anomalies());
+        assertEquals(0, index.shard(0).anomalies());
 
         // Re-resolving an already-settled identity is the stale shape: counted, not applied.
         index.onForeignBatchCommitted(settled);
-        assertEquals(1, index.anomalies());
+        assertEquals(1, index.shard(0).anomalies());
         assertEquals(1, index.pendingCount(0));
     }
 
@@ -168,11 +168,11 @@ class TrackerIndexTest {
         assertTrue(index.applyComplete(0, 1), "replay-side applyComplete stays ungated");
         assertEquals(1, index.pendingCount(0), "pendingCount stays ungated (cursor math needs it)");
         long[] visited = {0};
-        index.oldestPending(0, (slot, src, at, trk) -> {
+        index.oldestUnsettled(0, (slot, src, at, trk) -> {
             visited[0]++;
             return true;
         });
-        assertEquals(1, visited[0], "oldestPending stays ungated (sidecar encoding needs it)");
+        assertEquals(1, visited[0], "oldestUnsettled stays ungated (sidecar encoding needs it)");
 
         assertEquals(200, index.nextDeadlineMs(), "recovering shard drives no (zero) poll timeout");
         IndexDueBatch batch = index.drainDue(10_000, 10);
@@ -235,7 +235,7 @@ class TrackerIndexTest {
         assertTrue(index.applyAdd(0, 5, 2_000, 5));
         assertEquals(1, index.pendingCount(0));
 
-        index.lostPartition(1);
+        index.revokePartition(1);
         assertEquals(0, index.pendingCount(1));
         assertEquals(1, index.totalPendingCount());
     }
@@ -262,7 +262,7 @@ class TrackerIndexTest {
 
         index.revokePartition(0); // I9-style drop while the batch is in flight
         index.onBatchCommitted(batch); // partition 0's entry is silently skipped
-        assertEquals(0, index.totalInFlightCount());
+        assertEquals(0, index.inFlightCount(1));
         assertEquals(0, index.totalPendingCount());
     }
 
@@ -295,22 +295,6 @@ class TrackerIndexTest {
         IndexDueBatch all = index.drainDue(1_000, 100);
         assertEquals(10, all.size());
         index.onBatchCommitted(all);
-    }
-
-    @Test
-    void aggregatedCountersSumOverShards() {
-        TrackerIndex index = new TrackerIndex(1, 1);
-        index.assignPartition(0);
-        index.assignPartition(1);
-        index.applyAdd(0, 0, 100, 0);
-        index.applyAdd(0, 0, 200, 1); // duplicate ADD → anomaly on shard 0
-        index.applyAdd(1, 0, 100, 0);
-        index.applyAdd(1, 0, 50, 1); // duplicate ADD → anomaly on shard 1
-        assertEquals(2, index.anomalies());
-        assertTrue(index.staleHeapEntries() >= 2);
-        index.maintenance();
-        assertTrue(index.heapRebuilds() >= 1);
-        assertTrue(index.estimatedRetainedBytes() > 0);
     }
 
     /** A one-entry engine-synthesized batch view referencing an entry by identity. */

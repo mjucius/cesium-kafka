@@ -20,7 +20,7 @@ class PartitionShardTest {
 
     private static LongArrayList pendingSources(PartitionShard shard) {
         LongArrayList sources = new LongArrayList();
-        shard.oldestPending((slot, src, at, trk) -> sources.add(src));
+        shard.oldestUnsettled((slot, src, at, trk) -> shard.inFlight(slot) || sources.add(src));
         return sources;
     }
 
@@ -38,7 +38,7 @@ class PartitionShardTest {
         assertEquals(2, shard.inFlightCount());
 
         // Finalize: both slots complete, the head advances past them, both leave the log → freed.
-        shard.finalizeCommitted(drained.elements(), drained.size());
+        drained.forEach(shard::finalizeSlot);
         assertEquals(2, shard.freeSlotCount(), "slots free exactly when they leave the log");
         assertEquals(0, shard.zombieSlotCount(), "drained slots had no leftover heap copies");
         assertEquals(0, shard.inFlightCount());
@@ -102,7 +102,7 @@ class PartitionShardTest {
         assertEquals(6, shard.freeSlotCount(), "swept slots freed copy-free after the rebuild");
         assertEquals(0, shard.zombieSlotCount());
 
-        // Order preserved → oldestPending still in trackerAddOffset order.
+        // Order preserved → oldestUnsettled still in trackerAddOffset order.
         assertEquals(LongArrayList.of(0, 4, 6, 8), pendingSources(shard));
         // Binary search still valid over the compacted log.
         assertTrue(shard.applyComplete(4));
@@ -145,7 +145,7 @@ class PartitionShardTest {
         assertEquals(2, shard.inFlightCount());
         assertEquals(0, drainSlots(shard, 200, 10).size(), "in-flight entries are excluded");
 
-        shard.restoreAfterAbort(batch.elements(), batch.size());
+        batch.forEach(shard::restoreSlot);
         assertEquals(3, shard.pendingCount());
         assertEquals(0, shard.inFlightCount());
         assertEquals(100, shard.nextDeadlineMs());
@@ -156,7 +156,7 @@ class PartitionShardTest {
         sortedBatch.sort(null);
         sortedAgain.sort(null);
         assertEquals(sortedBatch, sortedAgain, "abort restores exactly the popped entries");
-        shard.finalizeCommitted(again.elements(), again.size());
+        again.forEach(shard::finalizeSlot);
         assertEquals(0, shard.inFlightCount());
         assertEquals(2, shard.freeSlotCount());
     }
@@ -180,7 +180,7 @@ class PartitionShardTest {
         });
         assertEquals(LongArrayList.of(0, 1, 2, 3, 4, 5, 6, 7), sources, "(dispatchAtMs, then arrival)");
 
-        shard.restoreAfterAbort(slots.elements(), slots.size());
+        slots.forEach(shard::restoreSlot);
         LongArrayList again = new LongArrayList();
         IntArrayList slotsAgain = new IntArrayList();
         shard.drainDue(1_000, 16, (slot, src, at, trk) -> {
@@ -188,7 +188,7 @@ class PartitionShardTest {
             slotsAgain.add(slot);
         });
         assertEquals(sources, again, "arrival-order ties survive restore-after-abort");
-        shard.finalizeCommitted(slotsAgain.elements(), slotsAgain.size());
+        slotsAgain.forEach(shard::finalizeSlot);
     }
 
     /**
@@ -235,7 +235,7 @@ class PartitionShardTest {
         PartitionShard shard = new PartitionShard();
         shard.applyAdd(0, 100, 0);
         IntArrayList batch = drainSlots(shard, 100, 10);
-        shard.finalizeCommitted(batch.elements(), batch.size());
+        batch.forEach(shard::finalizeSlot);
         assertEquals(0, shard.logTotalSize(), "log fully emptied");
 
         assertFalse(shard.applyAdd(0, 500, 1), "duplicate of a departed entry");
@@ -274,7 +274,7 @@ class PartitionShardTest {
 
         IntArrayList redrained = drainSlots(shard, 100, 10);
         assertEquals(1, redrained.size(), "restored entry re-dispatches");
-        shard.finalizeCommitted(redrained.elements(), redrained.size());
+        redrained.forEach(shard::finalizeSlot);
         assertEquals(2, shard.freeSlotCount());
     }
 
@@ -306,7 +306,7 @@ class PartitionShardTest {
         assertEquals(0, drainSlots(shard, 200, 10).size(), "nothing due before the head pin");
         IntArrayList batch = drainSlots(shard, 100_000, 10);
         assertEquals(1, batch.size(), "a full drain surfaces only the pending head");
-        shard.finalizeCommitted(batch.elements(), batch.size());
+        batch.forEach(shard::finalizeSlot);
         assertEquals(0, shard.pendingCount());
         assertEquals(0, shard.completedHeldInLog(), "the held slot left with the head advance");
     }
@@ -350,13 +350,13 @@ class PartitionShardTest {
     }
 
     @Test
-    void oldestPendingStopsWhenVisitorReturnsFalse() {
+    void oldestUnsettledStopsWhenVisitorReturnsFalse() {
         PartitionShard shard = new PartitionShard();
         for (int i = 0; i < 5; i++) {
             shard.applyAdd(i, 100 + i, i);
         }
         int[] visits = {0};
-        shard.oldestPending((slot, src, at, trk) -> {
+        shard.oldestUnsettled((slot, src, at, trk) -> {
             visits[0]++;
             return visits[0] < 2;
         });
@@ -374,7 +374,7 @@ class PartitionShardTest {
         assertTrue(full >= empty + 1_000L * 32, "estimate reflects ~32 B/entry of nominal state");
 
         IntArrayList batch = drainSlots(shard, 10_000, 1_000);
-        shard.finalizeCommitted(batch.elements(), batch.size());
+        batch.forEach(shard::finalizeSlot);
         assertEquals(0, shard.pendingCount());
     }
 }

@@ -14,7 +14,7 @@ import net.jqwik.api.Tuple;
  * Flagship M2 test: random operation sequences executed against the real {@link TrackerIndex}
  * and the naive {@link ReferenceIndex}, with full observable-equivalence checks after every op
  * (pending sets, exact within-partition drain order with cross-partition ties as
- * timestamp-grouped multisets, oldestPending visitation order, I5 trackerAddOffset preservation,
+ * timestamp-grouped multisets, pending visitation order, I5 trackerAddOffset preservation,
  * penalty- and I4-eligibility-adjusted nextDeadlineMs).
  *
  * <p>Maintenance floors are set very low (8) so rebuilds and sweeps fire constantly inside the

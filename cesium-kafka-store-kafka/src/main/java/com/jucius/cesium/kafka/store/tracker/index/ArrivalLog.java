@@ -41,11 +41,6 @@ final class ArrivalLog {
         return log.size64() - head;
     }
 
-    /** Source offset of the newest entry; callers must check {@code liveSize() > 0} first. */
-    long lastSourceOffset() {
-        return pool.sourceOffset(log.getInt(log.size64() - 1));
-    }
-
     /**
      * Appends a freshly allocated slot, enforcing the double-sortedness invariant. Duplicate
      * ADDs are handled by the caller via binary search before append (the documented exception).
@@ -135,23 +130,6 @@ final class ArrivalLog {
         log.size(write);
         head = 0;
         sweeps++;
-    }
-
-    /**
-     * Visits pending entries from the head in {@code trackerAddOffset} order — the greedy
-     * sidecar-encoding order of design §3.5. Completed and in-flight slots are skipped via state
-     * lookups; the skip cost is bounded by the sweep threshold (amortized O(1) per visit).
-     */
-    void forEachPending(PendingVisitor visitor) {
-        long size = log.size64();
-        for (long i = head; i < size; i++) {
-            int slot = log.getInt(i);
-            if (pool.state(slot) == EntryPool.PENDING
-                    && !visitor.visit(
-                            slot, pool.sourceOffset(slot), pool.dispatchAtMs(slot), pool.trackerAddOffset(slot))) {
-                return;
-            }
-        }
     }
 
     /**

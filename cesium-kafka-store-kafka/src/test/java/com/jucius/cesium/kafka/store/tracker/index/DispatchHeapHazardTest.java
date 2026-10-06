@@ -105,7 +105,7 @@ class DispatchHeapHazardTest {
         shard.applyAdd(7, 900, 77); // duplicate with a later tracker offset
 
         long[] visited = new long[2];
-        shard.oldestPending((slot, src, at, trk) -> {
+        shard.oldestUnsettled((slot, src, at, trk) -> {
             visited[0] = trk;
             visited[1] = at;
             return true;

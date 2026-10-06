@@ -1,7 +1,7 @@
 package com.jucius.cesium.kafka.store.tracker.index;
 
 /**
- * Primitive visitor for {@link PartitionShard#oldestPending} — pending entries surface from the
+ * Primitive visitor for {@link PartitionShard#oldestUnsettled} — unsettled entries surface from the
  * arrival-log head in {@code trackerAddOffset} order, which is exactly the greedy
  * sidecar-encoding order the cursor computation of design §3.5 needs.
  */
