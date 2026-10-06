@@ -6,6 +6,22 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-10-06
+
+Dependency refresh. No engine source changed. The runtime libraries that ship inside the
+distribution archives (jackson, slf4j, logback) move to current patch releases, so unlike 1.1.4 the
+archives' contents differ; the build moves to Gradle 9.8.0.
+
+### Changed
+- Runtime dependencies (grouped Dependabot PR [#28]): jackson 2.22.2 → 2.22.3, slf4j 2.0.19 →
+  2.0.20, logback 1.6.3 → 1.6.5.
+- Build/test only ([#28]): Gradle 9.7.1 → 9.8.0, NullAway 0.14.1 → 0.14.2, Spotless 8.10.2 →
+  8.10.3. The Gradle distribution was verified against Gradle's published SHA-256, and the
+  regenerated `gradle-wrapper.jar` against the published 9.8.0 wrapper-jar checksum. Dependabot left
+  the `gradle-wrapper.properties` comment describing 9.7.1; corrected.
+- SHA-pinned `gradle/actions/setup-gradle` v6.3.0 → v6.4.0 (Dependabot PR [#29]). The pin was
+  dereferenced through the annotated `v6.4.0` tag to `3f5f9ad`, a clean fast-forward from v6.3.0.
+
 ## [1.1.4] - 2026-09-25
 
 CI-infrastructure only — no executable line of the engine and no shipped dependency changed, so the
@@ -290,7 +306,8 @@ re-delivers each record to a destination topic **at the time the producer asked 
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.5...HEAD
+[1.1.5]: https://github.com/mjucius/cesium-kafka/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/mjucius/cesium-kafka/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/mjucius/cesium-kafka/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/mjucius/cesium-kafka/compare/v1.1.1...v1.1.2
