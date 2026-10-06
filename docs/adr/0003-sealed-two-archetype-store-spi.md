@@ -40,3 +40,5 @@ specification each archetype's implementers subclass.
   store implementers from 1.0 (see [ADR-0017](0017-kafka-4-floor-and-repo-only-publishing.md)); the
   `ExternalSchedulerStore` contract is finalized in the testkit as the executable spec for future
   DB-backed stores.
+- `StoreContext.epoch()` reports the dispatch group's (group B) ownership, so it can fence
+  dispatch-side writes only; ingest (group A) may own the same partition elsewhere.

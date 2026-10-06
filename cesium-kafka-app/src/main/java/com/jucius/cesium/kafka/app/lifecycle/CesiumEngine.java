@@ -134,6 +134,9 @@ public final class CesiumEngine implements AutoCloseable {
 
     private volatile @Nullable Admin admin;
     private volatile @Nullable TrackerBackedStore store;
+    /** Group-B ownership per tracker partition, kept current by the dispatch workers (epoch()). */
+    private final Map<Integer, OwnershipEpoch> ownership = new ConcurrentHashMap<>();
+
     private volatile @Nullable ScheduledExecutorService healthSampler;
     private volatile @Nullable StoreCapabilities storeCapabilities;
 
@@ -528,7 +531,8 @@ public final class CesiumEngine implements AutoCloseable {
                             relay,
                             dispatchAdmin,
                             registry,
-                            clock);
+                            clock,
+                            ownership);
                     dispatchHandles.add(spawn(spec, loop, loop::stop, loop::isDegraded));
                 }
             }
@@ -797,10 +801,14 @@ public final class CesiumEngine implements AutoCloseable {
 
     /**
      * The production {@link StoreContext}: real route identity, the {@code store.properties} subtree,
-     * the engine's shared clock, the shared registry, and a placeholder epoch (tracker-backed stores
-     * ride the engine's Kafka transactions and never consult it — design §4.4 item 4).
+     * the engine's shared clock, the shared registry, and the dispatch group's (group B) current
+     * ownership epoch per partition as the dispatch workers last observed it — {@code (-1, "")} for
+     * a partition this instance does not own (design §4.4 item 4).
      */
     private final class EngineStoreContext implements StoreContext {
+        /** The consumer's own pre-join identity: no generation, no member id. */
+        private static final OwnershipEpoch UNOWNED = new OwnershipEpoch(-1, "");
+
         private final RouteDescriptor route;
         private final ConfigView configView;
 
@@ -831,7 +839,7 @@ public final class CesiumEngine implements AutoCloseable {
 
         @Override
         public OwnershipEpoch epoch(int partition) {
-            return new OwnershipEpoch(0, "cesium-engine");
+            return ownership.getOrDefault(partition, UNOWNED);
         }
     }
 }

@@ -437,8 +437,9 @@ public interface StoreContext {
   ConfigView config();                // typed view of the store.properties subtree
   java.time.Clock clock();            // injectable for tests
   MeterRegistry meterRegistry();
-  /** Group generation / member epoch of the engine's current ownership — lets an
-      external store implement store-side fencing (conditional writes on epoch). */
+  /** Group generation / member epoch of the dispatch group's (group B) current ownership
+      — lets an external store implement store-side fencing (conditional writes on epoch).
+      (-1, "") for a partition this instance does not own. */
   OwnershipEpoch epoch(int partition);
 }
 
@@ -518,8 +519,8 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
   /** Idempotent upsert keyed by (sourcePartition, sourceOffset).
    *  ORDERING CONTRACT: called BEFORE the ingest transaction commits. If the txn
    *  aborts, offsets were not committed, the batch re-polls, the upsert repeats —
-   *  idempotency makes scheduling state exactly-once. Implementations SHOULD use
-   *  StoreContext.epoch() for conditional writes against zombie writers. */
+   *  idempotency makes scheduling state exactly-once. (StoreContext.epoch() is the
+   *  dispatch group's and does not fence this ingest-side write.) */
   void upsertScheduled(List<ScheduledRef> refs);
 
   /** ORDERING CONTRACT: called strictly AFTER the dispatch transaction commits
@@ -582,7 +583,7 @@ DispatchLoop loop = switch (store) {
 1. **Per-partition recovery cursor** expressible as `(offset, metadata)` committed atomically inside the engine's transaction — the only durable completion-fact channel sharing Kafka's atomicity. The metadata blob is versioned, size-bounded by the validated sidecar budget, and self-describing (identity material included).
 2. **Per-entry recovery position** (tracker offset / monotone sequence) so the store can compute a sound cursor (I5).
 3. **Transaction-bound staging:** committed-batch effects durable and recoverable; aborted-batch effects invisible to every future recovery; **in-doubt outcomes recoverable purely from the durable state** (the engine will replay rather than restore — I9).
-4. **Ownership-epoch hand-off** via `StoreContext.epoch()` for store-side fencing of zombie writers.
+4. **Ownership-epoch hand-off** via `StoreContext.epoch()` for store-side fencing of zombie writers. The epoch is the dispatch group's (group B): it fences dispatch-side writes, not the ingest-side `upsertScheduled`.
 5. **Barrier-aware recovery:** the engine owns the ACTIVE gate; the store must not surface due entries while recovering, and must reach the barrier even when pending volume exceeds backpressure thresholds (pause never applies to recovery).
 6. **Idempotent recovery:** recovery may run repeatedly from the same cursor (D-6) and must converge to the same pending set, including sidecar re-seeding.
 7. **Startup validation hook** (`validate()`): the store declares and enforces its own preconditions, including memory-budget sizing (worst-case footprint vs configured caps).

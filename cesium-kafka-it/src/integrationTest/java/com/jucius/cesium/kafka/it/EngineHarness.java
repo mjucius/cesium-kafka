@@ -54,6 +54,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
@@ -204,7 +205,8 @@ final class EngineHarness implements AutoCloseable {
                     relayFactory(),
                     new KafkaDispatchAdmin(admin, trackerTopic(), dispatchGroupId()),
                     meterRegistry,
-                    clock);
+                    clock,
+                    new ConcurrentHashMap<>());
             dispatch = spawn("it-dispatch-", loop, loop::stop);
         }
     }

@@ -9,6 +9,7 @@ import static com.jucius.cesium.kafka.core.loop.LoopSupport.throwIfAsyncSendFail
 
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
+import com.jucius.cesium.kafka.api.store.OwnershipEpoch;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
@@ -54,6 +55,7 @@ import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import org.apache.kafka.clients.consumer.CloseOptions;
 import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -204,6 +206,11 @@ public final class DispatchLoop implements Runnable {
 
     // Per-partition loop-side shard bookkeeping (the store owns the index; this is plumbing).
     private final Map<Integer, Long> shardEpochs = new HashMap<>();
+    /** Engine-shared, per-partition group-B ownership identity for {@code StoreContext.epoch}. */
+    private final Map<Integer, OwnershipEpoch> ownership;
+
+    private int publishedGeneration = Integer.MIN_VALUE;
+    private String publishedMemberId = "";
     private final Set<Integer> needsCursor = new LinkedHashSet<>();
     private final Map<Integer, PendingBarrier> pendingBarriers = new LinkedHashMap<>();
     private final Set<Integer> streaming = new LinkedHashSet<>();
@@ -266,6 +273,9 @@ public final class DispatchLoop implements Runnable {
      * @param admin the §3.6 barrier snapshots and first-run probe (the cesium-admin plane)
      * @param meterRegistry metrics sink (§9 inventory); the loop's gauges are removed on close
      * @param clock injectable time source; the loop never reads wall time directly
+     * @param ownership a concurrent map the loop keeps current with the group-B generation and
+     *     member id of each tracker partition it owns (removed on revoke/lost), shared across the
+     *     engine's dispatch workers and read by {@code StoreContext.epoch}
      */
     public DispatchLoop(
             DispatchLoopConfig config,
@@ -276,7 +286,8 @@ public final class DispatchLoop implements Runnable {
             RelayRecordFactory relayFactory,
             DispatchAdmin admin,
             MeterRegistry meterRegistry,
-            Clock clock) {
+            Clock clock,
+            Map<Integer, OwnershipEpoch> ownership) {
         this.config = Objects.requireNonNull(config, "config");
         this.consumer = Objects.requireNonNull(consumer, "consumer");
         this.producerFactory = Objects.requireNonNull(producerFactory, "producerFactory");
@@ -286,6 +297,7 @@ public final class DispatchLoop implements Runnable {
         this.admin = Objects.requireNonNull(admin, "admin");
         this.registry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.ownership = Objects.requireNonNull(ownership, "ownership");
         this.producer = Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
 
         this.dispatchedRecords = dispatchRecords("dispatched");
@@ -465,7 +477,9 @@ public final class DispatchLoop implements Runnable {
             maxPollGapMs.accumulateAndGet(gap, Math::max);
         }
         try {
-            return consumer.poll(timeout);
+            ConsumerRecords<byte[], byte[]> records = consumer.poll(timeout);
+            publishOwnershipIfChanged();
+            return records;
         } catch (WakeupException e) {
             throw e;
         } catch (NoOffsetForPartitionException e) {
@@ -1536,6 +1550,26 @@ public final class DispatchLoop implements Runnable {
         return new TopicPartition(config.trackerTopic(), partition);
     }
 
+    /**
+     * Republishes the owned partitions' {@link OwnershipEpoch} when the group generation or member
+     * id moved since the last publication — under KIP-848 the member epoch can advance without an
+     * assignment callback. {@code groupMetadata()} is a local read; nothing is published until the
+     * consumer actually holds a generation.
+     */
+    private void publishOwnershipIfChanged() {
+        ConsumerGroupMetadata metadata = consumer.groupMetadata();
+        if (metadata.generationId() == publishedGeneration
+                && metadata.memberId().equals(publishedMemberId)) {
+            return;
+        }
+        publishedGeneration = metadata.generationId();
+        publishedMemberId = metadata.memberId();
+        OwnershipEpoch epoch = new OwnershipEpoch(publishedGeneration, publishedMemberId);
+        for (TopicPartition tp : consumer.assignment()) {
+            ownership.put(tp.partition(), epoch);
+        }
+    }
+
     // ------------------------------------------------------------------ rebalance callbacks
 
     /**
@@ -1558,7 +1592,10 @@ public final class DispatchLoop implements Runnable {
             Set<Integer> ids = partitionIds(partitions);
             store.onPartitionsAssigned(ids);
             consumer.pause(partitions);
+            ConsumerGroupMetadata metadata = consumer.groupMetadata();
+            OwnershipEpoch epoch = new OwnershipEpoch(metadata.generationId(), metadata.memberId());
             for (int partition : ids) {
+                ownership.put(partition, epoch);
                 shardEpochs.put(partition, ++epochCounter);
                 pendingBarriers.remove(partition); // re-assignment re-snapshots (I8)
                 streaming.remove(partition);
@@ -1598,6 +1635,7 @@ public final class DispatchLoop implements Runnable {
         /** Drops all loop-side shard state in O(1) per partition; barrier futures are discarded. */
         private void dropLoopState(Set<Integer> ids) {
             for (int partition : ids) {
+                ownership.remove(partition);
                 shardEpochs.remove(partition);
                 needsCursor.remove(partition);
                 pendingBarriers.remove(partition);

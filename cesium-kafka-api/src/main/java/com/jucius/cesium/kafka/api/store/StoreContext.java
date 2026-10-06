@@ -38,9 +38,11 @@ public interface StoreContext {
 
     /**
      * Group generation / member epoch of the engine's current ownership of {@code partition} —
-     * mirroring the Kafka {@code ConsumerGroupMetadata} identity. Lets an external store implement
-     * store-side fencing via conditional writes on the epoch, rejecting zombie writers that lost
-     * the partition in an earlier generation (design §4.4 item 4).
+     * mirroring the Kafka {@code ConsumerGroupMetadata} identity of the dispatch group (group B),
+     * which owns the cursor and dispatch-side writes. Lets an external store implement store-side
+     * fencing via conditional writes on the epoch, rejecting zombie writers that lost the partition
+     * in an earlier generation (design §4.4 item 4). The engine returns {@code (-1, "")} for a
+     * partition this instance does not currently own.
      *
      * @param partition the partition whose current ownership epoch is requested; must be currently
      *     assigned to this store instance
