@@ -205,7 +205,7 @@ Replaces the PoC's unversioned sign-negation hack. Unknown flags are ignored; un
 
 - **Encoding:** canonical UTF-8 ASCII decimal. An 8-byte big-endian long decode exists behind `headers.accept-binary-long-values: true` (default off; modes are exclusive because length==8 is ambiguous). PoC's unprefixed `delay-by`/`delay-until` are NOT honored (clean break; migration doc).
 - **Precedence:** if both present, `cesium-deliver-at` wins; `cesium_header_errors_total{type="conflict"}` increments and a WARN logs. Multiple values for one header: `lastHeader` wins, counted as a conflict.
-- **Validation:** regex + range. `cesium-delay-ms ∈ [0, delay.max]`; `cesium-deliver-at ∈ (−∞, now + delay.max]`. Past or zero values relay immediately (`reason="past_due"`) — past deliver-at is NOT an error.
+- **Validation:** regex + range. `cesium-delay-ms ∈ [0, delay.max]`; `cesium-deliver-at ∈ (−∞, now + delay.max]`. Past or zero values relay immediately (past-due) — past deliver-at is NOT an error.
 - **Policies** (independent, applied inside the ingest transaction, validated at startup):
   - `delay.on-malformed-header: DLQ | RELAY_IMMEDIATE | FAIL` (default `DLQ`; requires dlq topic configured or startup fails).
   - `delay.on-over-max: DLQ | CLAMP | FAIL` (default `DLQ`; `CLAMP` pins to `now + delay.max` and stamps `cesium-clamped: true`).

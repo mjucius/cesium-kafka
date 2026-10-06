@@ -67,7 +67,7 @@ clock.
 - `cesium-delay-ms` **MUST** be in `[0, delay.max]`.
 - `cesium-deliver-at` **MUST** be `≤ now + delay.max`. There is no lower bound.
 - A value that is **past or zero** (a `cesium-delay-ms` of `0`, or a `cesium-deliver-at` already
-  elapsed) is **not an error**: the record relays immediately with reason `past_due`. A past
+  elapsed) is **not an error**: the record relays immediately (a past-due relay). A past
   `cesium-deliver-at` is explicitly valid.
 - A value failing the grammar of §1.1 is **malformed** and handled by the malformed-header policy
   (§4.1).
