@@ -1,6 +1,7 @@
 package com.jucius.cesium.kafka.app.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Finding;
@@ -108,18 +109,9 @@ final class ConfigSchema {
         return new LeafNode(false);
     }
 
-    /** camelCase → kebab-case, matching Jackson's {@code KEBAB_CASE} naming strategy. */
+    /** camelCase → kebab-case via the same Jackson strategy {@code ConfigMapper} binds with. */
     static String kebab(String camel) {
-        StringBuilder sb = new StringBuilder(camel.length() + 4);
-        for (int i = 0; i < camel.length(); i++) {
-            char c = camel.charAt(i);
-            if (Character.isUpperCase(c)) {
-                sb.append('-').append(Character.toLowerCase(c));
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
+        return ((PropertyNamingStrategies.NamingBase) PropertyNamingStrategies.KEBAB_CASE).translate(camel);
     }
 
     // ------------------------------------------------------------------ unknown YAML keys

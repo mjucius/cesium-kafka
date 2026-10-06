@@ -26,7 +26,7 @@ application {
 
 // Build-info resource for the /info endpoint (design §9): version (the Gradle project version) and
 // the short git commit when available. Read at runtime by com.jucius.cesium.kafka.app.metrics.BuildInfo
-// from the classpath; a clean fallback to the jar manifest / "unknown" keeps the app runnable when
+// from the classpath; a clean fallback to "unknown" keeps the app runnable when
 // the resource or git is absent.
 val generateBuildInfo by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/build-info")

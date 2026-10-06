@@ -2,9 +2,11 @@ package com.jucius.cesium.kafka.app;
 
 import com.jucius.cesium.kafka.app.config.CesiumConfigLoader;
 import com.jucius.cesium.kafka.app.config.CesiumConfigLoader.LoadedConfig;
+import com.jucius.cesium.kafka.app.health.HealthAssessor;
 import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine;
 import com.jucius.cesium.kafka.app.lifecycle.EngineStartupException;
 import com.jucius.cesium.kafka.app.metrics.BuildInfo;
+import com.jucius.cesium.kafka.app.metrics.ObservabilityServer;
 import com.jucius.cesium.kafka.app.metrics.ServiceInfo;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.ConfigValidationException;
@@ -13,6 +15,7 @@ import com.jucius.cesium.kafka.core.config.ValidationContext;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -21,7 +24,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
-import java.util.ServiceLoader;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,18 +110,15 @@ public final class CesiumApp {
 
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         CesiumEngine engine = new CesiumEngine(config, registry, clock, SHUTDOWN_TIMEOUT);
-        AutoCloseable observability = () -> {};
+        ObservabilityServer observability = new ObservabilityServer(
+                config.observability().bindAddress(),
+                config.observability().port(),
+                config.observability().detailedInfo(),
+                registry::scrape,
+                new HealthAssessor(engine.health(), clock, LIVENESS_STALE_AFTER),
+                serviceInfoSupplier(config, engine));
         try {
-            ObservabilityRuntime runtime = new ObservabilityRuntime(
-                    config.observability().bindAddress(),
-                    config.observability().port(),
-                    config.observability().detailedInfo(),
-                    registry,
-                    engine.health(),
-                    clock,
-                    LIVENESS_STALE_AFTER,
-                    serviceInfoSupplier(config, engine));
-            observability = startObservability(runtime);
+            startObservability(observability, config.observability().port());
             Runtime.getRuntime().addShutdownHook(new Thread(() -> engine.stop(SHUTDOWN_TIMEOUT), "cesium-shutdown"));
             engine.start();
             boolean clean = engine.awaitDone();
@@ -196,24 +195,13 @@ public final class CesiumApp {
                 new ServiceInfo(build, applicationId, roles, storeType, engine.storeCapabilities(), acknowledgments);
     }
 
-    private static AutoCloseable startObservability(ObservabilityRuntime runtime) {
-        List<ObservabilityServerFactory> factories = new ArrayList<>();
-        ServiceLoader.load(ObservabilityServerFactory.class).forEach(factories::add);
-        if (factories.isEmpty()) {
-            log.warn("no ObservabilityServerFactory registered; running without the HTTP observability surface"
-                    + " (/metrics, /health/live, /health/ready, /info)");
-            return () -> {};
-        }
-        if (factories.size() > 1) {
-            throw new IllegalStateException("multiple ObservabilityServerFactory providers registered: " + factories);
-        }
+    /** Starts the HTTP server before the engine so probes answer during startup; a bind failure is fatal. */
+    private static void startObservability(ObservabilityServer server, int port) {
         try {
-            AutoCloseable server = factories.get(0).start(runtime);
-            log.info("observability HTTP server listening on port {}", runtime.port());
-            return server;
-        } catch (Exception e) {
-            throw new IllegalStateException(
-                    "failed to start the observability HTTP server on port " + runtime.port(), e);
+            server.start();
+            log.info("observability HTTP server listening on port {}", port);
+        } catch (IOException e) {
+            throw new IllegalStateException("failed to start the observability HTTP server on port " + port, e);
         }
     }
 

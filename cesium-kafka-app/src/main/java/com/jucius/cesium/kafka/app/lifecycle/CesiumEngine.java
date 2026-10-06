@@ -166,16 +166,6 @@ public final class CesiumEngine implements AutoCloseable {
         return health;
     }
 
-    /** The shared wall clock; the observability layer must use the same instance (heartbeat math). */
-    public Clock clock() {
-        return clock;
-    }
-
-    /** The configured {@code store.type} (for the {@code /info} endpoint). */
-    public String storeType() {
-        return config.store().type();
-    }
-
     /** The resolved store's self-declared capabilities, present once {@link #start()} has resolved it. */
     public Optional<StoreCapabilities> storeCapabilities() {
         return Optional.ofNullable(storeCapabilities);

@@ -114,7 +114,7 @@ class AppQuickstartIT extends KafkaIT {
                 "0.0.0.0",
                 0,
                 true,
-                registry,
+                registry::scrape,
                 new HealthAssessor(engine.health(), clock, LIVENESS_STALE_AFTER),
                 this::serviceInfo);
         server.start();
