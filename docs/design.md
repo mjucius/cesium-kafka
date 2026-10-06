@@ -804,8 +804,8 @@ Key defaults (durations ISO-8601):
 | `cesium_tracker_cursor_lag` / `_age_seconds` | gauge | `partition` | **[not yet emitted]** position − committed cursor / cursor age; alert vs `delete.retention.ms` |
 | `cesium_pinned_entries` | gauge | `partition` | sidecar occupancy; sustained at max ⇒ overflow mode (§3.5) |
 | `cesium_cursor_sidecar_bytes` | gauge | `partition` | encoded sidecar size vs budget |
-| `cesium_replay_remaining_records` | gauge | `partition` | **[not yet emitted]** barrier − position, live during recovery; feeds replay-ETA alert |
-| `cesium_shard_state` / `cesium_shard_paused` | gauge | `partition` | ASSIGNED/RECOVERING/ACTIVE (`cesium_shard_state` is **[not yet emitted]**); backpressure pause state |
+| `cesium_replay_remaining_records` | gauge | `partition` | barrier − position, live during recovery (`0` when ASSIGNED/ACTIVE); feeds replay-ETA alert |
+| `cesium_shard_state` / `cesium_shard_paused` | gauge | `partition` | `0`=ASSIGNED / `1`=RECOVERING / `2`=ACTIVE; backpressure pause state |
 | `cesium_store_recovery_duration_seconds` | timer | `partition` | **[not yet emitted]** replay time per assignment |
 | `cesium_store_replay_records_total` | counter | `kind=add\|complete\|seeded` | **[not yet emitted]** replay volume |
 | `cesium_transactions_total` | counter | `loop`, `result=committed\|aborted\|in_doubt`, `cause` | fencing aborts ⇒ duplicates prevented; in-doubt occurrences |

@@ -153,8 +153,9 @@ Why this ordering matters — the LSO hazard and the I8 snapshot-ordering scenar
 [delivery-semantics § the replay barrier](delivery-semantics.md#5-the-replay-barrier-hw-not-lso).
 
 The state is surfaced operationally, **without coupling it to readiness** (a healthily replaying
-instance is *ready*): the `/health/ready` detail body carries a per-shard
-`ShardRecovery{partition, state, recordsRemaining, etaMillis}` snapshot, and `cesium_shard_paused`
+instance is *ready*): the `/health/ready` detail body lists each non-ACTIVE shard as
+`{partition, state, recordsRemaining, etaMillis}` (sampled each second from the store's
+`cesium_shard_state` and `cesium_replay_remaining_records` gauges), and `cesium_shard_paused`
 exposes backpressure pause state. See [`design.md` §9](design.md#9-observability) for the full
 metric inventory.
 

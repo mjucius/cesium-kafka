@@ -10,6 +10,7 @@ import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.health.EngineHealth;
 import com.jucius.cesium.kafka.app.health.MutableEngineHealth;
+import com.jucius.cesium.kafka.app.health.ShardRecovery;
 import com.jucius.cesium.kafka.core.admin.ClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.admin.KafkaClusterAdmin;
@@ -39,6 +40,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -123,6 +125,8 @@ public final class CesiumEngine implements AutoCloseable {
     private final List<LoopHandle> ingestHandles = new ArrayList<>();
     private final List<LoopHandle> dispatchHandles = new ArrayList<>();
     private final ConcurrentMap<Role, Double> lastHeartbeatSeconds = new ConcurrentHashMap<>();
+    // Health-sampler thread only: the previous {remaining, atMs} sample per recovering partition.
+    private final Map<Integer, long[]> lastReplaySample = new HashMap<>();
     private final AtomicReference<Throwable> fatalCause = new AtomicReference<>();
     private final CountDownLatch terminationLatch = new CountDownLatch(1);
     private final Object stopLock = new Object();
@@ -712,7 +716,8 @@ public final class CesiumEngine implements AutoCloseable {
      * the loop is iterating, so its heartbeat is bumped and its consumer treated as engaged
      * (assignment is not exposed by the loop SPI without reaching into its consumer; loop iteration
      * — subscribe done, polling — is the available proxy). The degraded flag aggregates every
-     * worker's {@code isDegraded()}.
+     * worker's {@code isDegraded()}. The recovery detail is read from the store's per-partition
+     * {@code cesium.shard.state}/{@code cesium.replay.remaining.records} gauges.
      */
     private void sample() {
         try {
@@ -738,6 +743,7 @@ public final class CesiumEngine implements AutoCloseable {
             } else {
                 health.setDegraded(true, "parked-and-degraded loop(s): " + String.join(", ", degradedRoles));
             }
+            health.updateRecovery(recoverySnapshot(registry, clock.millis(), lastReplaySample));
         } catch (RuntimeException e) {
             // The sampler must never die: a transient registry/probe hiccup is logged, not fatal.
             log.debug("health sample iteration failed", e);
@@ -749,6 +755,46 @@ public final class CesiumEngine implements AutoCloseable {
                 .tag("loop", role.name().toLowerCase(Locale.ROOT))
                 .gauge();
         return gauge == null ? Double.NaN : gauge.value();
+    }
+
+    /**
+     * The non-ACTIVE shards, by partition, from the store's recovery gauges (D21: detail only,
+     * never a readiness input). {@code etaMillis} is the slope between this sample and
+     * {@code previous} (updated in place): {@code -1} until two samples exist or while the
+     * backlog is not shrinking.
+     */
+    static List<ShardRecovery> recoverySnapshot(MeterRegistry registry, long nowMs, Map<Integer, long[]> previous) {
+        List<ShardRecovery> shards = new ArrayList<>();
+        Map<Integer, long[]> current = new HashMap<>();
+        for (Gauge stateGauge :
+                registry.find(KafkaTrackerStore.SHARD_STATE_METRIC).gauges()) {
+            String tag = stateGauge.getId().getTag("partition");
+            ShardRecovery.State state =
+                    switch ((int) stateGauge.value()) {
+                        case 0 -> ShardRecovery.State.ASSIGNED;
+                        case 1 -> ShardRecovery.State.RECOVERING;
+                        default -> ShardRecovery.State.ACTIVE;
+                    };
+            if (tag == null || state == ShardRecovery.State.ACTIVE) {
+                continue; // ACTIVE shards are not reported
+            }
+            int partition = Integer.parseInt(tag);
+            Gauge remainingGauge = registry.find(KafkaTrackerStore.REPLAY_REMAINING_METRIC)
+                    .tag("partition", tag)
+                    .gauge();
+            long remaining = remainingGauge == null ? 0 : (long) remainingGauge.value();
+            long etaMillis = -1;
+            long[] last = previous.get(partition);
+            if (last != null && last[0] > remaining && nowMs > last[1]) {
+                etaMillis = remaining * (nowMs - last[1]) / (last[0] - remaining);
+            }
+            current.put(partition, new long[] {remaining, nowMs});
+            shards.add(new ShardRecovery(partition, state, remaining, etaMillis));
+        }
+        previous.clear();
+        previous.putAll(current);
+        shards.sort(Comparator.comparingInt(ShardRecovery::partition));
+        return shards;
     }
 
     private List<LoopHandle> allHandles() {

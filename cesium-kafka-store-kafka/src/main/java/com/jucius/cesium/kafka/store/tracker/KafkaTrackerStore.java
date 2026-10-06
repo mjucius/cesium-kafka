@@ -97,6 +97,18 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     /** Metric: recovery replays refused because the backlog would exceed the heap budget (H1). */
     public static final String RECOVERY_OVER_BUDGET_METRIC = "cesium.recovery.over.budget";
 
+    /**
+     * Metric: per-partition shard state (design §3.6) — {@code 0} ASSIGNED (recovery not yet
+     * begun), {@code 1} RECOVERING (replaying toward the barrier), {@code 2} ACTIVE.
+     */
+    public static final String SHARD_STATE_METRIC = "cesium.shard.state";
+
+    /**
+     * Metric: per-partition records left to replay, {@code max(0, barrier - position)} while
+     * RECOVERING; {@code 0} when ASSIGNED (barrier not yet known) or ACTIVE.
+     */
+    public static final String REPLAY_REMAINING_METRIC = "cesium.replay.remaining.records";
+
     private static final Set<String> KNOWN_CONFIG_KEYS = Set.of(
             SIDECAR_MAX_BYTES_KEY,
             MAX_PENDING_PER_PARTITION_KEY,
@@ -370,10 +382,10 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
             }
         }
 
-        state.recoveryBegun = true;
         state.active = false;
         state.barrierOffset = barrierOffset;
         state.position = committed.offset();
+        state.recoveryBegun = true; // last: a gauge reader that sees it also sees barrier/position
         state.lastCommittedOffset = committed.offset();
         state.lastCommittedMetadata = metadata;
         state.hasProposal = false;
@@ -826,6 +838,14 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                 .description("encoded sidecar size of the last computed cursor vs the budget")
                 .tag("partition", tag)
                 .register(w.registry);
+        state.shardStateGauge = Gauge.builder(SHARD_STATE_METRIC, state::shardState)
+                .description("0=ASSIGNED, 1=RECOVERING, 2=ACTIVE (design §3.6)")
+                .tag("partition", tag)
+                .register(w.registry);
+        state.replayRemainingGauge = Gauge.builder(REPLAY_REMAINING_METRIC, state::replayRemaining)
+                .description("barrier - position while recovering; feeds the replay-ETA alert (§3.5)")
+                .tag("partition", tag)
+                .register(w.registry);
     }
 
     private static long statePinned(Wiring w, int partition) {
@@ -847,6 +867,12 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         }
         if (state.sidecarBytesGauge != null) {
             w.registry.remove(state.sidecarBytesGauge);
+        }
+        if (state.shardStateGauge != null) {
+            w.registry.remove(state.shardStateGauge);
+        }
+        if (state.replayRemainingGauge != null) {
+            w.registry.remove(state.replayRemainingGauge);
         }
     }
 
@@ -958,12 +984,16 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         }
     }
 
-    /** Per-partition recovery, cursor and metrics bookkeeping (dispatch thread only). */
+    /**
+     * Per-partition recovery, cursor and metrics bookkeeping. Written on the dispatch thread only;
+     * the four recovery fields are volatile because the state/remaining gauges read them from the
+     * scrape and health-sampler threads.
+     */
     private static final class PartitionState {
-        boolean recoveryBegun;
-        boolean active;
-        long barrierOffset;
-        long position;
+        volatile boolean recoveryBegun;
+        volatile boolean active;
+        volatile long barrierOffset;
+        volatile long position;
         long lastCommittedOffset;
         String lastCommittedMetadata = "";
         boolean hasProposal;
@@ -980,5 +1010,17 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         @Nullable Gauge pinnedGauge;
 
         @Nullable Gauge sidecarBytesGauge;
+
+        @Nullable Gauge shardStateGauge;
+
+        @Nullable Gauge replayRemainingGauge;
+
+        int shardState() {
+            return active ? 2 : recoveryBegun ? 1 : 0;
+        }
+
+        long replayRemaining() {
+            return recoveryBegun && !active ? Math.max(0, barrierOffset - position) : 0;
+        }
     }
 }

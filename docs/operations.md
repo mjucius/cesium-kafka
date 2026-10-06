@@ -455,8 +455,8 @@ Key points:
 
 - **Readiness is NOT gated on recovery.** A healthily replaying instance reports ready; gating
   rollouts on replay completion wedges deploys behind replay durations and multiplies replay work.
-  Recovery progress is surfaced in the `/health/ready` detail payload and `cesium_shard_paused`, not
-  by failing the probe.
+  Recovery progress is surfaced in the `/health/ready` detail payload, `cesium_shard_state` and
+  `cesium_replay_remaining_records`, not by failing the probe.
 - **Liveness is loop-heartbeat freshness**, with a generous `failureThreshold` so a slow-but-healthy
   replay is never killed.
 - **`preStop` + `terminationGracePeriodSeconds`** let readiness flip false and the loops finish/abort
@@ -580,6 +580,8 @@ In Prometheus exposition: **counters** end in `_total`; **timers** expose `_seco
 | `cesium_pinned_entries` | gauge | `partition` | sidecar occupancy; sustained at max ⇒ overflow mode |
 | `cesium_cursor_sidecar_bytes` | gauge | `partition` | encoded sidecar size vs budget |
 | `cesium_shard_paused` | gauge | `partition` | backpressure pause state |
+| `cesium_shard_state` | gauge | `partition` | `0` ASSIGNED (recovery not begun), `1` RECOVERING, `2` ACTIVE (§3.6) |
+| `cesium_replay_remaining_records` | gauge | `partition` | barrier − position while RECOVERING; `0` when ASSIGNED or ACTIVE |
 | `cesium_degraded` | gauge | `loop` | park-and-degrade state (§3.8); cause is logged |
 | `cesium_loop_last_iteration_timestamp_seconds` | gauge | `loop` | epoch-seconds of the last loop iteration; feeds liveness |
 | `cesium_tracker_invalid_records_total` | counter | | tracker wire-format violations (malformed / version-skew) — foreign-writer canary. **Does NOT detect well-formed forgeries** ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L2) |
@@ -591,8 +593,8 @@ In Prometheus exposition: **counters** end in `_total`; **timers** expose `_seco
 | `cesium_store_log_sweeps_total` | counter | | arrival-log sweeps across shards |
 
 > **Not yet emitted (specified in design `§9`, deferred past M8).** Do **not** write alerts against
-> these — the series do not exist in this release: `cesium_lso_lag`, `cesium_shard_state`,
-> `cesium_replay_remaining_records`, `cesium_store_recovery_duration_seconds`,
+> these — the series do not exist in this release: `cesium_lso_lag`,
+> `cesium_store_recovery_duration_seconds`,
 > `cesium_store_replay_records_total`, `cesium_retention_margin_seconds`,
 > `cesium_tracker_cursor_lag` / `cesium_tracker_cursor_age_seconds`,
 > `cesium_pending_oldest_deadline_seconds`, `cesium_index_bytes_estimate`. Use the proxies noted
@@ -605,7 +607,8 @@ In Prometheus exposition: **counters** end in `_total`; **timers** expose `_seco
   stalled; the process should be restarted.
 - **`/health/ready`** — startup checks passed, loops alive, consumers assigned, recent poll.
   **Recovery state is intentionally NOT part of readiness** — a replaying instance is ready. The
-  detail payload exposes per-shard recovery state; a `degraded` flag (with cause) surfaces
+  detail payload lists each non-ACTIVE shard (`partition`, `state`, `recordsRemaining`,
+  `etaMillis`; `-1` until two 1 s samples show the backlog shrinking); a `degraded` flag (with cause) surfaces
   park-and-degrade without failing the probe.
 - **`/info`** — version, commit, `application-id`, store type + capabilities, and any acknowledged
   escape hatches.
@@ -628,16 +631,16 @@ In Prometheus exposition: **counters** end in `_total`; **timers** expose `_seco
 | Tracker integrity canary | step-collapse of `cesium_pending_entries` | Tracker possibly truncated/recreated (R-9). Follow [§6](#6-tracker-disaster-recovery-runbook). |
 | Malformed tracker write / foreign writer | `rate(cesium_tracker_invalid_records_total[10m]) > 0` | A *malformed or version-skewed* write hit the tracker. Check the ACL ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix)). Note: a well-formed forgery would **not** move this counter — detecting competent tampering needs broker authorizer audit logging (L2). |
 | Cursor-guard / index anomaly | `rate(cesium_cursor_guard_violations_total[15m]) > 0` or `rate(cesium_store_index_anomalies_total[15m]) > 0` | A surfaced invariant violation — not data loss (last-safe-cursor returned), but file a bug with logs. |
+| Slow replay | `cesium_shard_state == 1` and `cesium_replay_remaining_records` not falling (sustained) | A shard is stuck recovering — check group-B fetch throughput and tracker-topic size. Readiness is unaffected by design. |
 | Backpressure pause | `cesium_shard_paused > 0` (sustained) | Index near cap; intake paused. Add dispatch capacity or raise the heap / caps. |
 | DLQ drain | `rate(cesium_dlq_records_total[10m]) > 0` | Inspect and drain the DLQ; correlate `reason`. |
 | Header misuse | `rate(cesium_header_errors_total[10m]) > 0` | Producers sending malformed/over-max/conflicting headers — fix the producer. |
 
 **Proxies for the not-yet-emitted metrics:** monitor **tracker-topic disk/partition size** and **group-B
 consumer lag** with your broker tooling (the v2 cursor tracks position, so lag reads approximately
-correctly except in sidecar-overflow mode) in place of `cesium_tracker_cursor_age_seconds` /
-`cesium_replay_remaining_records`; monitor **source-partition earliest-record age** externally in
-place of `cesium_retention_margin_seconds`; use `cesium_pinned_entries` + `cesium_cursor_sidecar_bytes`
-for overflow detection.
+correctly except in sidecar-overflow mode) in place of `cesium_tracker_cursor_age_seconds`; monitor
+**source-partition earliest-record age** externally in place of `cesium_retention_margin_seconds`;
+use `cesium_pinned_entries` + `cesium_cursor_sidecar_bytes` for overflow detection.
 
 ---
 
