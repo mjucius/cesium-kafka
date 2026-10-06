@@ -1,6 +1,5 @@
-package com.jucius.cesium.kafka.app.lifecycle;
+package com.jucius.cesium.kafka.api.store;
 
-import com.jucius.cesium.kafka.api.store.ConfigView;
 import java.time.Duration;
 import java.time.format.DateTimeParseException;
 import java.util.Map;
@@ -9,10 +8,9 @@ import java.util.Set;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The production {@link ConfigView} over the {@code store.properties} subtree (design §8) — the
- * counterpart the engine hands a store in its {@link com.jucius.cesium.kafka.api.store.StoreContext},
- * mirroring the published test kit's {@code FakeStoreContext.MapConfigView} but living in
- * production code so the app needs no test-only dependency.
+ * The {@link ConfigView} behind {@link ConfigView#of}: the view the engine hands a store over the
+ * {@code store.properties} subtree (design §8), shared with store tests so both parse values the
+ * same way.
  *
  * <p>Keys are relative to the subtree and values follow the application config conventions:
  * durations are ISO-8601, booleans are {@code true}/{@code false}. A present-but-unparseable value
@@ -21,12 +19,11 @@ import org.jspecify.annotations.Nullable;
  * store surfaces the mistake from {@code validate()} at startup; a required-but-absent key throws
  * {@link NoSuchElementException}.
  */
-public final class MapConfigView implements ConfigView {
+final class MapConfigView implements ConfigView {
 
     private final Map<String, String> properties;
 
-    /** @param properties the {@code store.properties} subtree, copied defensively */
-    public MapConfigView(Map<String, String> properties) {
+    MapConfigView(Map<String, String> properties) {
         this.properties = Map.copyOf(properties);
     }
 

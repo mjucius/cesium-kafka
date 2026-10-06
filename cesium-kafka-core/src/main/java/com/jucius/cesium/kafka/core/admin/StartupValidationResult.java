@@ -16,14 +16,20 @@ import java.util.OptionalInt;
  *     source topic or cluster metadata could not be resolved (the report then carries the error)
  * @param sourcePartitions the source topic's partition count {@code P}; empty when the source
  *     could not be described
+ * @param offsetMetadataMaxBytes the broker's {@code offset.metadata.max.bytes}, the cap the cursor
+ *     sidecar budget is clamped to (§3.5); empty when it could not be read or parsed
  */
 public record StartupValidationResult(
-        ValidationReport report, Optional<IdentityBlob> identity, OptionalInt sourcePartitions) {
+        ValidationReport report,
+        Optional<IdentityBlob> identity,
+        OptionalInt sourcePartitions,
+        OptionalInt offsetMetadataMaxBytes) {
 
     /** Validates that no component is null. */
     public StartupValidationResult {
         Objects.requireNonNull(report, "report");
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(sourcePartitions, "sourcePartitions");
+        Objects.requireNonNull(offsetMetadataMaxBytes, "offsetMetadataMaxBytes");
     }
 }

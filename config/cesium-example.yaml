@@ -111,7 +111,7 @@ dispatch:
   coalesce: PT0S               # off: never early, never deliberately late
   idle-cursor-interval: PT30S  # cursor advancement cadence for quiet partitions (§3.5)
   cursor:
-    sidecar-max-bytes: 3072    # validated <= broker offset.metadata.max.bytes at startup
+    sidecar-max-bytes: 3072    # clamped (with a warning) to broker offset.metadata.max.bytes at startup
   fetch:
     timeout: PT30S
     partition-time-floor: PT2S

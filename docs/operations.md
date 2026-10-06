@@ -663,7 +663,7 @@ The app prints the full aggregate report and exits 78. Causes and fixes:
 | `${env:VAR}` references an undefined variable | Define the variable or fix the reference. |
 | DLQ policy active but no `route.dlq.topic` | Configure the DLQ topic, or change the policy off DLQ. |
 | Worst-case index footprint exceeds the heap budget | Lower `dispatch.max-pending-per-partition` / `store.properties.max-pending-per-partition`, raise the heap, or set `startup-checks.heap-budget: WARN` to accept. |
-| `dispatch.cursor.sidecar-max-bytes` > broker `offset.metadata.max.bytes` | Lower the sidecar budget, or raise the broker setting. |
+| `dispatch.cursor.sidecar-max-bytes` > broker `offset.metadata.max.bytes` (warning; the budget is clamped to the broker cap) | Raise the broker setting to keep the configured budget, or lower the sidecar budget to silence the warning. |
 
 ### 14.2 Startup validation against the cluster (exit 1)
 

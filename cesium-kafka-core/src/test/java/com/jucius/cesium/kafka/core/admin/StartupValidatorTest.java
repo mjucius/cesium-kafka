@@ -1142,6 +1142,77 @@ class StartupValidatorTest {
         }
     }
 
+    // ------------------------------------------------------------------ broker offset-metadata cap (§3.5)
+
+    @Nested
+    class OffsetMetadataMaxBytes {
+
+        private static final String PATH = "dispatch.cursor.sidecar-max-bytes";
+
+        private CesiumConfig withSidecarBudget(int bytes) {
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.dispatch = new DispatchConfig(
+                    null, null, null, null, null, new DispatchConfig.Cursor(bytes), null, null, null, null);
+            return builder.build();
+        }
+
+        @Test
+        void budgetWithinBrokerCapPassesAndReportsTheCap() {
+            givenHealthyCluster();
+            admin.brokerConfigs.put("offset.metadata.max.bytes", "4096");
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoFindingAt(result, PATH);
+            assertEquals(OptionalInt.of(4096), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void absentBrokerValueAssumesTheKafkaDefault() {
+            givenHealthyCluster();
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoFindingAt(result, PATH);
+            assertEquals(OptionalInt.of(4096), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void budgetAboveBrokerCapWarnsAndNeverFails() {
+            givenHealthyCluster();
+            admin.brokerConfigs.put("offset.metadata.max.bytes", "1024");
+
+            StartupValidationResult result = validator.validate(withSidecarBudget(2048));
+
+            assertNoErrors(result);
+            assertWarningContains(result, PATH, "clamping the sidecar budget to 1024");
+            assertEquals(OptionalInt.of(1024), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void unreadableBrokerConfigWarnsToVerifyManually() {
+            givenHealthyCluster();
+            admin.brokerConfigFailure = new ClusterAdminException("not authorized");
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertWarningContains(result, PATH, "verify manually");
+            assertEquals(OptionalInt.empty(), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void unparseableBrokerConfigWarns() {
+            givenHealthyCluster();
+            admin.brokerConfigs.put("offset.metadata.max.bytes", "lots");
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoErrors(result);
+            assertWarningContains(result, PATH, "not a number");
+            assertEquals(OptionalInt.empty(), result.offsetMetadataMaxBytes());
+        }
+    }
+
     // ------------------------------------------------------------------ report aggregation
 
     @Test

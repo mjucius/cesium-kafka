@@ -116,7 +116,7 @@ class HappyPathDelayedIT extends KafkaIT {
             assertNotNull(committed.metadata());
             IdentityBlob blob = IdentityBlob.decode(committed.metadata());
             assertTrue(
-                    blob.matches(harness.identity()),
+                    blob.equals(harness.identity()),
                     () -> "offset metadata identity mismatch: " + blob.describeMismatch(harness.identity()));
         }
 

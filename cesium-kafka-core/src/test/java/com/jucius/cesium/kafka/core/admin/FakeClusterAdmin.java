@@ -35,6 +35,7 @@ final class FakeClusterAdmin implements ClusterAdmin {
     ClusterAdminException describeFailure;
     ClusterAdminException describeAclsFailure;
     ClusterAdminException groupOffsetsFailure;
+    ClusterAdminException brokerConfigFailure;
     ClusterAdminException topicConfigsFailure;
 
     // ---- metadata-propagation simulation (all default-off; see TopicVisibility) ----
@@ -137,6 +138,9 @@ final class FakeClusterAdmin implements ClusterAdmin {
 
     @Override
     public Optional<String> brokerConfig(String key) {
+        if (brokerConfigFailure != null) {
+            throw brokerConfigFailure;
+        }
         return Optional.ofNullable(brokerConfigs.get(key));
     }
 

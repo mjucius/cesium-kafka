@@ -117,18 +117,13 @@ public record IdentityBlob(String clusterId, Uuid sourceTopicId) {
         return new IdentityBlob(clusterId, sourceTopicId);
     }
 
-    /** True when {@code live} carries the same cluster and source-topic identity. */
-    public boolean matches(IdentityBlob live) {
-        return equals(live);
-    }
-
     /**
      * A human-readable description of how {@code live} differs from this recorded identity,
      * naming the fail-fast rule and the runbook action (§3.1, R-9/R-10). Returns
      * {@code "identity matches"} when nothing differs.
      */
     public String describeMismatch(IdentityBlob live) {
-        if (matches(live)) {
+        if (equals(live)) {
             return "identity matches";
         }
         StringBuilder sb = new StringBuilder();

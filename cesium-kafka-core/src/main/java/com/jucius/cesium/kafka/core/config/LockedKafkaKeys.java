@@ -70,11 +70,6 @@ public final class LockedKafkaKeys {
         return Collections.unmodifiableMap(m);
     }
 
-    /** True when {@code key} is locked on every cesium client. */
-    public static boolean isLocked(String key) {
-        return EXPLANATIONS.containsKey(key);
-    }
-
     /** The rejection explanation for a locked key, or {@code null} when the key is not locked. */
     public static @Nullable String explanation(String key) {
         return EXPLANATIONS.get(key);

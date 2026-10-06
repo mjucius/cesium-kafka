@@ -67,6 +67,12 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     /** Default sidecar budget: 3 KiB ≈ 200–300 pinned entries (§8 defaults table). */
     public static final int DEFAULT_SIDECAR_MAX_BYTES = 3072;
 
+    /** Smallest accepted sidecar budget: room for the identity header plus a few entries. */
+    public static final int MIN_SIDECAR_MAX_BYTES = 128;
+
+    /** Largest accepted sidecar budget (1 MiB). */
+    public static final int MAX_SIDECAR_MAX_BYTES = 1 << 20;
+
     /** Per-partition pending cap used for the worst-case footprint check (§5.3). */
     public static final String MAX_PENDING_PER_PARTITION_KEY = "max-pending-per-partition";
 
@@ -91,8 +97,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     /** Metric: recovery replays refused because the backlog would exceed the heap budget (H1). */
     public static final String RECOVERY_OVER_BUDGET_METRIC = "cesium.recovery.over.budget";
 
-    private static final int MIN_SIDECAR_MAX_BYTES = 128;
-    private static final int MAX_SIDECAR_MAX_BYTES = 1 << 20;
     private static final Set<String> KNOWN_CONFIG_KEYS = Set.of(
             SIDECAR_MAX_BYTES_KEY,
             MAX_PENDING_PER_PARTITION_KEY,

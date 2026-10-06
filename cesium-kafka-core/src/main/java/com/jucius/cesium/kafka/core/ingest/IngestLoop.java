@@ -904,7 +904,7 @@ public final class IngestLoop implements Runnable {
                             + " inspect and repair the group offsets",
                     e);
         }
-        if (!recorded.matches(identity)) {
+        if (!recorded.equals(identity)) {
             throw new IngestLoopFatalException(
                     "committed offset identity mismatch for " + partition + ": " + recorded.describeMismatch(identity));
         }

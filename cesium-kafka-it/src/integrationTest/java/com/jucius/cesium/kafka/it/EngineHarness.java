@@ -43,7 +43,6 @@ import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
-import com.jucius.cesium.kafka.testkit.FakeStoreContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
@@ -399,9 +398,7 @@ final class EngineHarness implements AutoCloseable {
     private TrackerBackedStore buildStore() {
         TrackerBackedStore created = createStore(config.store().type());
         created.configure(new HarnessStoreContext(
-                routeDescriptor(),
-                new FakeStoreContext.MapConfigView(config.store().properties()),
-                meterRegistry));
+                routeDescriptor(), ConfigView.of(config.store().properties()), meterRegistry));
         created.validate();
         created.start();
         return created;

@@ -48,6 +48,7 @@ class FakeStoreContextTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation") // pins the deprecated view's unchanged 1.x behaviour
     void configViewFollowsEngineParsingConventions() {
         ConfigView config = new FakeStoreContext.MapConfigView(Map.of(
                 "an.int", "42",

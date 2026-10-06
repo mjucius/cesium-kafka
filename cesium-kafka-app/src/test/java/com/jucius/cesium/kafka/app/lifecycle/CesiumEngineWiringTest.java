@@ -16,14 +16,17 @@ import com.jucius.cesium.kafka.core.config.IngestConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
+import com.jucius.cesium.kafka.core.config.StoreConfig;
 import com.jucius.cesium.kafka.core.config.TopicRef;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import org.apache.kafka.common.Uuid;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -191,6 +194,86 @@ class CesiumEngineWiringTest {
     // ------------------------------------------------------------------ helper
 
     /** A structurally valid config (route + DLQ + defaults) with the given roles and worker counts. */
+    // ------------------------------------------------------------------ sidecar budget (§3.5)
+
+    @Nested
+    class SidecarBudget {
+
+        private static final String KEY = "cursor.sidecar-max-bytes";
+
+        private CesiumConfig withBudget(@Nullable Integer dispatchBudget, Map<String, String> storeProperties) {
+            return withBudget(StoreConfig.DEFAULT_TYPE, dispatchBudget, storeProperties);
+        }
+
+        private CesiumConfig withBudget(
+                String storeType, @Nullable Integer dispatchBudget, Map<String, String> storeProperties) {
+            return new CesiumConfig(
+                    "orders",
+                    InstanceId.of("slot-0"),
+                    null,
+                    null,
+                    new RouteConfig(
+                            new TopicRef("src"), new TopicRef("dst"), null, Optional.of(new TopicRef("dlq")), null),
+                    null,
+                    null,
+                    new StoreConfig(storeType, storeProperties),
+                    null,
+                    new DispatchConfig(
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            new DispatchConfig.Cursor(dispatchBudget),
+                            null,
+                            null,
+                            null,
+                            null),
+                    null,
+                    null);
+        }
+
+        @Test
+        void dispatchBudgetReachesTheStore() {
+            Map<String, String> props = CesiumEngine.storeProperties(withBudget(2048, Map.of()), OptionalInt.of(4096));
+            assertEquals("2048", props.get(KEY));
+        }
+
+        @Test
+        void dispatchBudgetIsClampedToTheBrokerCap() {
+            Map<String, String> props = CesiumEngine.storeProperties(withBudget(8192, Map.of()), OptionalInt.of(4096));
+            assertEquals("4096", props.get(KEY));
+        }
+
+        @Test
+        void unknownBrokerCapPassesTheBudgetThrough() {
+            Map<String, String> props = CesiumEngine.storeProperties(withBudget(8192, Map.of()), OptionalInt.empty());
+            assertEquals("8192", props.get(KEY));
+        }
+
+        @Test
+        void explicitStoreValueWinsAndIsNotClamped() {
+            Map<String, String> props =
+                    CesiumEngine.storeProperties(withBudget(2048, Map.of(KEY, "8192")), OptionalInt.of(4096));
+            assertEquals("8192", props.get(KEY));
+        }
+
+        @Test
+        void outOfRangeBudgetIsLeftOutSoTheStoreKeepsItsDefault() {
+            assertFalse(CesiumEngine.storeProperties(withBudget(64, Map.of()), OptionalInt.empty())
+                    .containsKey(KEY));
+            assertFalse(CesiumEngine.storeProperties(withBudget(3072, Map.of()), OptionalInt.of(100))
+                    .containsKey(KEY));
+        }
+
+        @Test
+        void otherStoreTypesAreNeverInjected() {
+            Map<String, String> props =
+                    CesiumEngine.storeProperties(withBudget("other-store", 2048, Map.of()), OptionalInt.of(4096));
+            assertFalse(props.containsKey(KEY));
+        }
+    }
+
     private static CesiumConfig config(Set<Role> roles, int ingestWorkers, int dispatchWorkers) {
         return new CesiumConfig(
                 "orders",

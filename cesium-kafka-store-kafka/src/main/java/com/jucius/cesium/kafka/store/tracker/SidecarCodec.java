@@ -45,7 +45,7 @@ import org.apache.kafka.common.Uuid;
  * are strings (KRaft ids happen to be 22-char base64url, but the API type is {@code String}).
  *
  * <p><strong>Budget semantics.</strong> The byte budget ({@code dispatch.cursor.sidecar-max-bytes},
- * validated against broker {@code offset.metadata.max.bytes} by the engine) bounds the
+ * clamped to broker {@code offset.metadata.max.bytes} by the engine) bounds the
  * <em>Base64-encoded metadata string</em> — that is what the broker meters — so the encoder
  * derives the raw-byte limit {@code floor(3·budget/4)} and cuts greedily: entries are accepted
  * oldest-first until the <em>next</em> entry would exceed the limit (§3.5).

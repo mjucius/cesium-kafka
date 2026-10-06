@@ -32,6 +32,8 @@ import com.jucius.cesium.kafka.core.ingest.IngestLoop;
 import com.jucius.cesium.kafka.core.ingest.IngestLoopConfig;
 import com.jucius.cesium.kafka.core.kafka.KafkaClientFactory;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
+import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
+import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
@@ -43,6 +45,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.ServiceLoader;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -215,7 +218,7 @@ public final class CesiumEngine implements AutoCloseable {
             this.store = resolved;
             RouteDescriptor route = buildRouteDescriptor(clusterAdmin, config, identity, partitionCount);
             resolved.configure(new EngineStoreContext(
-                    route, new MapConfigView(config.store().properties())));
+                    route, ConfigView.of(storeProperties(config, validation.offsetMetadataMaxBytes()))));
             this.storeCapabilities = resolved.capabilities();
             resolved.validate();
             resolved.start();
@@ -314,6 +317,58 @@ public final class CesiumEngine implements AutoCloseable {
             }
         }
         return specs;
+    }
+
+    /**
+     * The {@code store.properties} the store is configured with (§3.5). For the bundled
+     * {@code kafka-tracker} store, {@code dispatch.cursor.sidecar-max-bytes} is the default for the
+     * store's {@code cursor.sidecar-max-bytes}, clamped to the broker's
+     * {@code offset.metadata.max.bytes} (the validator has already warned about the clamp). An
+     * explicit store value always wins and is never clamped, only warned about. A dispatch value
+     * outside the store's accepted range is left out — with a warning — so it can never turn into a
+     * startup failure: the store then keeps its own default. Pure — unit-tested without a broker.
+     */
+    static Map<String, String> storeProperties(CesiumConfig config, OptionalInt offsetMetadataMaxBytes) {
+        Map<String, String> properties = config.store().properties();
+        if (!KafkaTrackerStoreProvider.TYPE_ID.equals(config.store().type())) {
+            return properties; // another store's keys are its own; never inject one it may reject
+        }
+        String key = KafkaTrackerStore.SIDECAR_MAX_BYTES_KEY;
+        String explicit = properties.get(key);
+        if (explicit != null) {
+            try {
+                int value = Integer.parseInt(explicit.trim());
+                if (offsetMetadataMaxBytes.isPresent() && value > offsetMetadataMaxBytes.getAsInt()) {
+                    log.warn(
+                            "store.properties.{} ({}) exceeds broker offset.metadata.max.bytes ({}); cursor commits"
+                                    + " fail once the sidecar outgrows the broker cap — lower it or raise the broker"
+                                    + " setting (§3.5)",
+                            key,
+                            value,
+                            offsetMetadataMaxBytes.getAsInt());
+                }
+            } catch (NumberFormatException e) {
+                // Not ours to report: the store's validate() rejects it with a non-disclosing message.
+            }
+            return properties;
+        }
+        int budget = config.dispatch().cursor().sidecarMaxBytes();
+        int effective =
+                offsetMetadataMaxBytes.isPresent() ? Math.min(budget, offsetMetadataMaxBytes.getAsInt()) : budget;
+        if (effective < KafkaTrackerStore.MIN_SIDECAR_MAX_BYTES
+                || effective > KafkaTrackerStore.MAX_SIDECAR_MAX_BYTES) {
+            log.warn(
+                    "sidecar budget {} (dispatch.cursor.sidecar-max-bytes, clamped to the broker cap) is outside the"
+                            + " store's accepted range [{}, {}]; keeping the store default of {} bytes",
+                    effective,
+                    KafkaTrackerStore.MIN_SIDECAR_MAX_BYTES,
+                    KafkaTrackerStore.MAX_SIDECAR_MAX_BYTES,
+                    KafkaTrackerStore.DEFAULT_SIDECAR_MAX_BYTES);
+            return properties;
+        }
+        Map<String, String> withBudget = new HashMap<>(properties);
+        withBudget.put(key, Integer.toString(effective));
+        return withBudget;
     }
 
     /**
