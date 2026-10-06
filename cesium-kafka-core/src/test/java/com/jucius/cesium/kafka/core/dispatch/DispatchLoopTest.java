@@ -14,6 +14,7 @@ import com.jucius.cesium.kafka.core.fetch.SeekFetcher;
 import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
 import com.jucius.cesium.kafka.core.headers.RelayTimestampPolicy;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
 import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
@@ -172,7 +173,7 @@ class DispatchLoopTest {
         h.admin.groupHasOffsets = true; // the group committed before: this is expiry, not first run
         h.start(0);
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("offset-reset runbook"), failure.getMessage());
         assertTrue(h.store.recoveries.isEmpty(), "never auto-reset (D18)");
     }
@@ -184,7 +185,7 @@ class DispatchLoopTest {
         h.start(0);
         h.consumer.updateBeginningOffsets(Map.of(tracker(0), 10L)); // tracker truncated
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("below the partition beginning"), failure.getMessage());
     }
 
@@ -195,7 +196,7 @@ class DispatchLoopTest {
         h.admin.barrierValues.put(0, 10L); // live end below the committed cursor: recreated
         h.start(0);
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("exceeds the live end offset"), failure.getMessage());
     }
 
@@ -306,7 +307,7 @@ class DispatchLoopTest {
         fail.startActive(0);
         fail.fetcher.classify(0, 1, FetchOutcome.GONE);
         fail.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, fail.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, fail.loop::runOnce);
         assertTrue(failure.getMessage().contains("FAIL"), failure.getMessage());
         assertFalse(fail.events.contains("begin"), "nothing is produced before the FAIL stop");
         assertRows(fail.store.abortedBatches.get(0), new long[][] {{0, 1}}, "restore is definitive: no txn existed");
@@ -437,7 +438,7 @@ class DispatchLoopTest {
         h.producer().fenceProducer();
         h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
 
-        assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertFalse(h.events.contains("abort"), "fatal path never tries to abort a fenced producer");
         assertTrue(h.store.abortedBatches.isEmpty(), "no restore on fatal — the durable log is authoritative");
         assertTrue(h.store.committedBatches.isEmpty());
@@ -530,7 +531,7 @@ class DispatchLoopTest {
         h.producer().failSendCallbackAt = 0;
         h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("on-unrelayable=FAIL"), failure.getMessage());
         assertTrue(h.events.contains("abort"), "FAIL aborts before stopping");
         assertRows(h.store.abortedBatches.get(0), new long[][] {{0, 1}}, "restore is definitive: nothing committed");
@@ -1194,11 +1195,6 @@ class DispatchLoopTest {
                         throw new IllegalStateException("record(" + i + ") on outcome " + outs[i]);
                     }
                     return record;
-                }
-
-                @Override
-                public List<PartitionSummary> partitionSummaries() {
-                    return List.of();
                 }
             };
         }

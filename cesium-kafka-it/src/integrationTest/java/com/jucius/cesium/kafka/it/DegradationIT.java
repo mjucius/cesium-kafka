@@ -183,11 +183,6 @@ class DegradationIT extends KafkaIT {
             public ConsumerRecord<byte[], byte[]> record(int i) {
                 return real.record(i); // only ever called for FOUND (healthy-partition) entries
             }
-
-            @Override
-            public List<PartitionSummary> partitionSummaries() {
-                return real.partitionSummaries();
-            }
         }
     }
 }

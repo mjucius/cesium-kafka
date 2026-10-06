@@ -110,9 +110,7 @@ class DelayHeaderCodecTest {
     @Test
     void delayMs_zero_relaysImmediately_pastDue() {
         HeaderParseResult result = parse(headers(CesiumHeaders.DELAY_MS, ascii("0")));
-        HeaderParseResult.RelayImmediately relay = assertInstanceOf(HeaderParseResult.RelayImmediately.class, result);
-        assertEquals("past_due", relay.reason());
-        assertFalse(relay.conflicted());
+        assertEquals(new HeaderParseResult.RelayImmediately(false), result);
     }
 
     @Test
@@ -203,8 +201,7 @@ class DelayHeaderCodecTest {
     @Test
     void deliverAt_past_relaysImmediately_notAnError() {
         HeaderParseResult result = parse(headers(CesiumHeaders.DELIVER_AT, ascii(Long.toString(NOW - 60_000))));
-        HeaderParseResult.RelayImmediately relay = assertInstanceOf(HeaderParseResult.RelayImmediately.class, result);
-        assertEquals("past_due", relay.reason());
+        assertEquals(new HeaderParseResult.RelayImmediately(false), result);
     }
 
     @Test

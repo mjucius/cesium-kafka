@@ -1,6 +1,5 @@
 package com.jucius.cesium.kafka.core.fetch;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -12,7 +11,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -110,11 +108,6 @@ class KafkaSeekFetcherTest {
         assertEquals(5, result.record(0).offset());
         assertEquals(7, result.record(1).offset());
         assertEquals(3, result.record(2).offset());
-        assertEquals(0, result.carryOverIndices().length);
-
-        List<FetchResult.PartitionSummary> summaries = result.partitionSummaries();
-        assertEquals(new FetchResult.PartitionSummary(0, 2, 0, 0, 0, 20), summaries.get(0));
-        assertEquals(new FetchResult.PartitionSummary(1, 1, 0, 0, 0, 10), summaries.get(1));
 
         assertEquals(3, counter("cesium.fetch.attempts"));
         assertEquals(0, counter("cesium.fetch.misses"));
@@ -133,9 +126,6 @@ class KafkaSeekFetcherTest {
 
         assertEquals(FetchOutcome.GONE, result.outcome(0));
         assertThrows(IllegalStateException.class, () -> result.record(0), "record() is FOUND-only");
-        assertEquals(
-                new FetchResult.PartitionSummary(0, 0, 1, 0, 0, 0),
-                result.partitionSummaries().get(0));
         assertEquals(1, counter("cesium.fetch.attempts"));
         assertEquals(1, counter("cesium.fetch.unfetchable"));
         assertEquals(0, counter("cesium.fetch.misses"));
@@ -164,9 +154,6 @@ class KafkaSeekFetcherTest {
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 4_000);
 
         assertEquals(FetchOutcome.TRANSIENT, result.outcome(0));
-        assertEquals(
-                new FetchResult.PartitionSummary(0, 0, 0, 1, 0, 0),
-                result.partitionSummaries().get(0));
         assertEquals(1, counter("cesium.fetch.misses"));
         assertEquals(0, counter("cesium.fetch.unfetchable"));
         assertEquals(1, counter("cesium.fetch.attempts"));
@@ -199,12 +186,6 @@ class KafkaSeekFetcherTest {
 
         assertEquals(FetchOutcome.TRANSIENT, result.outcome(0), "partition 0's run hit the exception");
         assertEquals(FetchOutcome.FOUND, result.outcome(1), "partition 1 is isolated from 0's transport failure");
-        assertEquals(
-                new FetchResult.PartitionSummary(0, 0, 0, 1, 0, 0),
-                result.partitionSummaries().get(0));
-        assertEquals(
-                new FetchResult.PartitionSummary(1, 1, 0, 0, 0, 10),
-                result.partitionSummaries().get(1));
     }
 
     @Test
@@ -226,13 +207,6 @@ class KafkaSeekFetcherTest {
         assertEquals(FetchOutcome.FOUND, result.outcome(1));
         assertEquals(FetchOutcome.CARRY_OVER, result.outcome(2));
         assertEquals(FetchOutcome.CARRY_OVER, result.outcome(3), "later run never attempted after the trip");
-        assertArrayEquals(new int[] {2, 3}, result.carryOverIndices());
-        assertEquals(
-                new FetchResult.PartitionSummary(0, 2, 0, 0, 1, 200),
-                result.partitionSummaries().get(0));
-        assertEquals(
-                new FetchResult.PartitionSummary(1, 0, 0, 0, 1, 0),
-                result.partitionSummaries().get(1));
         assertEquals(200, counter("cesium.fetch.bytes"));
         assertEquals(2, counter("cesium.fetch.attempts"), "carried-over entries were never attempted");
         assertEquals(0, counter("cesium.fetch.misses"), "a planned truncation is not a miss");
@@ -386,8 +360,6 @@ class KafkaSeekFetcherTest {
     void emptyBatchTouchesNothing() {
         FetchResult result = fetcher.fetch(FakeDueBatch.empty(), 1 << 20, NOW + 30_000);
         assertEquals(0, result.size());
-        assertTrue(result.partitionSummaries().isEmpty());
-        assertEquals(0, result.carryOverIndices().length);
         assertTrue(consumer.assignment().isEmpty(), "no consumer interaction for an empty batch");
         assertEquals(0, registry.get("cesium.fetch.duration.seconds").timer().count());
     }

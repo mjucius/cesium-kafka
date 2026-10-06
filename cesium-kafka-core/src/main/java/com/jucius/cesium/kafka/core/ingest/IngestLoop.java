@@ -1,5 +1,12 @@
 package com.jucius.cesium.kafka.core.ingest;
 
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.abortOrReplace;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.anyCause;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.boundedExponential;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.causeTag;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.promoteUnrelayable;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.throwIfAsyncSendFailed;
+
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
@@ -8,6 +15,11 @@ import com.jucius.cesium.kafka.core.headers.DelayHeaderCodec;
 import com.jucius.cesium.kafka.core.headers.DlqReasons;
 import com.jucius.cesium.kafka.core.headers.HeaderParseResult;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.InDoubtCommit;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.SourceCoord;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.Unrelayable;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.UnrelayableHit;
 import com.jucius.cesium.kafka.core.policy.IngestDecision;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
 import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
@@ -275,7 +287,7 @@ public final class IngestLoop implements Runnable {
                     runOnce();
                 } catch (WakeupException e) {
                     if (running.get()) {
-                        throw new IngestLoopFatalException("consumer woken up without a stop request", e);
+                        throw new LoopFatalException("consumer woken up without a stop request", e);
                     }
                     // Graceful shutdown: stop() interrupted the poll sleep; by I3 no transaction
                     // is in flight at this point, so this is a transaction boundary.
@@ -351,7 +363,7 @@ public final class IngestLoop implements Runnable {
             // I-9: committed offsets expired (KIP-211) or true first run under the locked
             // auto.offset.reset=none. Neither a silent skip nor a mass duplicate is acceptable —
             // the operator chooses the reset point explicitly (design §3.6 runbook).
-            throw new IngestLoopFatalException(
+            throw new LoopFatalException(
                     "no committed offset for assigned source partition(s) and auto.offset.reset=none is locked: "
                             + "either committed offsets expired (broker offsets.retention.minutes shorter than the "
                             + "outage) or this is a first run; an operator must seed group offsets explicitly — "
@@ -359,7 +371,7 @@ public final class IngestLoop implements Runnable {
                     e);
         } catch (KafkaException e) {
             if (isFatal(e)) {
-                throw new IngestLoopFatalException("source poll failed fatally", e);
+                throw new LoopFatalException("source poll failed fatally", e);
             }
             log.warn("source poll failed; backing off", e);
             scheduleBackoff(causeTag(e));
@@ -379,11 +391,11 @@ public final class IngestLoop implements Runnable {
             // The FAIL policy aborts the batch (nothing is consumed) and stops the loop loudly.
             abortIfInFlight();
             abortedTransactions("policy_fail").increment();
-            throw new IngestLoopFatalException("delay.on-* policy FAIL fired: " + stop.getMessage(), stop);
+            throw new LoopFatalException("delay.on-* policy FAIL fired: " + stop.getMessage(), stop);
         } catch (InDoubtCommit inDoubt) {
             recoverFromInDoubtCommit(records, inDoubt);
             return;
-        } catch (IngestLoopFatalException fatal) {
+        } catch (LoopFatalException fatal) {
             // Pre-classified fail-fasts raised mid-transaction (the I-7 tracker-partition check):
             // the producer is healthy, so the batch aborts cleanly per the failure matrix, then
             // the loop fails with the runbook message intact.
@@ -394,7 +406,7 @@ public final class IngestLoop implements Runnable {
             if (isFatal(e)) {
                 // Fatal (§3.8): no abort attempt — a fenced/poisoned producer cannot abort; the
                 // broker resolves the dangling transaction. Close + fail the loop.
-                throw new IngestLoopFatalException("fatal ingest transaction failure", e);
+                throw new LoopFatalException("fatal ingest transaction failure", e);
             }
             if (!unrelayableHits.isEmpty()) {
                 // §3.8 I-8: the destination PERMANENTLY rejected a relay (too large / invalid), not
@@ -436,7 +448,7 @@ public final class IngestLoop implements Runnable {
             // FAIL: a permanent destination rejection is an operator problem to surface. Like the
             // other FAIL policies, the record stays at the committed offset (restart-persistent).
             UnrelayableHit first = hits.get(0);
-            throw new IngestLoopFatalException(
+            throw new LoopFatalException(
                     "route.relay.on-unrelayable=FAIL: the destination permanently rejected the relay of source "
                             + config.sourceTopic() + "-" + first.coord().partition() + "@"
                             + first.coord().offset()
@@ -444,7 +456,7 @@ public final class IngestLoop implements Runnable {
                     cause);
         }
         for (UnrelayableHit hit : hits) {
-            promoteUnrelayable(hit);
+            promoteUnrelayable(unrelayable, hit, config.onUnrelayable(), config.sourceTopic(), registry, log);
         }
         rewindToBatchStart(records);
         log.warn(
@@ -452,33 +464,6 @@ public final class IngestLoop implements Runnable {
                         + " rewinding to route them on reprocess instead of retrying forever (§3.8 I-8)",
                 hits.size(),
                 config.onUnrelayable());
-    }
-
-    /**
-     * Records (or escalates) an unrelayable record's disposition. A first rejection of a relay maps
-     * to the policy route (DLQ, or DROP). A <em>second</em> rejection of an already-DLQ-routed record
-     * means the unrelayable DLQ write was itself too large to produce (the relay exceeds
-     * {@code max.request.size}, so the larger DLQ copy is rejected too) — escalate to DROP so the
-     * partition still advances rather than wedging on the DLQ write, logged loudly (§3.8).
-     */
-    private void promoteUnrelayable(UnrelayableHit hit) {
-        Unrelayable existing = unrelayable.get(hit.coord());
-        if (existing == null) {
-            Unrelayable.Route route =
-                    config.onUnrelayable() == UnrelayablePolicy.DROP ? Unrelayable.Route.DROP : Unrelayable.Route.DLQ;
-            unrelayable.put(hit.coord(), new Unrelayable(route, hit.detail()));
-        } else if (existing.route() == Unrelayable.Route.DLQ) {
-            log.error(
-                    "the unrelayable DLQ write for source {}-{}@{} was ALSO permanently rejected ({}); escalating to"
-                            + " DROP so the partition is not wedged on the DLQ write (route.relay.on-unrelayable=DLQ,"
-                            + " §3.8)",
-                    config.sourceTopic(),
-                    hit.coord().partition(),
-                    hit.coord().offset(),
-                    hit.detail());
-            registry.counter("cesium.unrelayable.dlq.rejected").increment();
-            unrelayable.put(hit.coord(), new Unrelayable(Unrelayable.Route.DROP, hit.detail()));
-        }
     }
 
     /**
@@ -512,7 +497,7 @@ public final class IngestLoop implements Runnable {
         for (ConsumerRecord<byte[], byte[]> record : records) {
             dispatch(record, nowMs);
         }
-        throwIfAsyncSendFailed();
+        throwIfAsyncSendFailed(asyncSendError);
         CrashPoints.maybeFire(CrashPoints.INGEST_AFTER_SENDS);
         // I2: group metadata fetched immediately before the call — the fencing hook.
         producer.sendOffsetsToTransaction(nextOffsets(records), consumer.groupMetadata());
@@ -618,7 +603,7 @@ public final class IngestLoop implements Runnable {
         if (partition < trackerPartitions) {
             return;
         }
-        throw new IngestLoopFatalException("source partition " + partition + " has no tracker partition: tracker"
+        throw new LoopFatalException("source partition " + partition + " has no tracker partition: tracker"
                 + " topic '" + config.trackerTopic() + "' has " + trackerPartitions
                 + " partition(s) — the source partition count grew past the tracker (I-7, R-7). Tracker records"
                 + " MUST land on the same partition number as their source record (§2.1). Runbook: grow the"
@@ -657,36 +642,21 @@ public final class IngestLoop implements Runnable {
      * Resolves a record a prior attempt proved permanently unrelayable, per the
      * {@code route.relay.on-unrelayable} disposition (§3.8 I-8): {@code DLQ} writes an unrelayable
      * DLQ record (attributed, so a DLQ write that is <em>itself</em> rejected escalates to DROP via
-     * {@link #promoteUnrelayable}), {@code DROP} produces nothing. Either way the source offset
+     * {@link com.jucius.cesium.kafka.core.loop.LoopSupport#promoteUnrelayable}), {@code DROP} produces nothing. Either way the source offset
      * advances in the same transaction — the partition makes progress past the poison record.
      */
     private void applyUnrelayable(ConsumerRecord<byte[], byte[]> record, Unrelayable known, long nowMs) {
         switch (known.route()) {
             case DLQ -> {
                 send(
-                        relayFactory.unrelayableDlqRecord(record, known.detail(), nowMs),
+                        relayFactory.headerErrorDlqRecord(record, DlqReasons.UNRELAYABLE, known.detail(), nowMs),
                         new SourceCoord(record.partition(), record.offset()));
                 batchCounts.dlq++;
                 batchCounts.dlqReasons.merge(DlqReasons.UNRELAYABLE, 1L, Long::sum);
             }
             case DROP -> batchCounts.unrelayableDropped++;
+            case FAIL -> throw new IllegalStateException("FAIL stops the loop; it is never a recorded disposition");
         }
-    }
-
-    /**
-     * Surfaces an asynchronously failed send before offsets are sent. The real producer would
-     * fail {@code commitTransaction} anyway; checking here is earlier and keeps the abort metric's
-     * cause tag precise.
-     */
-    private void throwIfAsyncSendFailed() {
-        Exception error = asyncSendError;
-        if (error == null) {
-            return;
-        }
-        if (error instanceof RuntimeException runtime) {
-            throw runtime;
-        }
-        throw new KafkaException("transactional send failed asynchronously", error);
     }
 
     /**
@@ -816,11 +786,11 @@ public final class IngestLoop implements Runnable {
             return true;
         } catch (WakeupException e) {
             throw e; // stop() raced the recovery: run() resolves clean shutdown vs unexpected wakeup
-        } catch (IngestLoopFatalException e) {
+        } catch (LoopFatalException e) {
             throw e; // already classified (identity mismatch at the offset fetch, §3.1)
         } catch (RuntimeException e) {
             if (isFatal(e)) {
-                throw new IngestLoopFatalException("in-doubt commit recovery failed fatally", e);
+                throw new LoopFatalException("in-doubt commit recovery failed fatally", e);
             }
             log.warn("in-doubt recovery attempt failed transiently; retrying with capped backoff (§3.8/R15)", e);
             return false;
@@ -898,14 +868,14 @@ public final class IngestLoop implements Runnable {
         try {
             recorded = IdentityBlob.decode(metadata);
         } catch (IllegalArgumentException e) {
-            throw new IngestLoopFatalException(
+            throw new LoopFatalException(
                     "committed offset metadata for " + partition + " is not a readable identity blob (§3.6"
                             + " integrity): " + e.getMessage() + " — refusing to resume on unverifiable identity;"
                             + " inspect and repair the group offsets",
                     e);
         }
         if (!recorded.equals(identity)) {
-            throw new IngestLoopFatalException(
+            throw new LoopFatalException(
                     "committed offset identity mismatch for " + partition + ": " + recorded.describeMismatch(identity));
         }
     }
@@ -928,23 +898,9 @@ public final class IngestLoop implements Runnable {
 
     /** Aborts the open transaction if one is in flight; a failed abort forces a producer replacement. */
     private void abortIfInFlight() {
-        if (!transactionInFlight) {
-            return;
-        }
-        transactionInFlight = false;
-        try {
-            producer.abortTransaction();
-        } catch (RuntimeException abortFailure) {
-            // Nothing committed (the commit call was never reached, or failed non-ambiguously):
-            // a replacement producer whose initTransactions() aborts the dangling txn is safe.
-            log.warn("abortTransaction failed; replacing producer", abortFailure);
-            try {
-                producer.close(Duration.ZERO);
-            } catch (RuntimeException closeFailure) {
-                log.warn("closing the failed producer also failed; continuing with replacement", closeFailure);
-            }
-            producer = Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
-            producer.initTransactions();
+        if (transactionInFlight) {
+            transactionInFlight = false;
+            producer = abortOrReplace(producer, producerFactory, log);
         }
     }
 
@@ -957,7 +913,10 @@ public final class IngestLoop implements Runnable {
      */
     private void scheduleBackoff(String cause) {
         failureStreak++;
-        long backoffMs = backoffMillis(failureStreak);
+        long backoffMs = boundedExponential(
+                config.retryBackoffInitial().toMillis(),
+                config.retryBackoffMax().toMillis(),
+                failureStreak);
         backoffUntilMs = DelayHeaderCodec.saturatedAddMillis(clock.millis(), backoffMs);
         consumer.pause(consumer.assignment());
         if (failureStreak >= config.parkThreshold()) {
@@ -972,16 +931,6 @@ public final class IngestLoop implements Runnable {
         } else {
             log.warn("ingest batch failed (streak={}, cause={}); retrying in {} ms", failureStreak, cause, backoffMs);
         }
-    }
-
-    /** Capped exponential backoff: {@code initial * 2^(streak-1)}, never above the cap. */
-    private long backoffMillis(int streak) {
-        long max = config.retryBackoffMax().toMillis();
-        long backoff = config.retryBackoffInitial().toMillis();
-        for (int i = 1; i < streak && backoff < max; i++) {
-            backoff <<= 1;
-        }
-        return Math.min(backoff, max);
     }
 
     /** Reopens intake when the backoff deadline has passed (never while a recovery is pending). */
@@ -1023,25 +972,19 @@ public final class IngestLoop implements Runnable {
 
     /** Flushes the batch's accumulated counts: only committed dispositions reach the registry (§9). */
     private void flushBatchMetrics() {
-        incrementBy(relayedImmediateRecords, batchCounts.relayedImmediate);
-        incrementBy(scheduledRecords, batchCounts.scheduled);
-        incrementBy(clampedRecords, batchCounts.clamped);
-        incrementBy(dlqOutcomeRecords, batchCounts.dlq);
-        incrementBy(unrelayableDroppedRecords, batchCounts.unrelayableDropped);
-        incrementBy(malformedHeaders, batchCounts.malformed);
-        incrementBy(overMaxHeaders, batchCounts.overMax);
-        incrementBy(conflictHeaders, batchCounts.conflict);
+        relayedImmediateRecords.increment((double) batchCounts.relayedImmediate);
+        scheduledRecords.increment((double) batchCounts.scheduled);
+        clampedRecords.increment((double) batchCounts.clamped);
+        dlqOutcomeRecords.increment((double) batchCounts.dlq);
+        unrelayableDroppedRecords.increment((double) batchCounts.unrelayableDropped);
+        malformedHeaders.increment((double) batchCounts.malformed);
+        overMaxHeaders.increment((double) batchCounts.overMax);
+        conflictHeaders.increment((double) batchCounts.conflict);
         for (Map.Entry<String, Long> entry : batchCounts.dlqReasons.entrySet()) {
             registry.counter("cesium.dlq.records", "reason", entry.getKey())
                     .increment(entry.getValue().doubleValue());
         }
         batchCounts.reset();
-    }
-
-    private static void incrementBy(Counter counter, long amount) {
-        if (amount > 0) {
-            counter.increment((double) amount);
-        }
     }
 
     /**
@@ -1066,24 +1009,17 @@ public final class IngestLoop implements Runnable {
     }
 
     /** §3.8 fatal classification, walking the cause chain (clients wrap fenced errors). */
-    // ReferenceEquality: `t.getCause() == t` is the self-referential-cause guard — a Throwable
-    // whose getCause() returns itself would loop forever. Identity is the intended test, and Error
-    // Prone's suggested .equals() is wrong (Throwable does not override it). Flagged from 2.50.0.
-    @SuppressWarnings("ReferenceEquality")
     private static boolean isFatal(RuntimeException error) {
-        for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof ProducerFencedException
-                    || t instanceof OutOfOrderSequenceException
-                    || t instanceof FencedInstanceIdException
-                    || t instanceof AuthenticationException
-                    || t instanceof AuthorizationException
-                    || t instanceof UnsupportedVersionException
-                    || t instanceof InterruptException
-                    || t instanceof IllegalStateException) {
-                return true;
-            }
-        }
-        return false;
+        return anyCause(
+                error,
+                ProducerFencedException.class,
+                OutOfOrderSequenceException.class,
+                FencedInstanceIdException.class,
+                AuthenticationException.class,
+                AuthorizationException.class,
+                UnsupportedVersionException.class,
+                InterruptException.class,
+                IllegalStateException.class);
     }
 
     private Counter abortedTransactions(String cause) {
@@ -1092,10 +1028,6 @@ public final class IngestLoop implements Runnable {
 
     private Counter ingestRecords(String outcome) {
         return registry.counter("cesium.ingest.records", "outcome", outcome);
-    }
-
-    private static String causeTag(Throwable error) {
-        return error.getClass().getSimpleName();
     }
 
     /**
@@ -1175,20 +1107,6 @@ public final class IngestLoop implements Runnable {
         }
     }
 
-    /** A source-record identity within the (single) source topic: partition + offset. */
-    private record SourceCoord(int partition, long offset) {}
-
-    /** A resolved disposition for a permanently-unrelayable record (§3.8 I-8). */
-    private record Unrelayable(Route route, String detail) {
-        enum Route {
-            DLQ,
-            DROP
-        }
-    }
-
-    /** A permanent destination rejection attributed to a specific source record by a send callback. */
-    private record UnrelayableHit(SourceCoord coord, String detail) {}
-
     /**
      * The durable inputs of a pending in-doubt recovery (§3.8 step b), kept so a transiently
      * failed recovery can resume on a later iteration: the batch's pre-batch positions (the only
@@ -1208,18 +1126,6 @@ public final class IngestLoop implements Runnable {
     private static final class PolicyFailStop extends RuntimeException {
         PolicyFailStop(String detail) {
             super(detail);
-        }
-    }
-
-    /** Control-flow signal: {@code commitTransaction} stayed ambiguous past the retry budget. */
-    private static final class InDoubtCommit extends RuntimeException {
-        final int attempts;
-        final RuntimeException failure;
-
-        InDoubtCommit(int attempts, RuntimeException failure) {
-            super("commitTransaction outcome ambiguous after " + attempts + " attempts", failure);
-            this.attempts = attempts;
-            this.failure = failure;
         }
     }
 }
