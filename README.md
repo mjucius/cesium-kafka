@@ -3,8 +3,8 @@
 [![CI](https://github.com/mjucius/cesium-kafka/actions/workflows/ci.yml/badge.svg)](https://github.com/mjucius/cesium-kafka/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A Kafka delayed-message relay: consume a source topic, deliver each record to a destination topic
-**at the time the producer asked for** — with exactly-once delivery.
+A Kafka delayed-message relay. It consumes a source topic and delivers each record to a destination
+topic at the time the producer asked for, with exactly-once delivery.
 
 Producers attach one header to a record:
 
@@ -18,53 +18,52 @@ non-`cesium-*` headers are preserved byte-for-byte.
 
 ## Status
 
-**v1.0** — a ground-up rewrite of an earlier proof-of-concept. See the
+**v1.0**, a ground-up rewrite of an earlier proof-of-concept. See the
 [CHANGELOG](CHANGELOG.md) for the release notes and [docs/design.md](docs/design.md) for the complete
 design (architecture, exactly-once transaction/fencing analysis, failure matrix, store SPI).
 
 What is supported, and how stable, in v1:
 
-- The **runnable application** is the supported product surface. Releases are **repo-only**: each
-  tagged release publishes the distribution archives (`distTar`/`distZip`) on its
-  [GitHub Release](https://github.com/mjucius/cesium-kafka/releases) — there is no Maven Central
-  artifact or published container image in v1 (build the image from the included `Dockerfile`). See
+- The runnable application is the supported product. Releases are repo-only: each tagged release
+  publishes the distribution archives (`distTar`/`distZip`) on its
+  [GitHub Release](https://github.com/mjucius/cesium-kafka/releases). There is no Maven Central
+  artifact or published container image in v1; build the image from the included `Dockerfile`. See
   [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md).
-- The **store SPI** (`cesium-kafka-api`) and its **contract test kit** (`cesium-kafka-store-testkit`)
-  are a **stable, semver-governed surface** for store implementers — start at
-  [docs/store-spi.md](docs/store-spi.md).
-- The engine's programmatic API (`cesium-kafka-core`) is **internal-until-1.x**.
+- The store SPI (`cesium-kafka-api`) and its contract test kit (`cesium-kafka-store-testkit`) are
+  stable and semver-governed for store implementers. Start at [docs/store-spi.md](docs/store-spi.md).
+- The engine's programmatic API (`cesium-kafka-core`) is internal-until-1.x.
 
 ## Design highlights
 
-- **Exactly-once** as observed by `read_committed` consumers of the destination: both the ingest
-  and dispatch loops are Kafka read-process-write transactions with KIP-447 group-metadata fencing.
-- **Pointer-only memory**: while a message waits, cesium stores only
-  `(partition, offset, dispatchAt)` — payloads stay in your source topic and are re-fetched at
-  dispatch time. Millions of pending messages fit in a modest heap.
-- **Durable + recoverable**: scheduler state lives in an internal compacted tracker topic; restarts
+- Exactly-once as observed by `read_committed` consumers of the destination. Both the ingest and
+  dispatch loops are Kafka read-process-write transactions with KIP-447 group-metadata fencing.
+  Delivery is at or after the requested instant, never before, with bounded lateness.
+- Pointer-only memory. While a message waits, cesium stores only `(partition, offset, dispatchAt)`;
+  payloads stay in your source topic and are re-fetched at dispatch time. Millions of pending
+  messages fit in a modest heap.
+- Durable and recoverable. Scheduler state lives in an internal compacted tracker topic. Restarts
   and rebalances replay a bounded window (committed-cursor + sidecar design), never the full history.
-- **Pluggable scheduler store SPI** with a published contract-test kit; the tracker-topic store is
-  the flagship implementation, database-backed stores can plug in.
-- **No silent failure modes**: every fault path ends in a retry, an explicit DLQ record, a degraded
+- Pluggable scheduler store SPI with a published contract-test kit. The tracker-topic store is the
+  main implementation; database-backed stores can plug in.
+- No silent failure modes. Every fault path ends in a retry, an explicit DLQ record, a degraded
   health flag + alert, or a fail-fast with a runbook entry.
-- **Measured, not projected**: [docs/performance.md](docs/performance.md) has the M8 performance &
-  sizing numbers — JMH hot-path benchmarks, macro throughput/latency, the memory worksheet, and the
-  honest replay-cost formula, with every miss recorded against its target rather than fudged.
+- Benchmarked. [docs/performance.md](docs/performance.md) has the performance and sizing numbers:
+  JMH hot-path benchmarks, macro throughput/latency, the memory worksheet, and the replay-cost
+  formula, with each result compared against its target.
 
 ## Requirements
 
 - Kafka **4.0+** brokers (KRaft)
 - Destination consumers must use `isolation.level=read_committed` to observe exactly-once
-- To build from source: any recent JDK on your `PATH` to launch Gradle — the build then provisions
-  the JDK 21 toolchain automatically (Gradle's toolchain can download JDK 21, but it cannot bootstrap
-  without *some* Java runtime to start the Gradle process). On a host with no JDK at all, build
-  inside a container:
+- To build from source: any recent JDK on your `PATH` to launch Gradle. The build then provisions
+  the JDK 21 toolchain automatically. Gradle can download JDK 21, but it needs some Java runtime to
+  start in the first place. On a host with no JDK at all, build inside a container:
 
   ```bash
   docker run --rm -v "$PWD":/src -w /src eclipse-temurin:21-jdk ./gradlew build
   ```
 
-## Try it — one command (Docker; `make` optional)
+## Demo in one command (Docker; `make` optional)
 
 ```bash
 git clone https://github.com/mjucius/cesium-kafka.git
@@ -72,10 +71,10 @@ cd cesium-kafka
 make demo
 ```
 
-This brings up a single-broker Kafka + cesium (built from source) and runs a self-driving demo: it
-submits five "notifications" **all at once, in an order that is not their delivery order**, each
-asking to be delivered after a different delay — then watches them arrive, re-ordered and on
-schedule, exactly once. No `kcat` or other tools needed on your machine (a sidecar provides it):
+This brings up a single-broker Kafka and cesium (built from source) and runs a self-driving demo.
+It submits five "notifications" at once, in an order that differs from their delivery order, each
+with a different delay. Then it watches them arrive, re-ordered, on schedule, and exactly once. You
+don't need `kcat` or other tools on your machine; a sidecar provides them:
 
 ```text
 demo: submitting 5 notifications to 'orders' at 01:28:13 — all at once:
@@ -95,7 +94,7 @@ Submission order was `n1,n2,n3,n4,n5`; delivery is re-ordered by each record's r
 `+Ns` label is the actual offset from submission, read from each message's dispatch timestamp).
 Tear it down with `make down`. `make help` lists the other targets (`up`, `logs`, `build`, `test`,
 `image`). The only hard requirement is [Docker](https://docs.docker.com/get-docker/) with Compose;
-`make` just wraps the Compose commands. On a host without `make`, run the demo with raw Compose:
+`make` only wraps the Compose commands. On a host without `make`, run the demo with raw Compose:
 
 ```bash
 docker compose -f config/docker-compose.yaml --profile demo down -v           # clean slate
@@ -104,7 +103,7 @@ docker compose -f config/docker-compose.yaml --profile demo run --rm --no-deps d
 docker compose -f config/docker-compose.yaml --profile demo down -v           # tear down
 ```
 
-## Quickstart (5 minutes) — drive it yourself
+## Quickstart (5 minutes)
 
 To produce and consume by hand instead, you also need [`kcat`](https://github.com/edenhill/kcat).
 The Compose stack runs a single-broker KRaft Kafka, a one-shot bootstrap step, and cesium itself
@@ -123,7 +122,7 @@ the broker address overridden via the environment.
 
 > **First-run seeding.** cesium locks `auto.offset.reset=none` (delivery semantics depend on it), so
 > a brand-new deployment has the `topic-init` step seed committed offsets for the source group once.
-> This is a deliberate explicit-operator step — see [docs/design.md](docs/design.md) §3.6.
+> Seeding is an explicit operator step; see [docs/design.md](docs/design.md) §3.6.
 
 **2. Confirm it's healthy** (the observability port is published on `localhost:8081`):
 
@@ -138,10 +137,10 @@ curl -s localhost:8081/metrics | grep '^cesium_'
 echo "hello, future" | kcat -b localhost:9092 -t orders -P -H cesium-delay-ms=30000 -k order-1
 ```
 
-**4. Watch it arrive ~30 seconds later** on the destination. **Consume with
-`isolation.level=read_committed`** — that is how you observe exactly-once; a `read_uncommitted`
-consumer will see aborted "duplicates" from fencing. The consumer below **blocks and waits** (no
-`-e`), so leave it running until the record appears, then press **Ctrl-C**:
+**4. Watch it arrive ~30 seconds later** on the destination. Consume with
+`isolation.level=read_committed`; a `read_uncommitted` consumer also sees aborted records from
+fencing (see [docs/delivery-semantics.md](docs/delivery-semantics.md)). The consumer below blocks
+and waits (no `-e`), so leave it running until the record appears, then press Ctrl-C:
 
 ```bash
 kcat -b localhost:9092 -t orders-delayed -C -o beginning \
@@ -150,8 +149,8 @@ kcat -b localhost:9092 -t orders-delayed -C -o beginning \
 
 The record arrives ~30 s after you produced it, with a fresh dispatch timestamp (`%T`), the original
 payload byte-for-byte, the `cesium-delay-ms` control header stripped, and `cesium-scheduled-for` /
-`cesium-source-*` provenance headers stamped. A record produced **without** a `cesium-*` header
-relays immediately.
+`cesium-source-*` provenance headers stamped. A record produced without a `cesium-*` header relays
+immediately.
 
 **5. Tear down:**
 
@@ -170,19 +169,10 @@ own and override individual keys from the environment (e.g.
 `CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS=...`). See
 [`config/cesium-example.yaml`](config/cesium-example.yaml) for the full, commented schema.
 
-## Exactly-once, observed by `read_committed`
-
-cesium's delivery guarantee is **exactly-once as seen by `read_committed` consumers of the
-destination**: both the ingest and dispatch loops are Kafka read-process-write transactions with
-KIP-447 group-metadata fencing. A `read_uncommitted` consumer will observe aborted records (the
-"duplicates" prevented by fencing) and is the wrong tool for verifying delivery. Delivery is
-**at-or-after** the requested instant (never before; bounded lateness). See
-[docs/design.md](docs/design.md) for the full transaction/fencing analysis and failure matrix.
-
 ## Documentation
 
-The [design document](docs/design.md) is the deep, implementation-ready reference. The guides below
-extract and refine it into focused, audience-targeted entry points.
+The [design document](docs/design.md) is the full implementation reference. Each guide below covers one
+part of it.
 
 **Start here**
 
@@ -205,7 +195,7 @@ extract and refine it into focused, audience-targeted entry points.
 |---|---|
 | [Architecture](docs/architecture.md) | Topology, the two-group rationale, the shard state machine, cursor v2, diagrams |
 | [Delivery semantics](docs/delivery-semantics.md) | Invariants I1–I9, the replay-barrier proof, the `read_committed` requirement, store-archetype guarantees |
-| [Performance](docs/performance.md) | Measured (M8) hot-path/throughput/latency numbers, the honest replay-cost formula, sizing & tuning |
+| [Performance](docs/performance.md) | Measured hot-path/throughput/latency numbers, the replay-cost formula, sizing & tuning |
 | [Failure-matrix coverage](docs/failure-matrix-coverage.md) | Each failure-matrix scenario mapped to the test that proves it |
 
 **Extend it / decisions**
@@ -213,7 +203,7 @@ extract and refine it into focused, audience-targeted entry points.
 | Doc | What it covers |
 |---|---|
 | [Store SPI guide](docs/store-spi.md) | Implementers' guide: archetype flowchart, ordering/cursor contracts, the contract test kit, packaging |
-| [Architecture Decision Records](docs/adr/) | ADRs 0001–0017 — the load-bearing decisions, in Status/Context/Decision/Consequences form |
+| [Architecture Decision Records](docs/adr/) | ADRs 0001–0017: the main design decisions, in Status/Context/Decision/Consequences form |
 | [Design document](docs/design.md) | The full design: invariants, the complete failure matrix, the proofs |
 
 ## Building

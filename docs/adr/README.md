@@ -1,13 +1,13 @@
 # Architecture Decision Records
 
-This directory records the load-bearing decisions behind cesium-kafka as focused, audience-targeted
-ADRs. Each one extracts and refines a decision from the implementation-ready design,
-[`../design.md`](../design.md) — which stays as the deep reference (invariants I1–I9, the full
-failure matrix, the proofs). When an ADR and `design.md` disagree, the ADR reflects a
-post-approval revision or an M-milestone reality and **wins**; such cases are flagged in the ADR.
+This directory records the main decisions behind cesium-kafka, one decision per ADR. Each ADR
+takes a decision from the design, [`../design.md`](../design.md), which remains the deep reference
+(invariants I1–I9, the full failure matrix, the proofs). When an ADR and `design.md` disagree, the
+ADR wins: it reflects a post-approval revision or what the implementation shipped, and the ADR says
+so.
 
 ADRs follow the standard format: **Status**, **Context**, **Decision**, **Consequences**. They are
-immutable once Accepted — a reversal is a new ADR that supersedes the old one. See
+immutable once Accepted. A reversal is a new ADR that supersedes the old one. See
 [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) for the change process: changes to invariants or the
 failure matrix need a corresponding test and an ADR.
 
@@ -34,7 +34,7 @@ failure matrix need a corresponding test and an ADR.
 | [0017](0017-kafka-4-floor-and-repo-only-publishing.md) | Kafka 4.0 floor + repo-only publishing + app as product surface | Accepted | Post-approval rev 2, §13 |
 | [0018](0018-bounded-wait-for-proven-topic-metadata.md) | Bounded wait for proven-existing topic metadata | Accepted | §2.1, §7.6 |
 
-ADRs 0001–0015 are the §12 documentation-plan set. 0016 and 0017 capture the three post-approval
-project-owner decisions (the fastutil index backing, and the Kafka-4.0 broker floor /
-repo-only-publishing / app-as-product-surface bundle), which the design records in the revision
-block at the top of [`../design.md`](../design.md) and which supersede the affected design text.
+ADRs 0001–0015 are the set planned in design §12. 0016 and 0017 record three later project-owner
+decisions: the fastutil index backing, and the bundle of Kafka 4.0 broker floor, repo-only
+publishing, and app as product surface. The design records them in the revision block at the top of
+[`../design.md`](../design.md), and they supersede the affected design text.
