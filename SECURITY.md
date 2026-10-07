@@ -88,7 +88,7 @@ privilege means granting that one principal exactly the ACLs below and nothing e
 
 > **The `TransactionalId` ACLs (rows 4 and 5) are required.** cesium's transactional ids
 > (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
-> (`cesium.<app>.<role>.<instance>`) are fully deterministic. The `application-id` seed is easy to
+> (`cesium.<app>.<role>.<instance>`, plus `.<ordinal>` for workers after the first) are fully deterministic. The `application-id` seed is easy to
 > infer (it names the consumer groups and the default tracker topic) and is disclosed on the
 > unauthenticated `/info` endpoint when `observability.detailed-info: true`. **Without a
 > `TransactionalId` ACL scoping `cesium.<app>.*` to the cesium principal, any authenticated co-tenant

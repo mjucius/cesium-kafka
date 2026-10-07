@@ -207,7 +207,7 @@ not 78: the config schema leaves this map open).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `ingest.workers` | `1` | Ingest threads, each owning its own source consumer + transactional producer. Same static-membership caution as `dispatch.workers`: keep at `1` unless `instance-id: random`. |
+| `ingest.workers` | `1` | Ingest threads, each owning its own source consumer + transactional producer. Each worker after the first gets its own `group.instance.id` (`.<ordinal>` suffix). |
 | `ingest.max-batch` | `2000` | Maximum records per poll/transaction; becomes the source consumer's `max.poll.records`. |
 
 ---
@@ -216,7 +216,7 @@ not 78: the config schema leaves this map open).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `dispatch.workers` | `1` | Dispatch threads, each owning a tracker consumer + dispatch producer + seek consumer and disjoint shards. Useful up to the tracker partition count fleet-wide. Caution: with static membership (any `instance-id` other than `random`), sibling workers currently share one `group.instance.id` and fence each other, so keep this at `1`. |
+| `dispatch.workers` | `1` | Dispatch threads, each owning a tracker consumer + dispatch producer + seek consumer and disjoint shards. Useful up to the tracker partition count fleet-wide. Each worker after the first gets its own `group.instance.id` (`.<ordinal>` suffix). |
 | `dispatch.batch.max-entries` | `10000` | Maximum entries per dispatch transaction (D8). |
 | `dispatch.batch.max-bytes` | `33554432` (32 MiB) | Decompressed payload byte budget per dispatch transaction, enforced in the fetch pass with truncate-and-carry-over (R8). |
 | `dispatch.drain.max-slice` | `PT1M` | Maximum back-to-back transaction time before the loop returns to a real `poll()`. Always validated `≤ max.poll.interval.ms / 3`, using the tracker consumer's effective `max.poll.interval.ms` (overlay, then `kafka.properties`, else the client default 300000 ms), so membership survives due-storms (§6). |

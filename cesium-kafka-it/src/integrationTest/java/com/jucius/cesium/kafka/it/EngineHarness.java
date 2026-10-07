@@ -176,7 +176,7 @@ final class EngineHarness implements AutoCloseable {
             IngestLoop loop = new IngestLoop(
                     // Tracker partitions == source partitions once the R-7 parity check passed.
                     IngestLoopConfig.from(config, result.sourcePartitions().orElseThrow()),
-                    clients.newIngestConsumer(),
+                    clients.newIngestConsumer(0),
                     () -> clients.newIngestProducer(0),
                     store,
                     new DelayHeaderCodec(config.delay().max(), config.headers().acceptBinaryLongValues()),
@@ -193,7 +193,7 @@ final class EngineHarness implements AutoCloseable {
         if (config.roles().contains(Role.DISPATCH)) {
             DispatchLoop loop = new DispatchLoop(
                     dispatchLoopConfig(),
-                    clients.newTrackerConsumer(),
+                    clients.newTrackerConsumer(0),
                     () -> clients.newDispatchProducer(0),
                     store,
                     seekFetcherDecorator.apply(new KafkaSeekFetcher(

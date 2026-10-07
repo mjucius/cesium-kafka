@@ -105,11 +105,12 @@ public final class KafkaClientFactory {
     }
 
     /**
-     * Group A's static membership id, or empty under the {@code instance-id: random} opt-in
-     * (design D21: static membership is default on, keyed by the stable deployment-slot id).
+     * Group A's static membership id for one worker, or empty under the {@code instance-id: random}
+     * opt-in (design D21: static membership is default on, keyed by the stable deployment-slot id).
+     * See {@link #groupInstanceId(String, int)} for the per-worker suffix.
      */
-    public Optional<String> ingestGroupInstanceId() {
-        return groupInstanceId(ingestGroupId());
+    public Optional<String> ingestGroupInstanceId(int workerOrdinal) {
+        return groupInstanceId(ingestGroupId(), workerOrdinal);
     }
 
     /**
@@ -127,7 +128,7 @@ public final class KafkaClientFactory {
      * {@code isolation.level=read_committed} (D17), {@code auto.offset.reset=none} (D18), the
      * derived group id and static-membership id.
      */
-    public Properties ingestConsumerProperties() {
+    public Properties ingestConsumerProperties(int workerOrdinal) {
         Properties props = new Properties();
         // 1. Tuned defaults (§8) — overridable by operator maps.
         props.setProperty(
@@ -143,7 +144,7 @@ public final class KafkaClientFactory {
         // protocol while config.kafka().groupProtocol() reports otherwise.
         applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
-        lockGroup(props, ingestGroupId(), ingestGroupInstanceId());
+        lockGroup(props, ingestGroupId(), ingestGroupInstanceId(workerOrdinal));
         lockConsumer(props);
         return props;
     }
@@ -178,8 +179,8 @@ public final class KafkaClientFactory {
      * (design D21 — static membership is default on so rolling restarts move zero tracker
      * partitions and replay happens on the returning member).
      */
-    public Optional<String> dispatchGroupInstanceId() {
-        return groupInstanceId(dispatchGroupId());
+    public Optional<String> dispatchGroupInstanceId(int workerOrdinal) {
+        return groupInstanceId(dispatchGroupId(), workerOrdinal);
     }
 
     /**
@@ -203,7 +204,7 @@ public final class KafkaClientFactory {
      * operator decisions; group B's only sanctioned reset is the provable first-run seek, §3.6),
      * the derived group id and static-membership id (D21).
      */
-    public Properties trackerConsumerProperties() {
+    public Properties trackerConsumerProperties(int workerOrdinal) {
         Properties props = new Properties();
         // 1. Tuned defaults (§8) — overridable by operator maps.
         props.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, TRACKER_MAX_POLL_RECORDS);
@@ -219,7 +220,7 @@ public final class KafkaClientFactory {
         // stripped — they are broker-side under KIP-848 and the client rejects them otherwise.
         applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
-        lockGroup(props, dispatchGroupId(), dispatchGroupInstanceId());
+        lockGroup(props, dispatchGroupId(), dispatchGroupInstanceId(workerOrdinal));
         lockConsumer(props);
         return props;
     }
@@ -274,8 +275,8 @@ public final class KafkaClientFactory {
     }
 
     /** Creates the group-A source consumer. The caller's thread owns it for its whole life (§6). */
-    public Consumer<byte[], byte[]> newIngestConsumer() {
-        return new KafkaConsumer<>(ingestConsumerProperties());
+    public Consumer<byte[], byte[]> newIngestConsumer(int workerOrdinal) {
+        return new KafkaConsumer<>(ingestConsumerProperties(workerOrdinal));
     }
 
     /** Creates one ingest worker's transactional producer. The caller's thread owns it (§6). */
@@ -284,8 +285,8 @@ public final class KafkaClientFactory {
     }
 
     /** Creates the group-B tracker consumer. The owning dispatch thread holds it for life (§6). */
-    public Consumer<byte[], byte[]> newTrackerConsumer() {
-        return new KafkaConsumer<>(trackerConsumerProperties());
+    public Consumer<byte[], byte[]> newTrackerConsumer(int workerOrdinal) {
+        return new KafkaConsumer<>(trackerConsumerProperties(workerOrdinal));
     }
 
     /** Creates one dispatch worker's transactional producer. The caller's thread owns it (§6). */
@@ -349,12 +350,19 @@ public final class KafkaClientFactory {
         return props;
     }
 
-    /** The static-membership id for {@code groupId}, or empty under the {@code instance-id: random} opt-in. */
-    private Optional<String> groupInstanceId(String groupId) {
+    /**
+     * The static-membership id for one worker's consumer in {@code groupId}, or empty under the
+     * {@code instance-id: random} opt-in. Sibling workers join the same group, so each needs its own
+     * id or the broker fences one of them: worker 0 keeps {@code <groupId>.<instanceId>} (the id a
+     * single-worker deployment has always used, so upgrades rejoin as the same member) and worker
+     * {@code n > 0} gets {@code <groupId>.<instanceId>.<n>}.
+     */
+    private Optional<String> groupInstanceId(String groupId, int workerOrdinal) {
         if (config.instanceId().isRandom()) {
             return Optional.empty();
         }
-        return Optional.of(groupId + "." + effectiveInstanceId);
+        String base = groupId + "." + effectiveInstanceId;
+        return Optional.of(workerOrdinal == 0 ? base : base + "." + workerOrdinal);
     }
 
     /** Locks the group id and static-membership id (removed under the random opt-in, D21). */

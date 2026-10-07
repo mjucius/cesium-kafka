@@ -505,7 +505,7 @@ public final class CesiumEngine implements AutoCloseable {
                 case INGEST -> {
                     IngestLoop loop = new IngestLoop(
                             IngestLoopConfig.from(config, partitionCount),
-                            clients.newIngestConsumer(),
+                            clients.newIngestConsumer(spec.workerOrdinal()),
                             () -> clients.newIngestProducer(spec.workerOrdinal()),
                             sharedStore,
                             new DelayHeaderCodec(
@@ -523,7 +523,7 @@ public final class CesiumEngine implements AutoCloseable {
                 case DISPATCH -> {
                     DispatchLoop loop = new DispatchLoop(
                             DispatchLoopConfig.from(config, maxHeapBytes),
-                            clients.newTrackerConsumer(),
+                            clients.newTrackerConsumer(spec.workerOrdinal()),
                             () -> clients.newDispatchProducer(spec.workerOrdinal()),
                             sharedStore,
                             new KafkaSeekFetcher(

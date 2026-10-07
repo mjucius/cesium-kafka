@@ -235,7 +235,7 @@ Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the
 
 > **The `TransactionalId` and `Group` ACLs are required (M3).** cesium's transactional ids
 > (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
-> (`cesium.<app>.<role>.<instance>`) are deterministic. The `application-id` seed is easy to infer
+> (`cesium.<app>.<role>.<instance>`, plus `.<ordinal>` for workers after the first) are deterministic. The `application-id` seed is easy to infer
 > (it names the consumer groups and the default tracker topic) and appears on the unauthenticated
 > `/info` when `observability.detailed-info: true`. Without a `TransactionalId` ACL scoping
 > `cesium.<app>.*` to the cesium principal, any authenticated co-tenant can open a producer with
