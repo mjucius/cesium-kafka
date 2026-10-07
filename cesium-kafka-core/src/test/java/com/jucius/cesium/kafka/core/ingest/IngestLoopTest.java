@@ -16,6 +16,7 @@ import com.jucius.cesium.kafka.core.headers.DlqReasons;
 import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
 import com.jucius.cesium.kafka.core.headers.RelayTimestampPolicy;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
@@ -240,7 +241,7 @@ class IngestLoopTest {
         h.startAssigned(P0);
         h.consumer.addRecord(record(P0, 0, delayMs("not-a-number")));
 
-        assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(h.events.contains("abort"), "FAIL aborts: the record is not consumed");
         assertEquals(0, h.producer().commitCount());
         assertEquals(
@@ -324,7 +325,7 @@ class IngestLoopTest {
         h.consumer.addRecord(record(P0, 0, noHeaders()));
         h.producer().fenceProducer();
 
-        assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertFalse(h.events.contains("abort"), "fatal path never tries to abort a fenced producer");
         assertEquals(0, h.producer().commitCount());
     }
@@ -605,7 +606,7 @@ class IngestLoopTest {
         h.producer().failSendCallbackAt = 0;
         h.consumer.addRecord(record(P0, 0, noHeaders()));
 
-        IngestLoopFatalException failure = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("on-unrelayable=FAIL"), failure.getMessage());
         assertTrue(h.events.contains("abort"), "FAIL aborts: the record is not consumed");
         assertEquals(0, h.producer().commitCount());
@@ -697,7 +698,7 @@ class IngestLoopTest {
         h.startAssigned(P0, P1);
         h.consumer.addRecord(record(P1, 0, delayMs("60000")));
 
-        IngestLoopFatalException failure = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("I-7"), failure.getMessage());
         assertTrue(failure.getMessage().contains("grow the tracker topic first"), failure.getMessage());
         assertTrue(h.events.contains("abort"), "the batch aborts before the loop fails (§3.9 I-7)");
@@ -792,7 +793,7 @@ class IngestLoopTest {
         h.startAssigned(P0);
         h.consumer.setPollException(new NoOffsetForPartitionException(P0));
 
-        IngestLoopFatalException failure = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("auto.offset.reset=none"), failure.getMessage());
     }
 

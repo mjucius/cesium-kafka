@@ -152,7 +152,7 @@ Backed by parallel `long[]` arrays — iterating a 10,000-entry batch allocates 
 | `CompletionReason` | `DISPATCHED · PAYLOAD_MISSING_DLQ · DROPPED · REJECTED` | Why an entry settled; carried on the completion record header. |
 | `StoreContext` | `route() · config() · clock() · meterRegistry() · epoch(int)` | Your only window into the engine. Use `clock()` for all time decisions (tests drive virtual time). |
 | `RouteDescriptor` | `applicationId, clusterId, sourceTopic(+Id), destinationTopic(+Id), trackerTopic(+Id), dlqTopic, partitionCount` | Topic **ids** are included because names survive recreation but ids do not — bind them into persisted identity. |
-| `OwnershipEpoch` | `(int groupGenerationId, String memberId)` | For external store-side fencing (compare-and-swap on the epoch). |
+| `OwnershipEpoch` | `(int groupGenerationId, String memberId)` | For external store-side fencing (compare-and-swap on the epoch). The engine reports the **dispatch group's** (group B) generation and member id for partitions it owns, and `(-1, "")` for any other partition. |
 | `ConfigView` | typed getters (`getString/Int/Long/Duration/Boolean`, defaulting + throwing variants) + `keys()` | Read-only view of `store.properties`. Validate every key in `validate()`; reject unknown keys via `keys()`. |
 
 ---
@@ -270,6 +270,8 @@ the contract kit enforces them:
    effects invisible to every future recovery; **in-doubt outcomes recoverable purely from durable
    state** (the engine replays rather than restores — I9).
 4. **Ownership-epoch hand-off** via `StoreContext.epoch()` for store-side fencing (external stores).
+   The epoch is the dispatch group's (group B); ingest-side writes are not owned by group B and
+   have no engine-provided epoch.
 5. **Barrier-aware recovery:** never surface due entries while recovering (I4); reach the barrier even
    when pending volume exceeds backpressure thresholds (pause never applies to recovery).
 6. **Idempotent recovery:** recovery may run repeatedly from the same cursor and must converge to the

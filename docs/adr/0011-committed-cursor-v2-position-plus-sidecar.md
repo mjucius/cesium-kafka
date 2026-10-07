@@ -38,7 +38,7 @@ either has `trackerAddOffset ≥ cursorOffset` or rides the sidecar.
 - **Overflow residual is honest:** a route whose steady state pins more than ~200–300 long-delay
   entries per partition reverts to `completion_rate × age(cut) + pending` replay; surfaced by
   `cesium_pinned_entries` saturation + a replay-ETA alert, and tuned by raising the sidecar budget
-  (validated `≤ broker offset.metadata.max.bytes`).
+  (clamped to broker `offset.metadata.max.bytes` at startup).
 - The tombstone-retention floor remains correctness-relevant for the overflow fallback (cost is
   bounded by this cursor; *correctness* by the floor + the HW barrier
   [ADR-0009](0009-high-watermark-replay-barrier-and-snapshot-ordering.md)).

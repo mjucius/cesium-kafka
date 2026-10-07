@@ -43,7 +43,6 @@ import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
-import com.jucius.cesium.kafka.testkit.FakeStoreContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
@@ -55,6 +54,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
@@ -205,7 +205,8 @@ final class EngineHarness implements AutoCloseable {
                     relayFactory(),
                     new KafkaDispatchAdmin(admin, trackerTopic(), dispatchGroupId()),
                     meterRegistry,
-                    clock);
+                    clock,
+                    new ConcurrentHashMap<>());
             dispatch = spawn("it-dispatch-", loop, loop::stop);
         }
     }
@@ -399,9 +400,7 @@ final class EngineHarness implements AutoCloseable {
     private TrackerBackedStore buildStore() {
         TrackerBackedStore created = createStore(config.store().type());
         created.configure(new HarnessStoreContext(
-                routeDescriptor(),
-                new FakeStoreContext.MapConfigView(config.store().properties()),
-                meterRegistry));
+                routeDescriptor(), ConfigView.of(config.store().properties()), meterRegistry));
         created.validate();
         created.start();
         return created;

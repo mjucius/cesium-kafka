@@ -7,6 +7,7 @@ import com.jucius.cesium.kafka.core.config.TrackerConfig;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Finding;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Severity;
+import com.jucius.cesium.kafka.core.headers.DelayHeaderCodec;
 import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.kafka.KafkaClientFactory;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
@@ -89,12 +90,16 @@ public final class StartupValidator {
     /** The broker config bounding committed-offset lifetime (D18, KIP-211). */
     public static final String OFFSETS_RETENTION_MINUTES = "offsets.retention.minutes";
 
+    /** The broker config capping committed offset metadata, which carries the cursor sidecar (§3.5). */
+    public static final String OFFSET_METADATA_MAX_BYTES = "offset.metadata.max.bytes";
+
     /** The §2.1 tracker {@code message.timestamp.type}. */
     public static final String LOG_APPEND_TIME = "LogAppendTime";
 
     // Kafka broker defaults assumed when a (fake) config map omits a key; real describeConfigs
     // returns resolved entries including defaults.
     private static final long DEFAULT_RETENTION_MS = 604_800_000L;
+    private static final int DEFAULT_OFFSET_METADATA_MAX_BYTES = 4096;
     private static final long DEFAULT_RETENTION_BYTES = -1L;
     private static final long DEFAULT_DELETE_RETENTION_MS = 86_400_000L;
     private static final long DEFAULT_MIN_COMPACTION_LAG_MS = 0L;
@@ -137,6 +142,7 @@ public final class StartupValidator {
         checkDlq(config, findings);
         checkDestination(config, source, findings);
         checkOffsetsRetention(config, findings);
+        OptionalInt offsetMetadataMaxBytes = checkOffsetMetadataMaxBytes(config, findings);
 
         IdentityBlob identity = null;
         if (clusterId != null && source != null) {
@@ -151,7 +157,8 @@ public final class StartupValidator {
         return new StartupValidationResult(
                 new ValidationReport(findings),
                 Optional.ofNullable(identity),
-                source == null ? OptionalInt.empty() : OptionalInt.of(source.partitionCount()));
+                source == null ? OptionalInt.empty() : OptionalInt.of(source.partitionCount()),
+                offsetMetadataMaxBytes);
     }
 
     // ------------------------------------------------------------------ recorded identity (R-10)
@@ -200,7 +207,7 @@ public final class StartupValidator {
                                 + " the group offsets."));
                 continue;
             }
-            if (!recorded.matches(live)) {
+            if (!recorded.equals(live)) {
                 findings.add(Finding.error(
                         "route.source.topic",
                         "committed offset identity mismatch for " + partition + " (group '" + groupId + "'): "
@@ -300,7 +307,8 @@ public final class StartupValidator {
         boolean remoteStorage =
                 Boolean.parseBoolean(topicConfig.getOrDefault(TopicConfig.REMOTE_LOG_STORAGE_ENABLE_CONFIG, "false"));
 
-        long requiredMs = saturatedAdd(config.delay().max().toMillis(), RETENTION_MARGIN.toMillis());
+        long requiredMs =
+                DelayHeaderCodec.saturatedAddMillis(config.delay().max().toMillis(), RETENTION_MARGIN.toMillis());
         if (retentionMs != -1 && retentionMs < requiredMs) {
             findings.add(finding(
                     mode,
@@ -753,6 +761,48 @@ public final class StartupValidator {
         }
     }
 
+    // ------------------------------------------------------------------ broker offset-metadata cap
+
+    /**
+     * §3.5: the cursor sidecar rides in committed offset metadata, which the broker caps at
+     * {@code offset.metadata.max.bytes}. The sidecar budget already bounds the Base64 string the
+     * broker meters, so the two compare directly. Warn-only — the engine clamps the budget to the
+     * broker cap rather than refusing to start — and the broker value is returned for that clamp.
+     */
+    private OptionalInt checkOffsetMetadataMaxBytes(CesiumConfig config, List<Finding> findings) {
+        String path = "dispatch.cursor.sidecar-max-bytes";
+        int budget = config.dispatch().cursor().sidecarMaxBytes();
+        Optional<String> raw;
+        try {
+            raw = admin.brokerConfig(OFFSET_METADATA_MAX_BYTES);
+        } catch (ClusterAdminException e) {
+            findings.add(Finding.warning(
+                    path,
+                    "could not read broker " + OFFSET_METADATA_MAX_BYTES + " (" + e.getMessage()
+                            + "); verify manually that it is at least " + path + " (" + budget
+                            + ") — a larger sidecar fails the dispatch commit (§3.5)."));
+            return OptionalInt.empty();
+        }
+        int limit;
+        try {
+            limit = raw.map(value -> Integer.parseInt(value.trim())).orElse(DEFAULT_OFFSET_METADATA_MAX_BYTES);
+        } catch (NumberFormatException e) {
+            findings.add(Finding.warning(
+                    path,
+                    "broker " + OFFSET_METADATA_MAX_BYTES + "='" + raw.get() + "' is not a number; verify manually"
+                            + " that it is at least " + path + " (" + budget + ") (§3.5)."));
+            return OptionalInt.empty();
+        }
+        if (budget > limit) {
+            findings.add(Finding.warning(
+                    path,
+                    path + " (" + budget + ") exceeds broker " + OFFSET_METADATA_MAX_BYTES + " (" + limit
+                            + "); clamping the sidecar budget to " + limit + " so cursor commits stay within"
+                            + " the broker cap (§3.5). Raise the broker setting to keep the configured budget."));
+        }
+        return OptionalInt.of(limit);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static Finding finding(CheckMode mode, String path, String message) {
@@ -791,14 +841,6 @@ public final class StartupValidator {
     private static long saturatedMultiply(long a, long b) {
         try {
             return Math.multiplyExact(a, b);
-        } catch (ArithmeticException e) {
-            return Long.MAX_VALUE;
-        }
-    }
-
-    private static long saturatedAdd(long a, long b) {
-        try {
-            return Math.addExact(a, b);
         } catch (ArithmeticException e) {
             return Long.MAX_VALUE;
         }

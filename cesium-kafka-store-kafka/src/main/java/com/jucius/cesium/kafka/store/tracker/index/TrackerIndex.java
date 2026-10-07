@@ -28,7 +28,7 @@ import java.util.Arrays;
  * RECOVERING partition's replayed entries undrainable until its position reaches the replay
  * barrier (dispatching mid-replay is the §3.6 duplicate vector: a COMPLETE tombstone between the
  * cursor and the barrier may not have been applied yet). The replay-side methods —
- * {@link #applyAdd}, {@link #applyComplete}, {@link #oldestPending}, {@link #pendingCount} — are
+ * {@link #applyAdd}, {@link #applyComplete}, {@link #oldestUnsettled}, {@link #pendingCount} — are
  * deliberately ungated: replay must populate the shard and the cursor computation needs it. The
  * flag is deliberately separate from the penalty box, whose replace-on-stamp/clear-by-past
  * semantics are owned by the engine's §7 fetch-isolation logic.
@@ -39,7 +39,7 @@ import java.util.Arrays;
  * notBefore)} is ever consulted. Penalties are keyed by partition, not by shard: they survive
  * revoke/re-assign cycles, matching the engine's view of source-partition health.
  *
- * <p><strong>Lifecycle.</strong> {@link #revokePartition}/{@link #lostPartition} drop the shard
+ * <p><strong>Lifecycle.</strong> {@link #revokePartition} drops the shard
  * reference in O(1) — pending entries are durable in the tracker topic; memory is a cache.
  * Resolving a batch whose partition was dropped meanwhile (the I9 drop path) is a silent no-op
  * for those entries <em>while the partition remains unassigned</em>; once the partition is
@@ -124,11 +124,6 @@ public final class TrackerIndex {
         }
     }
 
-    /** Same as {@link #revokePartition}: drop state, no flush (a new owner may be live). */
-    public void lostPartition(int partition) {
-        revokePartition(partition);
-    }
-
     public boolean isAssigned(int partition) {
         return shardByPartition.containsKey(partition);
     }
@@ -153,7 +148,7 @@ public final class TrackerIndex {
     }
 
     /** Whether {@code partition}'s entries are dispatch-eligible; an unassigned partition is not. */
-    public boolean isDispatchEligible(int partition) {
+    boolean isDispatchEligible(int partition) {
         for (int i = 0; i < shardCount; i++) {
             if (partitionIds[i] == partition) {
                 return dispatchEligible[i];
@@ -331,11 +326,6 @@ public final class TrackerIndex {
         }
     }
 
-    /** Visits a partition's pending entries oldest-first; see {@link PartitionShard#oldestPending}. */
-    public void oldestPending(int partition, PendingVisitor visitor) {
-        requireShard(partition).oldestPending(visitor);
-    }
-
     /**
      * Visits a partition's pending <em>and in-flight</em> entries oldest-first — the cursor
      * computation's input; see {@link PartitionShard#oldestUnsettled}.
@@ -362,70 +352,11 @@ public final class TrackerIndex {
         return shard == null ? 0 : shard.inFlightCount();
     }
 
-    public long totalInFlightCount() {
-        long total = 0;
-        for (int i = 0; i < shardCount; i++) {
-            total += shards[i].inFlightCount();
-        }
-        return total;
-    }
-
     /** Amortized housekeeping over all shards (heap rebuilds + log sweeps past thresholds). */
     public void maintenance() {
         for (int i = 0; i < shardCount; i++) {
             shards[i].maintenance();
         }
-    }
-
-    public long estimatedRetainedBytes() {
-        long total = 0;
-        for (int i = 0; i < shardCount; i++) {
-            total += shards[i].estimatedRetainedBytes();
-        }
-        return total;
-    }
-
-    // Aggregated plain counters (M3 wires Micrometer on top). Counts of revoked shards drop with
-    // the shard — the engine snapshots/aggregates externally if it needs monotonic totals.
-
-    public long anomalies() {
-        long total = 0;
-        for (int i = 0; i < shardCount; i++) {
-            total += shards[i].anomalies();
-        }
-        return total;
-    }
-
-    public long heapRebuilds() {
-        long total = 0;
-        for (int i = 0; i < shardCount; i++) {
-            total += shards[i].heapRebuilds();
-        }
-        return total;
-    }
-
-    public long logSweeps() {
-        long total = 0;
-        for (int i = 0; i < shardCount; i++) {
-            total += shards[i].logSweeps();
-        }
-        return total;
-    }
-
-    public long staleHeapEntries() {
-        long total = 0;
-        for (int i = 0; i < shardCount; i++) {
-            total += shards[i].staleHeapEntries();
-        }
-        return total;
-    }
-
-    public long completedHeldInLog() {
-        long total = 0;
-        for (int i = 0; i < shardCount; i++) {
-            total += shards[i].completedHeldInLog();
-        }
-        return total;
     }
 
     /** The shard for {@code partition}, for M3 per-partition work (cursor computation). */

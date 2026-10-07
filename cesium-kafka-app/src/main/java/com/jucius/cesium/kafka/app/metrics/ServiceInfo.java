@@ -1,7 +1,8 @@
 package com.jucius.cesium.kafka.app.metrics;
 
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jucius.cesium.kafka.api.store.StoreCapabilities;
-import com.jucius.cesium.kafka.app.json.Json;
 import java.util.List;
 import java.util.Optional;
 
@@ -46,33 +47,22 @@ public record ServiceInfo(
      * @param detailed whether to include the sensitive/operational fields (opt-in, off by default)
      */
     public String toJson(boolean detailed) {
-        Json.Obj root = Json.object().str("version", build.version());
-        build.gitCommit().ifPresent(commit -> root.str("gitCommit", commit));
+        ObjectNode root = JsonNodeFactory.instance.objectNode().put("version", build.version());
+        build.gitCommit().ifPresent(commit -> root.put("gitCommit", commit));
         if (!detailed) {
             // Default unauthenticated payload: ops provenance plus the innocuous store type only.
-            return root.raw("store", Json.object().str("type", storeType).end()).end();
+            root.putObject("store").put("type", storeType);
+            return root.toString();
         }
-        Json.Arr rolesJson = Json.array();
-        for (String role : roles) {
-            rolesJson.str(role);
-        }
-        Json.Arr ackJson = Json.array();
-        for (String acknowledgment : acknowledgments) {
-            ackJson.str(acknowledgment);
-        }
-        Json.Obj store = Json.object().str("type", storeType);
-        capabilities.ifPresent(caps -> store.raw(
-                "capabilities",
-                Json.object()
-                        .str("affinity", caps.affinity().name())
-                        .str("dispatchGuarantee", caps.dispatchGuarantee().name())
-                        .bool("requiresTrackerTopic", caps.requiresTrackerTopic())
-                        .bool("supportsCancellation", caps.supportsCancellation())
-                        .end()));
-        return root.str("applicationId", applicationId)
-                .raw("roles", rolesJson.end())
-                .raw("store", store.end())
-                .raw("acknowledgments", ackJson.end())
-                .end();
+        root.put("applicationId", applicationId);
+        roles.forEach(root.putArray("roles")::add);
+        ObjectNode store = root.putObject("store").put("type", storeType);
+        capabilities.ifPresent(caps -> store.putObject("capabilities")
+                .put("affinity", caps.affinity().name())
+                .put("dispatchGuarantee", caps.dispatchGuarantee().name())
+                .put("requiresTrackerTopic", caps.requiresTrackerTopic())
+                .put("supportsCancellation", caps.supportsCancellation()));
+        acknowledgments.forEach(root.putArray("acknowledgments")::add);
+        return root.toString();
     }
 }

@@ -289,12 +289,15 @@ final class OracleHarness {
             List<Boolean> visitedClamped = new ArrayList<>();
             int fp = p;
             PartitionShard shard = real.shard(p);
-            real.oldestPending(p, (slotId, src, at, trk) -> {
+            real.oldestUnsettled(p, (slotId, src, at, trk) -> {
+                if (shard.inFlight(slotId)) {
+                    return true; // the model's pending view excludes drained-unresolved entries
+                }
                 visited.add(new DrainedKey(fp, src, at, trk));
                 visitedClamped.add(shard.clamped(slotId));
                 return true;
             });
-            assertEquals(expected.size(), visited.size(), "oldestPending size of partition " + p);
+            assertEquals(expected.size(), visited.size(), "pending visitation size of partition " + p);
             for (int i = 0; i < expected.size(); i++) {
                 ReferenceIndex.RefEntry e = expected.get(i);
                 DrainedKey k = visited.get(i);
@@ -315,6 +318,8 @@ final class OracleHarness {
         }
         drainAndResolve(30L * 24 * 3600 * 1000, Integer.MAX_VALUE, true);
         assertEquals(0, real.totalPendingCount(), "index should be empty after the final drain");
-        assertEquals(0, real.totalInFlightCount(), "no in-flight after resolution");
+        for (int p = 0; p < partitions; p++) {
+            assertEquals(0, real.inFlightCount(p), "no in-flight after resolution on partition " + p);
+        }
     }
 }

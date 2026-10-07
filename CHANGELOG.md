@@ -6,6 +6,56 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+Cleanup and fixes from an over-engineering audit. **Fully backward compatible:** the published
+`cesium-kafka-api` and testkit surfaces only gain additions (verified with a `javap -public` diff
+against 1.1.5), and config keys, wire formats, metric names and the JSON log shape are unchanged.
+HTTP bodies are the same JSON, though an escaped control character there would now use uppercase hex.
+No upgrade can newly fail at startup.
+
+### Added
+- `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
+  booleans, errors that never echo a possibly-secret value) is now available to store implementers.
+- Metrics `cesium_shard_state{partition}` (0 = ASSIGNED, 1 = RECOVERING, 2 = ACTIVE) and
+  `cesium_replay_remaining_records{partition}` (barrier − position while recovering), previously
+  listed as "not yet emitted".
+
+### Fixed
+- **`dispatch.cursor.sidecar-max-bytes` had no effect.** It is now passed to the `kafka-tracker`
+  store when `store.properties.cursor.sidecar-max-bytes` is unset, so a dispatch-only setting now
+  takes effect. An explicit store value still wins, and a value outside the store's 128 B–1 MiB range
+  is ignored with a warning (the store keeps its default, as before).
+- **The documented startup check against broker `offset.metadata.max.bytes` did not exist.** Startup
+  now reads it and, when the sidecar budget exceeds it, warns and clamps the budget so cursor commits
+  pin fewer entries instead of failing at commit time. It only ever warns; an explicit store-side value
+  is warned about but not overridden. A broker set below 128 bytes now fails the store's own
+  validation, as such a broker cannot hold a cursor.
+- **`/health/ready` always reported `"recovery": []`.** The per-shard recovery detail (state,
+  records remaining, ETA) is now fed from the store's shard-state gauges. Recovery still never affects
+  readiness (D21).
+- **`StoreContext.epoch(p)` always returned `(0, "cesium-engine")`.** It now reports the dispatch
+  group's real generation/member epoch and member id for partitions this instance owns, and `(-1, "")`
+  otherwise; it never throws. The epoch fences dispatch-side writes only (documented in
+  `store-spi.md` and ADR-0003). No shipped store calls it.
+- **`cesium_pinned_entries`, `cesium_cursor_sidecar_bytes` and `cesium_pending_entries` raced the
+  dispatch thread.** Scrapes read the store's unsynchronized per-partition map and the index directly,
+  so a scrape during a rebalance could report a wrong value or NaN. The gauges now read volatile
+  per-partition snapshots; `cesium_pending_entries` is refreshed every dispatch-loop iteration.
+- Docs claimed a `past_due` relay reason that was never emitted anywhere; reworded.
+
+### Deprecated
+- Testkit `FakeStoreContext.MapConfigView`: use `ConfigView.of`. Its behaviour is unchanged.
+
+### Changed
+- Internal simplification, about −470 lines net with the fixes included. Highlights:
+  - The observability server is started directly instead of through a single-provider `ServiceLoader`.
+  - The three HTTP handlers are merged into one.
+  - The hand-rolled JSON writer is replaced by the Jackson already shipped; log lines stay
+    byte-identical.
+  - Transaction helpers duplicated between the ingest and dispatch loops are shared, as is one
+    cause-chain walker.
+  - The two loop-fatal exception types are merged.
+  - Dead fetch summaries and test-only tracker-index surface are removed.
+
 ## [1.1.5] - 2026-10-06
 
 Dependency refresh. No engine source changed. The runtime libraries that ship inside the

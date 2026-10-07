@@ -64,17 +64,7 @@ public final class DelayHeaderCodec {
      *     (exclusive modes, D1)
      */
     public DelayHeaderCodec(Duration delayMax, boolean acceptBinaryLongValues) {
-        Objects.requireNonNull(delayMax, "delayMax");
-        if (delayMax.isNegative()) {
-            throw new IllegalArgumentException("delay.max must be non-negative: " + delayMax);
-        }
-        long ms;
-        try {
-            ms = delayMax.toMillis();
-        } catch (ArithmeticException overflow) {
-            ms = Long.MAX_VALUE;
-        }
-        this.delayMaxMs = ms;
+        this.delayMaxMs = delayMaxMillis(delayMax);
         this.acceptBinaryLongValues = acceptBinaryLongValues;
     }
 
@@ -205,6 +195,24 @@ public final class DelayHeaderCodec {
         } catch (NumberFormatException overflow) {
             // 19 digits pass the regex but can exceed Long.MAX_VALUE; overflow is malformed.
             return new DecodedError(headerName + ": exceeds signed 64-bit range: \"" + text + "\"");
+        }
+    }
+
+    /**
+     * The configured {@code delay.max} in milliseconds, saturating to {@link Long#MAX_VALUE} when the
+     * duration's millisecond rendering exceeds the {@code long} range.
+     *
+     * @throws IllegalArgumentException if {@code delayMax} is negative
+     */
+    public static long delayMaxMillis(Duration delayMax) {
+        Objects.requireNonNull(delayMax, "delayMax");
+        if (delayMax.isNegative()) {
+            throw new IllegalArgumentException("delay.max must be non-negative: " + delayMax);
+        }
+        try {
+            return delayMax.toMillis();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
         }
     }
 

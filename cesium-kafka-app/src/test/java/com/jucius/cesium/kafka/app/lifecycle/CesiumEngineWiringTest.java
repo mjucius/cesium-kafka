@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
+import com.jucius.cesium.kafka.app.health.ShardRecovery;
 import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine.LoopSpec;
 import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
@@ -16,14 +17,22 @@ import com.jucius.cesium.kafka.core.config.IngestConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
+import com.jucius.cesium.kafka.core.config.StoreConfig;
 import com.jucius.cesium.kafka.core.config.TopicRef;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
+import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.common.Uuid;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -124,6 +133,56 @@ class CesiumEngineWiringTest {
      * {@code describeTopic} turns them red.
      */
     @Nested
+    class RecoverySnapshot {
+
+        private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        private final Map<Integer, long[]> previous = new HashMap<>();
+
+        private AtomicLong shard(int partition, long state, long remaining) {
+            AtomicLong stateValue = new AtomicLong(state);
+            AtomicLong remainingValue = new AtomicLong(remaining);
+            Gauge.builder(KafkaTrackerStore.SHARD_STATE_METRIC, stateValue::get)
+                    .tag("partition", Integer.toString(partition))
+                    .register(registry);
+            Gauge.builder(KafkaTrackerStore.REPLAY_REMAINING_METRIC, remainingValue::get)
+                    .tag("partition", Integer.toString(partition))
+                    .register(registry);
+            return remainingValue;
+        }
+
+        @Test
+        void reportsNonActiveShardsWithASlopeEta() {
+            AtomicLong remaining = shard(1, 1, 1_000);
+            shard(0, 0, 0);
+            shard(2, 2, 0); // ACTIVE: omitted
+
+            assertEquals(
+                    List.of(
+                            new ShardRecovery(0, ShardRecovery.State.ASSIGNED, 0, -1),
+                            new ShardRecovery(1, ShardRecovery.State.RECOVERING, 1_000, -1)),
+                    CesiumEngine.recoverySnapshot(registry, 10_000, previous),
+                    "no ETA from a single sample");
+
+            remaining.set(800); // 200 records in 1 s -> 800 records left ~ 4 s
+            assertEquals(
+                    new ShardRecovery(1, ShardRecovery.State.RECOVERING, 800, 4_000),
+                    CesiumEngine.recoverySnapshot(registry, 11_000, previous).get(1));
+
+            // A stalled backlog has no estimable ETA.
+            assertEquals(
+                    -1,
+                    CesiumEngine.recoverySnapshot(registry, 12_000, previous)
+                            .get(1)
+                            .etaMillis());
+        }
+
+        @Test
+        void emptyWithoutStoreGauges() {
+            assertEquals(List.of(), CesiumEngine.recoverySnapshot(registry, 0, previous));
+        }
+    }
+
+    @Nested
     class BuildRouteDescriptor {
 
         private final LaggingClusterAdmin admin = new LaggingClusterAdmin();
@@ -191,6 +250,86 @@ class CesiumEngineWiringTest {
     // ------------------------------------------------------------------ helper
 
     /** A structurally valid config (route + DLQ + defaults) with the given roles and worker counts. */
+    // ------------------------------------------------------------------ sidecar budget (§3.5)
+
+    @Nested
+    class SidecarBudget {
+
+        private static final String KEY = "cursor.sidecar-max-bytes";
+
+        private CesiumConfig withBudget(@Nullable Integer dispatchBudget, Map<String, String> storeProperties) {
+            return withBudget(StoreConfig.DEFAULT_TYPE, dispatchBudget, storeProperties);
+        }
+
+        private CesiumConfig withBudget(
+                String storeType, @Nullable Integer dispatchBudget, Map<String, String> storeProperties) {
+            return new CesiumConfig(
+                    "orders",
+                    InstanceId.of("slot-0"),
+                    null,
+                    null,
+                    new RouteConfig(
+                            new TopicRef("src"), new TopicRef("dst"), null, Optional.of(new TopicRef("dlq")), null),
+                    null,
+                    null,
+                    new StoreConfig(storeType, storeProperties),
+                    null,
+                    new DispatchConfig(
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            new DispatchConfig.Cursor(dispatchBudget),
+                            null,
+                            null,
+                            null,
+                            null),
+                    null,
+                    null);
+        }
+
+        @Test
+        void dispatchBudgetReachesTheStore() {
+            Map<String, String> props = CesiumEngine.storeProperties(withBudget(2048, Map.of()), OptionalInt.of(4096));
+            assertEquals("2048", props.get(KEY));
+        }
+
+        @Test
+        void dispatchBudgetIsClampedToTheBrokerCap() {
+            Map<String, String> props = CesiumEngine.storeProperties(withBudget(8192, Map.of()), OptionalInt.of(4096));
+            assertEquals("4096", props.get(KEY));
+        }
+
+        @Test
+        void unknownBrokerCapPassesTheBudgetThrough() {
+            Map<String, String> props = CesiumEngine.storeProperties(withBudget(8192, Map.of()), OptionalInt.empty());
+            assertEquals("8192", props.get(KEY));
+        }
+
+        @Test
+        void explicitStoreValueWinsAndIsNotClamped() {
+            Map<String, String> props =
+                    CesiumEngine.storeProperties(withBudget(2048, Map.of(KEY, "8192")), OptionalInt.of(4096));
+            assertEquals("8192", props.get(KEY));
+        }
+
+        @Test
+        void outOfRangeBudgetIsLeftOutSoTheStoreKeepsItsDefault() {
+            assertFalse(CesiumEngine.storeProperties(withBudget(64, Map.of()), OptionalInt.empty())
+                    .containsKey(KEY));
+            assertFalse(CesiumEngine.storeProperties(withBudget(3072, Map.of()), OptionalInt.of(100))
+                    .containsKey(KEY));
+        }
+
+        @Test
+        void otherStoreTypesAreNeverInjected() {
+            Map<String, String> props =
+                    CesiumEngine.storeProperties(withBudget("other-store", 2048, Map.of()), OptionalInt.of(4096));
+            assertFalse(props.containsKey(KEY));
+        }
+    }
+
     private static CesiumConfig config(Set<Role> roles, int ingestWorkers, int dispatchWorkers) {
         return new CesiumConfig(
                 "orders",

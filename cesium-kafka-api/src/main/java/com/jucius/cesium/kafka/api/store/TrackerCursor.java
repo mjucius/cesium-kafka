@@ -16,7 +16,7 @@ package com.jucius.cesium.kafka.api.store;
  * @param metadata the pinned-entry <em>sidecar</em>: a versioned, Base64-encoded blob of the
  *     oldest pending entries (with their original tracker ADD offsets) plus self-describing
  *     identity material (cluster id, topic ids). Bounded by the validated sidecar byte budget
- *     ({@code dispatch.cursor.sidecar-max-bytes}, checked against broker
+ *     ({@code dispatch.cursor.sidecar-max-bytes}, clamped to broker
  *     {@code offset.metadata.max.bytes} at startup). Possibly empty, never {@code null}. The
  *     encoding is owned by the store and opaque to the engine
  */

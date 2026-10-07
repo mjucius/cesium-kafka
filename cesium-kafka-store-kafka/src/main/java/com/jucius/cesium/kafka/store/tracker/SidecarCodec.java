@@ -26,7 +26,7 @@ import org.apache.kafka.common.Uuid;
  *     varint         trackerAddOffset (first entry: absolute; later: delta from previous, ≥ 1)
  *     varint         sourceOffset     (first entry: absolute; later: delta from previous, ≥ 1)
  *     varint         zigzag(dispatchAtMs delta from previous entry; first: from 0)
- *     byte           flags (bit 0 = {@link #FLAG_CLAMPED}; unknown bits ignored on decode)
+ *     byte           flags (bit 0 = {@link TrackerWireFormat#FLAG_CLAMPED}; unknown bits ignored on decode)
  * </pre>
  *
  * <p>There is no entry count: entries run to the end of the blob, so the greedy budget cut needs
@@ -45,7 +45,7 @@ import org.apache.kafka.common.Uuid;
  * are strings (KRaft ids happen to be 22-char base64url, but the API type is {@code String}).
  *
  * <p><strong>Budget semantics.</strong> The byte budget ({@code dispatch.cursor.sidecar-max-bytes},
- * validated against broker {@code offset.metadata.max.bytes} by the engine) bounds the
+ * clamped to broker {@code offset.metadata.max.bytes} by the engine) bounds the
  * <em>Base64-encoded metadata string</em> — that is what the broker meters — so the encoder
  * derives the raw-byte limit {@code floor(3·budget/4)} and cuts greedily: entries are accepted
  * oldest-first until the <em>next</em> entry would exceed the limit (§3.5).
@@ -59,9 +59,6 @@ public final class SidecarCodec {
 
     /** The only sidecar wire version this codec reads or writes. */
     public static final byte VERSION = 0x01;
-
-    /** Entry flags bit 0: the CLAMP marker (design §2.3); see {@code TrackerWireFormat.FLAG_CLAMPED}. */
-    public static final int FLAG_CLAMPED = 0x01;
 
     private static final int UUID_BYTES = 16;
     private static final int MAX_CLUSTER_ID_UTF8_BYTES = 255;
@@ -102,7 +99,7 @@ public final class SidecarCodec {
      * bytes: {@code floor(3·budget/4)} — exact, since {@code n} raw bytes render as
      * {@code ceil(4n/3)} unpadded Base64 bytes.
      */
-    public static int maxRawBytes(int base64Budget) {
+    private static int maxRawBytes(int base64Budget) {
         return (int) (3L * base64Budget / 4);
     }
 
@@ -189,7 +186,8 @@ public final class SidecarCodec {
             dispatchAtMs += unzigzag(dispatchZigzag);
             // Unknown flag bits are ignored (forward compatibility, matching the tracker wire
             // format's posture, design §2.2).
-            entries.add(new SidecarEntry(trackerAddOffset, sourceOffset, dispatchAtMs, (flags & FLAG_CLAMPED) != 0));
+            entries.add(new SidecarEntry(
+                    trackerAddOffset, sourceOffset, dispatchAtMs, (flags & TrackerWireFormat.FLAG_CLAMPED) != 0));
             first = false;
         }
         return new DecodedSidecar(clusterId, sourceTopicId, trackerTopicId, List.copyOf(entries));
@@ -197,7 +195,7 @@ public final class SidecarCodec {
 
     /**
      * Greedy, size-bounded sidecar encoder for one cursor computation (design §3.5). Entries are
-     * {@linkplain #offer offered} oldest-first (the {@code oldestPending} visitation order);
+     * {@linkplain #offer offered} oldest-first (the {@code oldestUnsettled} visitation order);
      * acceptance stops at the first entry whose encoding would push the final Base64 string past
      * the budget. {@link #finish} then applies the §3.5 cursor rule.
      */
@@ -238,7 +236,7 @@ public final class SidecarCodec {
 
         /**
          * Offers the next-oldest pending entry. Designed as the body of the
-         * {@code oldestPending} visitor: the return value doubles as "keep visiting".
+         * {@code oldestUnsettled} visitor: the return value doubles as "keep visiting".
          *
          * @return {@code true} if the entry was encoded; {@code false} if it (or an earlier
          *     entry) did not fit — the encoder records the first non-encoded entry's tracker ADD
@@ -268,7 +266,7 @@ public final class SidecarCodec {
                     throw new IllegalStateException("pending entries offered out of order: trackerAddOffset "
                             + previousTrackerAddOffset + " -> " + trackerAddOffset + ", sourceOffset "
                             + previousSourceOffset + " -> " + sourceOffset
-                            + " (oldestPending order underpins I5)");
+                            + " (oldestUnsettled order underpins I5)");
                 }
             }
             long dispatchZigzag = zigzag(dispatchAtMs - (first ? 0 : previousDispatchAtMs));
@@ -281,7 +279,7 @@ public final class SidecarCodec {
             position = writeVarint(trackerDelta);
             position = writeVarint(sourceDelta);
             position = writeVarint(dispatchZigzag);
-            buffer[position++] = clamped ? (byte) FLAG_CLAMPED : 0;
+            buffer[position++] = clamped ? (byte) TrackerWireFormat.FLAG_CLAMPED : 0;
             previousTrackerAddOffset = trackerAddOffset;
             previousSourceOffset = sourceOffset;
             previousDispatchAtMs = dispatchAtMs;

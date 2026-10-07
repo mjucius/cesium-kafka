@@ -3,6 +3,7 @@ package com.jucius.cesium.kafka.app.metrics;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -17,6 +18,7 @@ import com.jucius.cesium.kafka.core.config.Role;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -75,7 +77,7 @@ class ObservabilityServerTest {
                 bindAddress,
                 0,
                 detailedInfo,
-                registry,
+                registry::scrape,
                 new HealthAssessor(health, Clock.systemUTC(), GENEROUS_STALE),
                 info::get);
         server.start();
@@ -90,6 +92,20 @@ class ObservabilityServerTest {
                 .method(method, HttpRequest.BodyPublishers.noBody())
                 .build();
         return client.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    @Test
+    void closeReleasesThePort() throws Exception {
+        startServer();
+        int port = server.port();
+        assertEquals(200, get("/health/live").statusCode());
+
+        server.close();
+
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/health/live"))
+                .GET()
+                .build();
+        assertThrows(ConnectException.class, () -> client.send(request, HttpResponse.BodyHandlers.ofString()));
     }
 
     @Test
@@ -278,14 +294,12 @@ class ObservabilityServerTest {
     @Test
     void capsAcceptedConnectionsBeforeServerCreate() throws Exception {
         // M1: the pool/queue only shed work items — a client that connects and sends nothing is never
-        // counted against them, so the accept-path connection cap must be set (both spellings) before
+        // counted against them, so the accept-path connection cap must be set before
         // HttpServer.create, or idle sockets accumulate until file descriptors are exhausted.
         startServer();
 
         String maxConn = System.getProperty(ObservabilityServer.MAX_CONNECTIONS_PROPERTY);
-        String legacyMaxConn = System.getProperty(ObservabilityServer.LEGACY_MAX_CONNECTIONS_PROPERTY);
         assertNotNull(maxConn, "jdk.httpserver.maxConnections must be set before HttpServer.create");
-        assertNotNull(legacyMaxConn, "the legacy maxConnections spelling must also be set");
         int cap = Integer.parseInt(maxConn);
         assertTrue(cap > 0, maxConn);
         // The cap must not refuse legitimate bursts: it sits above the pool + queue depth.

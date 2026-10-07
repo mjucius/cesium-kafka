@@ -157,7 +157,8 @@ public record DispatchConfig(
      * Committed-cursor v2 settings (§3.5, D16).
      *
      * @param sidecarMaxBytes encoded pinned-entry sidecar budget in the offset metadata; default
-     *     3072, validated ≤ broker {@code offset.metadata.max.bytes} at startup
+     *     3072; checked against broker {@code offset.metadata.max.bytes} at startup and clamped
+     *     (with a warning) when larger
      */
     public record Cursor(Integer sidecarMaxBytes) {
 

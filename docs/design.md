@@ -205,7 +205,7 @@ Replaces the PoC's unversioned sign-negation hack. Unknown flags are ignored; un
 
 - **Encoding:** canonical UTF-8 ASCII decimal. An 8-byte big-endian long decode exists behind `headers.accept-binary-long-values: true` (default off; modes are exclusive because length==8 is ambiguous). PoC's unprefixed `delay-by`/`delay-until` are NOT honored (clean break; migration doc).
 - **Precedence:** if both present, `cesium-deliver-at` wins; `cesium_header_errors_total{type="conflict"}` increments and a WARN logs. Multiple values for one header: `lastHeader` wins, counted as a conflict.
-- **Validation:** regex + range. `cesium-delay-ms ∈ [0, delay.max]`; `cesium-deliver-at ∈ (−∞, now + delay.max]`. Past or zero values relay immediately (`reason="past_due"`) — past deliver-at is NOT an error.
+- **Validation:** regex + range. `cesium-delay-ms ∈ [0, delay.max]`; `cesium-deliver-at ∈ (−∞, now + delay.max]`. Past or zero values relay immediately (past-due) — past deliver-at is NOT an error.
 - **Policies** (independent, applied inside the ingest transaction, validated at startup):
   - `delay.on-malformed-header: DLQ | RELAY_IMMEDIATE | FAIL` (default `DLQ`; requires dlq topic configured or startup fails).
   - `delay.on-over-max: DLQ | CLAMP | FAIL` (default `DLQ`; `CLAMP` pins to `now + delay.max` and stamps `cesium-clamped: true`).
@@ -304,7 +304,7 @@ Group B's committed `(offset, metadata)` per tracker partition *p* is the **repl
 
 **Recovery from a committed cursor:** decode the sidecar and **seed** the index with its entries (they carry their original `trackerAddOffset`s, all `< cursorOffset`, in ring order — ring sortedness is preserved); then consume `[cursorOffset, barrier)` applying R1/R2. Tombstones in that range for seeded entries remove them via R2. Replay cost ≈ sidecar decode + traffic since the last successful commit (plus downtime traffic) — independent of how long any single entry has been pending, in the non-overflow case.
 
-**Overflow residual (honest):** if more than ~N_max entries pin below the dense region (a route whose *steady* state is hundreds+ of long-delay entries per partition), the fallback cut sits at the (N_max+1)-th oldest pending entry, and replay re-reads completions since then: `replay_records ≈ completion_rate(p) × age(cut) + pending(p)`. This formula goes verbatim into the ops capacity worksheet; `cesium_replay_remaining_records` (live) and a projected-replay-ETA alert make it observable *before* it hurts; raising the sidecar budget (with broker `offset.metadata.max.bytes`, validated at startup) is the tuning lever. Reading the pending ADDs themselves is irreducible for a log-backed store.
+**Overflow residual (honest):** if more than ~N_max entries pin below the dense region (a route whose *steady* state is hundreds+ of long-delay entries per partition), the fallback cut sits at the (N_max+1)-th oldest pending entry, and replay re-reads completions since then: `replay_records ≈ completion_rate(p) × age(cut) + pending(p)`. This formula goes verbatim into the ops capacity worksheet; `cesium_replay_remaining_records` (live) and a projected-replay-ETA alert make it observable *before* it hurts; raising the sidecar budget (with broker `offset.metadata.max.bytes`; a larger budget is clamped to it at startup) is the tuning lever. Reading the pending ADDs themselves is irreducible for a log-backed store.
 
 **Replay application rules:**
 - **R1 (ADD):** insert `(srcOffset → dispatchAt, trackerAddOffset)`. A key ≤ the ring tail's source offset is an anomaly (impossible per §3.1's unique-committed-ADD invariant): binary-search the ring; if found, **update `dispatchAtMs` only and keep the slot's original `trackerAddOffset`** (the original offset remains a valid, conservative replay bound; increasing it in place could carry the cursor past other pending entries — I5), warn metric.
@@ -437,8 +437,9 @@ public interface StoreContext {
   ConfigView config();                // typed view of the store.properties subtree
   java.time.Clock clock();            // injectable for tests
   MeterRegistry meterRegistry();
-  /** Group generation / member epoch of the engine's current ownership — lets an
-      external store implement store-side fencing (conditional writes on epoch). */
+  /** Group generation / member epoch of the dispatch group's (group B) current ownership
+      — lets an external store implement store-side fencing (conditional writes on epoch).
+      (-1, "") for a partition this instance does not own. */
   OwnershipEpoch epoch(int partition);
 }
 
@@ -518,8 +519,8 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
   /** Idempotent upsert keyed by (sourcePartition, sourceOffset).
    *  ORDERING CONTRACT: called BEFORE the ingest transaction commits. If the txn
    *  aborts, offsets were not committed, the batch re-polls, the upsert repeats —
-   *  idempotency makes scheduling state exactly-once. Implementations SHOULD use
-   *  StoreContext.epoch() for conditional writes against zombie writers. */
+   *  idempotency makes scheduling state exactly-once. (StoreContext.epoch() is the
+   *  dispatch group's and does not fence this ingest-side write.) */
   void upsertScheduled(List<ScheduledRef> refs);
 
   /** ORDERING CONTRACT: called strictly AFTER the dispatch transaction commits
@@ -582,7 +583,7 @@ DispatchLoop loop = switch (store) {
 1. **Per-partition recovery cursor** expressible as `(offset, metadata)` committed atomically inside the engine's transaction — the only durable completion-fact channel sharing Kafka's atomicity. The metadata blob is versioned, size-bounded by the validated sidecar budget, and self-describing (identity material included).
 2. **Per-entry recovery position** (tracker offset / monotone sequence) so the store can compute a sound cursor (I5).
 3. **Transaction-bound staging:** committed-batch effects durable and recoverable; aborted-batch effects invisible to every future recovery; **in-doubt outcomes recoverable purely from the durable state** (the engine will replay rather than restore — I9).
-4. **Ownership-epoch hand-off** via `StoreContext.epoch()` for store-side fencing of zombie writers.
+4. **Ownership-epoch hand-off** via `StoreContext.epoch()` for store-side fencing of zombie writers. The epoch is the dispatch group's (group B): it fences dispatch-side writes, not the ingest-side `upsertScheduled`.
 5. **Barrier-aware recovery:** the engine owns the ACTIVE gate; the store must not surface due entries while recovering, and must reach the barrier even when pending volume exceeds backpressure thresholds (pause never applies to recovery).
 6. **Idempotent recovery:** recovery may run repeatedly from the same cursor (D-6) and must converge to the same pending set, including sidecar re-seeding.
 7. **Startup validation hook** (`validate()`): the store declares and enforces its own preconditions, including memory-budget sizing (worst-case footprint vs configured caps).
@@ -752,7 +753,7 @@ Key defaults (durations ISO-8601):
 | `dispatch.drain.max-slice` | `PT1M`, capped at `max.poll.interval.ms / 3` | time-sliced drain (§6) |
 | `dispatch.coalesce` | `PT0S` | Off: never early, never deliberately late |
 | `dispatch.idle-cursor-interval` | `PT30S` | §3.5 |
-| `dispatch.cursor.sidecar-max-bytes` | 3072 | validated ≤ broker `offset.metadata.max.bytes` at startup |
+| `dispatch.cursor.sidecar-max-bytes` | 3072 | clamped (with a warning) to broker `offset.metadata.max.bytes` at startup |
 | `dispatch.fetch.timeout` / `partition-time-floor` | `PT30S` / `PT2S` | §7 budgets |
 | `dispatch.fetch.penalty.backoff` / `backoff-max` | `PT0.05S` / `PT10S` | penalty box (§7) |
 | `dispatch.max-pending-per-partition` | 2,000,000 | pause/resume backpressure (ACTIVE only) |
@@ -798,13 +799,13 @@ Key defaults (durations ISO-8601):
 | `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped` | dispatch dispositions |
 | `cesium_dispatch_lag_seconds` | histogram | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | max time between group-B polls; alert ≪ `max.poll.interval.ms` (§6) |
-| `cesium_pending_entries` | gauge | `partition` | live index size; alert on step-collapse (tracker-integrity canary, R-9) |
+| `cesium_pending_entries` | gauge | `partition` | index size, refreshed every dispatch-loop iteration; alert on step-collapse (tracker-integrity canary, R-9) |
 | `cesium_pending_oldest_deadline_seconds` | gauge | | **[not yet emitted]** now − earliest deadline |
 | `cesium_tracker_cursor_lag` / `_age_seconds` | gauge | `partition` | **[not yet emitted]** position − committed cursor / cursor age; alert vs `delete.retention.ms` |
 | `cesium_pinned_entries` | gauge | `partition` | sidecar occupancy; sustained at max ⇒ overflow mode (§3.5) |
 | `cesium_cursor_sidecar_bytes` | gauge | `partition` | encoded sidecar size vs budget |
-| `cesium_replay_remaining_records` | gauge | `partition` | **[not yet emitted]** barrier − position, live during recovery; feeds replay-ETA alert |
-| `cesium_shard_state` / `cesium_shard_paused` | gauge | `partition` | ASSIGNED/RECOVERING/ACTIVE (`cesium_shard_state` is **[not yet emitted]**); backpressure pause state |
+| `cesium_replay_remaining_records` | gauge | `partition` | barrier − position, live during recovery (`0` when ASSIGNED/ACTIVE); feeds replay-ETA alert |
+| `cesium_shard_state` / `cesium_shard_paused` | gauge | `partition` | `0`=ASSIGNED / `1`=RECOVERING / `2`=ACTIVE; backpressure pause state |
 | `cesium_store_recovery_duration_seconds` | timer | `partition` | **[not yet emitted]** replay time per assignment |
 | `cesium_store_replay_records_total` | counter | `kind=add\|complete\|seeded` | **[not yet emitted]** replay volume |
 | `cesium_transactions_total` | counter | `loop`, `result=committed\|aborted\|in_doubt`, `cause` | fencing aborts ⇒ duplicates prevented; in-doubt occurrences |
@@ -982,8 +983,8 @@ Dependency notes: M2/M3 can proceed in parallel with M4 after M1; M5 depends on 
 2. **HW-barrier and offset-fetch API dependencies** — the barrier requires `Admin.listOffsets` with `READ_UNCOMMITTED` (`ListOffsetsOptions`), and I8 depends on `consumer.committed()/position()` blocking through `UNSTABLE_OFFSET_COMMIT` under read_committed; both must be verified against the exact client at M5 (fallback: dedicated read_uncommitted metadata consumer's `endOffsets`; explicit retry loop on the offset fetch). Getting either wrong silently reintroduces a duplicate window — the §11.3-4 and §11.3-5 integration tests are non-negotiable.
 3. **In-doubt commit handling relies on client retry semantics** — the I9 procedure assumes `commitTransaction` is retriable after timeout and that `initTransactions()` deterministically resolves a dangling transaction (without reporting the outcome). Both verified by fault-injection tests; the fallback (drop + replay) is sound regardless, at the cost of one recovery cycle.
 4. **Tombstone retention is correctness-load-bearing** — an operator overriding `delete.retention.ms` below the D14 floor (or a broker compaction bug) can cause a replay duplicate in overflow mode. *Mitigation:* startup FAIL + periodic re-validation against observed pending/cursor age (closes the lowered-`delay.max` footgun) + cursor-age alerting; pre-existing misconfigured topics with checks skipped remain an operator footgun.
-5. **Sidecar overflow residual** — routes whose steady state exceeds ~200–300 pinned long-delay entries per partition fall back to min-pending cursors, and replay cost reverts to `completion_rate × pin age`. *Mitigation:* `cesium_pinned_entries` saturation alert + replay-ETA projection alert + the honest formula in the capacity worksheet; tuning lever: raise `dispatch.cursor.sidecar-max-bytes` with broker `offset.metadata.max.bytes` (validated). Snapshotting remains the v2 escape hatch.
-6. **Sidecar depends on a broker config** — `offset.metadata.max.bytes` (default 4096) caps the sidecar; clusters that lowered it shrink N_max. *Mitigation:* startup validation reads the broker value and sizes/refuses accordingly.
+5. **Sidecar overflow residual** — routes whose steady state exceeds ~200–300 pinned long-delay entries per partition fall back to min-pending cursors, and replay cost reverts to `completion_rate × pin age`. *Mitigation:* `cesium_pinned_entries` saturation alert + replay-ETA projection alert + the honest formula in the capacity worksheet; tuning lever: raise `dispatch.cursor.sidecar-max-bytes` with broker `offset.metadata.max.bytes` (clamped to it at startup). Snapshotting remains the v2 escape hatch.
+6. **Sidecar depends on a broker config** — `offset.metadata.max.bytes` (default 4096) caps the sidecar; clusters that lowered it shrink N_max. *Mitigation:* startup validation reads the broker value, warns, and clamps the sidecar budget to it (warn-only, so a 1.x upgrade never gains a new startup failure).
 7. **LSO stalls** — a crashed producer with a non-stable transactional.id holds the LSO down up to `transaction.timeout.ms`, delaying replay-to-barrier and read_committed consumers. *Mitigation:* required stable instance-ids, 30 s default timeout; raising the timeout proportionally lengthens failover gating (documented).
 8. **Seek-fetch I/O amplification** — long delays hit cold segments; sparse due-sets across many partitions degrade toward random reads; tiered-storage remote fetches are slow by construction. *Mitigation:* per-partition forward-scan batching, warm fetch sessions, penalty box for degraded partitions, fetch duration/bytes metrics, broker IOPS planning in ops guide; v1.1 fetch pool reserved.
 9. **Throughput ceilings** — transaction-commit latency bounds batches/s/worker; one dispatch thread per shard set caps per-instance dispatch (~50–100 k/s incl. fetch); parallelism scales by tracker partitions/instances. Perf suite must establish honest numbers before claiming scale; targets are projections until measured.

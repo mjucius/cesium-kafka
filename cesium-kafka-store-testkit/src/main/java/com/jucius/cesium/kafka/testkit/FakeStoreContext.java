@@ -160,7 +160,14 @@ public final class FakeStoreContext implements StoreContext {
         }
     }
 
-    /** Map-backed {@link ConfigView} mirroring the engine's parsing conventions (design §8). */
+    /**
+     * Map-backed {@link ConfigView} for contract tests (design §8).
+     *
+     * @deprecated since 1.2.0; use {@link ConfigView#of(Map)}, which parses values exactly as the
+     *     engine does (trimmed values, case-insensitive booleans, errors that never echo the value).
+     *     This class keeps its 1.x behaviour and stays for the rest of the 1.x line.
+     */
+    @Deprecated(since = "1.2.0")
     public static final class MapConfigView implements ConfigView {
 
         private final Map<String, String> values;

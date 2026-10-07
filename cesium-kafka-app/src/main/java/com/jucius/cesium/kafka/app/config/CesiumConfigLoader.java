@@ -93,15 +93,6 @@ public final class CesiumConfigLoader {
     }
 
     /**
-     * A production loader over the live process environment and system properties. The partition
-     * estimate is 1 at config-load time; the engine re-validates with the real assigned count
-     * once topic metadata is known.
-     */
-    public static CesiumConfigLoader withSystemEnvironment() {
-        return new CesiumConfigLoader(System.getenv(), System.getProperties(), ValidationContext.runtime(1));
-    }
-
-    /**
      * A successful load: the frozen config plus the full validation report. The report stays
      * visible to the caller because a clean load still carries operator-facing findings — the
      * always-present INFO worst-case index footprint (§5.3 prints it at startup) and any WARNING

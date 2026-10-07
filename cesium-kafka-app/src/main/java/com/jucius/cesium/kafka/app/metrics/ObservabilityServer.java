@@ -1,11 +1,14 @@
 package com.jucius.cesium.kafka.app.metrics;
 
 import com.jucius.cesium.kafka.app.health.HealthAssessor;
+import com.jucius.cesium.kafka.app.health.HealthSnapshot;
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -20,7 +23,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The observability HTTP server (design §9): a JDK {@link HttpServer} (zero extra dependencies)
- * serving {@code /metrics} (Prometheus exposition from the engine's {@link PrometheusMeterRegistry}),
+ * serving {@code /metrics} (Prometheus exposition from the engine's {@code PrometheusMeterRegistry}),
  * {@code /health/live}, {@code /health/ready} (decoupled from shard recovery, D21), and {@code
  * /info}. Every handler is cheap and non-blocking — it reads cached health atomics or scrapes the
  * in-memory registry, never calling Kafka synchronously.
@@ -49,6 +52,9 @@ import org.slf4j.LoggerFactory;
 public final class ObservabilityServer implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(ObservabilityServer.class);
+
+    private static final String JSON = "application/json; charset=utf-8";
+    private static final String PROMETHEUS = "text/plain; version=0.0.4; charset=utf-8";
 
     /** Seconds the JDK server waits for in-flight exchanges to finish before closing connections. */
     private static final int STOP_GRACE_SECONDS = 1;
@@ -79,9 +85,6 @@ public final class ObservabilityServer implements AutoCloseable {
     /** JDK 21+ property capping simultaneously-accepted connections on the accept path (security M1). */
     static final String MAX_CONNECTIONS_PROPERTY = "jdk.httpserver.maxConnections";
 
-    /** Pre-JDK-21 spelling of the same accept-path connection cap; set alongside for older runtimes. */
-    static final String LEGACY_MAX_CONNECTIONS_PROPERTY = "sun.net.httpserver.maxConnections";
-
     /**
      * Default accepted-connection ceiling applied when the operator has not set the property. Sits a
      * little above {@link #DISPATCH_THREADS} + {@link #DISPATCH_QUEUE_CAPACITY} (= 40) so legitimate
@@ -107,27 +110,13 @@ public final class ObservabilityServer implements AutoCloseable {
      *     ephemeral port — used by tests, read back via {@link #port()})
      * @param detailedInfo whether {@code /info} discloses the sensitive fields (applicationId, roles,
      *     store capabilities, acknowledgments); default {@code false} (security M3)
-     * @param registry the engine's Prometheus registry; {@code /metrics} renders {@code
-     *     registry.scrape()}
+     * @param metricsScrape renders the {@code /metrics} body (typically the engine's {@code
+     *     PrometheusMeterRegistry::scrape})
      * @param health the assessor that derives the liveness/readiness verdicts from the engine's
      *     {@code EngineHealth} signals
      * @param info supplies the current {@code /info} snapshot on each request
      */
     public ObservabilityServer(
-            String bindAddress,
-            int port,
-            boolean detailedInfo,
-            PrometheusMeterRegistry registry,
-            HealthAssessor health,
-            Supplier<ServiceInfo> info) {
-        this(bindAddress, port, detailedInfo, registry::scrape, health, info);
-    }
-
-    /**
-     * Test/decoupling seam: the {@code /metrics} body comes from an arbitrary scrape supplier rather
-     * than a {@link PrometheusMeterRegistry}, so the HTTP surface can be exercised without a registry.
-     */
-    ObservabilityServer(
             String bindAddress,
             int port,
             boolean detailedInfo,
@@ -150,10 +139,21 @@ public final class ObservabilityServer implements AutoCloseable {
         // Must precede HttpServer.create: the JDK reads these once in a static initializer.
         applyServerDefaults();
         HttpServer http = HttpServer.create(new InetSocketAddress(bindAddress, requestedPort), 0);
-        http.createContext(MetricsHttpHandler.PATH, new MetricsHttpHandler(metricsScrape));
-        http.createContext("/health/live", new HealthHttpHandler("/health/live", health::liveness));
-        http.createContext("/health/ready", new HealthHttpHandler("/health/ready", health::readiness));
-        http.createContext(InfoHttpHandler.PATH, new InfoHttpHandler(info, detailedInfo));
+        // A scrape failure is a 500; a health probe fails closed (503 = down/not-ready); /info a 500.
+        serve(
+                http,
+                "/metrics",
+                () -> new Response(200, PROMETHEUS, metricsScrape.get()),
+                500,
+                "{\"error\":\"scrape failed\"}");
+        serve(http, "/health/live", () -> health(health.liveness()), 503, "{\"status\":\"ERROR\"}");
+        serve(http, "/health/ready", () -> health(health.readiness()), 503, "{\"status\":\"ERROR\"}");
+        serve(
+                http,
+                "/info",
+                () -> new Response(200, JSON, info.get().toJson(detailedInfo)),
+                500,
+                "{\"error\":\"info unavailable\"}");
         ExecutorService exec = newDispatcher();
         http.setExecutor(exec);
         http.start();
@@ -207,18 +207,57 @@ public final class ObservabilityServer implements AutoCloseable {
         return http;
     }
 
+    private record Response(int status, String contentType, String body) {}
+
+    private static Response health(HealthSnapshot snapshot) {
+        return new Response(snapshot.ok() ? 200 : 503, JSON, snapshot.json());
+    }
+
+    /**
+     * Registers a GET-only, exact-path endpoint. Every handler reads in-memory state only (cached
+     * health atomics, the registry scrape, the latest {@link ServiceInfo}); a thrown supplier answers
+     * {@code errorStatus} with {@code errorBody} rather than wedging the dispatcher thread or dropping
+     * the connection with no response.
+     */
+    private static void serve(
+            HttpServer http, String path, Supplier<Response> responder, int errorStatus, String errorBody) {
+        http.createContext(path, exchange -> {
+            try {
+                if (!"GET".equals(exchange.getRequestMethod())) {
+                    send(exchange, new Response(405, JSON, "{\"error\":\"method not allowed\"}"));
+                } else if (!path.equals(exchange.getRequestURI().getPath())) {
+                    // The JDK server matches contexts by prefix; reject anything but the exact path.
+                    send(exchange, new Response(404, JSON, "{\"error\":\"not found\"}"));
+                } else {
+                    send(exchange, responder.get());
+                }
+            } catch (RuntimeException e) {
+                send(exchange, new Response(errorStatus, JSON, errorBody));
+            } finally {
+                exchange.close();
+            }
+        });
+    }
+
+    private static void send(HttpExchange exchange, Response response) throws IOException {
+        byte[] bytes = response.body().getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", response.contentType());
+        exchange.sendResponseHeaders(response.status(), bytes.length == 0 ? -1 : bytes.length);
+        try (OutputStream out = exchange.getResponseBody()) {
+            out.write(bytes);
+        }
+    }
+
     /**
      * Applies the JDK HttpServer hardening defaults (security M1): the slow-client reaper windows and
      * the accept-path connection cap. Each is only set when the operator has not already supplied it
      * (via {@code -D...}), so every default is a floor an operator can override, never an override of
-     * their choice. Both {@code maxConnections} spellings are set so the cap applies on JDK 21+ and on
-     * older runtimes.
+     * their choice.
      */
     private static void applyServerDefaults() {
         defaultSystemProperty(MAX_REQ_TIME_PROPERTY, DEFAULT_SLOW_CLIENT_TIMEOUT_SECONDS);
         defaultSystemProperty(MAX_RSP_TIME_PROPERTY, DEFAULT_SLOW_CLIENT_TIMEOUT_SECONDS);
         defaultSystemProperty(MAX_CONNECTIONS_PROPERTY, DEFAULT_MAX_CONNECTIONS);
-        defaultSystemProperty(LEGACY_MAX_CONNECTIONS_PROPERTY, DEFAULT_MAX_CONNECTIONS);
     }
 
     private static void defaultSystemProperty(String key, String value) {

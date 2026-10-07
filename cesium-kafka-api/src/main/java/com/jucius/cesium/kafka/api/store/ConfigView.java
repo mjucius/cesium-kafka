@@ -1,6 +1,7 @@
 package com.jucius.cesium.kafka.api.store;
 
 import java.time.Duration;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -20,6 +21,19 @@ import java.util.Set;
  * time.
  */
 public interface ConfigView {
+
+    /**
+     * Returns a view over {@code properties} (copied defensively), parsing values the way the engine
+     * does: surrounding whitespace is trimmed, booleans are case-insensitive, and a parse error names
+     * the key and expected type but never echoes the value, which may be a secret.
+     *
+     * @param properties the {@code store.properties} subtree, keys relative to it
+     * @return an immutable view
+     * @since 1.2.0
+     */
+    static ConfigView of(Map<String, String> properties) {
+        return new MapConfigView(properties);
+    }
 
     /** Returns the value of {@code key}, or {@code defaultValue} if the key is absent. */
     String getString(String key, String defaultValue);

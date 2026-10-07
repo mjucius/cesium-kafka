@@ -180,7 +180,7 @@ The `kafka-tracker` store reads these keys from `store.properties`:
 | `store.properties` key | Default | Meaning |
 |---|---|---|
 | `max-pending-per-partition` | `2000000` | The store's own per-partition worst-case footprint cap, used in `validate()` (`partitionCount × max-pending-per-partition × 64 B` checked against the heap budget). Size it down for small containers (the quickstart uses `100000`). |
-| `cursor.sidecar-max-bytes` | mirrors `dispatch.cursor.sidecar-max-bytes` (3072) | Store-side view of the sidecar budget. |
+| `cursor.sidecar-max-bytes` | `dispatch.cursor.sidecar-max-bytes`, clamped to the broker cap (3072) | Store-side sidecar budget. When unset, the engine fills it from `dispatch.cursor.sidecar-max-bytes`, clamped to broker `offset.metadata.max.bytes`. An explicit value wins and is **not** clamped (only warned about); accepted range 128 B–1 MiB. |
 
 > The `kafka-tracker` store's `max-pending-per-partition` (footprint cap) and the engine's
 > `dispatch.max-pending-per-partition` (the ACTIVE-shard pause/resume threshold) are distinct knobs
@@ -207,7 +207,7 @@ The `kafka-tracker` store reads these keys from `store.properties`:
 | `dispatch.drain.max-slice` | `PT1M` | Maximum back-to-back transaction time before the loop returns to a real `poll()`. Validated `≤ max.poll.interval.ms / 3` when the poll interval is overridden — membership must survive due-storms (§6). |
 | `dispatch.coalesce` | `PT0S` | Intentional dispatch coalescing window. Off by default: never early, never deliberately late. |
 | `dispatch.idle-cursor-interval` | `PT30S` | How long a partition may go untouched before its cursor advances in a records-free transaction (§3.5). |
-| `dispatch.cursor.sidecar-max-bytes` | `3072` | Pinned-entry sidecar budget in the offset metadata (§3.5). **Validated `≤` broker `offset.metadata.max.bytes` at startup.** ~200–300 pinned entries. |
+| `dispatch.cursor.sidecar-max-bytes` | `3072` | Pinned-entry sidecar budget in the offset metadata (§3.5). Checked against broker `offset.metadata.max.bytes` at startup: a larger budget logs a warning and is **clamped** to the broker cap (never a startup failure). ~200–300 pinned entries. |
 | `dispatch.fetch.timeout` | `PT30S` | Overall seek-fetch deadline per batch (§7). |
 | `dispatch.fetch.partition-time-floor` | `PT2S` | Minimum per-partition fetch time slice — one slow partition must not consume the whole deadline. |
 | `dispatch.fetch.penalty.backoff` | `PT0.05S` | Initial per-source-partition penalty-box backoff after a TRANSIENT fetch outcome (§7.3, D22). |

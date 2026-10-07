@@ -233,7 +233,7 @@ This reverts to the classic "completion throughput × pin age" cost for the over
 `§15` risk #5). It is **observable before it hurts**: `cesium_pinned_entries{partition}` sustained at
 max ⇒ overflow mode; `cesium_replay_remaining_records{partition}` (= barrier − position) drives a
 replay-ETA alert. **Tuning lever:** raise `dispatch.cursor.sidecar-max-bytes` together with broker
-`offset.metadata.max.bytes` (validated at startup). Reading the pending ADDs themselves is
+`offset.metadata.max.bytes` (a budget above the broker cap is clamped to it at startup). Reading the pending ADDs themselves is
 irreducible for a log-backed store. Replay throughput is fetch-bound at **~1–3 M records/s per
 partition** (design `§5.5`).
 

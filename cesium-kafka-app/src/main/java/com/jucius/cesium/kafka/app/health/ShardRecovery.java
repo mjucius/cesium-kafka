@@ -1,6 +1,7 @@
 package com.jucius.cesium.kafka.app.health;
 
-import com.jucius.cesium.kafka.app.json.Json;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
  * A point-in-time recovery snapshot for one tracker partition, surfaced in the {@code /health/ready}
@@ -27,12 +28,12 @@ public record ShardRecovery(int partition, State state, long recordsRemaining, l
     }
 
     /** Renders this snapshot as a JSON object for the readiness detail body. */
-    public String toJson() {
-        return Json.object()
-                .num("partition", partition)
-                .str("state", state.name())
-                .num("recordsRemaining", recordsRemaining)
-                .num("etaMillis", etaMillis)
-                .end();
+    public ObjectNode toJson() {
+        return JsonNodeFactory.instance
+                .objectNode()
+                .put("partition", partition)
+                .put("state", state.name())
+                .put("recordsRemaining", recordsRemaining)
+                .put("etaMillis", etaMillis);
     }
 }

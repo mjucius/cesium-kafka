@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
-import com.jucius.cesium.kafka.core.ingest.IngestLoopFatalException;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -276,7 +276,7 @@ class StartupChecksIT extends KafkaIT {
         // skip nor a mass duplicate is acceptable — the operator chooses the reset point.
         harness.start();
         Throwable death = harness.awaitDeath(WAIT);
-        IngestLoopFatalException fatal = assertInstanceOf(IngestLoopFatalException.class, death);
+        LoopFatalException fatal = assertInstanceOf(LoopFatalException.class, death);
         assertTrue(fatal.getMessage().contains("auto.offset.reset=none"), fatal.getMessage());
         assertTrue(fatal.getMessage().contains("offset-reset runbook"), fatal.getMessage());
     }

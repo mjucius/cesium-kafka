@@ -1,21 +1,20 @@
-package com.jucius.cesium.kafka.app.lifecycle;
+package com.jucius.cesium.kafka.api.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.jucius.cesium.kafka.api.store.ConfigView;
 import java.time.Duration;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
-/** The production {@link MapConfigView}: defaulting vs required access, typed parsing, error shapes. */
+/** {@link ConfigView#of}: defaulting vs required access, typed parsing, error shapes. */
 class MapConfigViewTest {
 
-    private final ConfigView view = new MapConfigView(Map.of(
+    private final ConfigView view = ConfigView.of(Map.of(
             "name", "kafka",
             "count", "7",
             "size", "9000000000",
@@ -61,7 +60,7 @@ class MapConfigViewTest {
     void unparseableValueIsNeverEchoedIntoTheMessage() {
         // VULN-012: a store.properties.* value may be a secret and the exception reaches log.error, so
         // the type-mismatch message must name the key + expected type but never the value itself.
-        ConfigView secretView = new MapConfigView(Map.of("token-count", "s3cr3t-not-a-number"));
+        ConfigView secretView = ConfigView.of(Map.of("token-count", "s3cr3t-not-a-number"));
 
         IllegalArgumentException e =
                 assertThrows(IllegalArgumentException.class, () -> secretView.getInt("token-count"));

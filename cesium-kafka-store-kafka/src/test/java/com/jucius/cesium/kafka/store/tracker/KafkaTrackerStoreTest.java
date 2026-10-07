@@ -483,10 +483,41 @@ class KafkaTrackerStoreTest {
     }
 
     @Test
+    void recoveryGaugesFollowTheShardStateMachine() {
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        KafkaTrackerStore store = startedStore(ctx);
+        store.onPartitionsAssigned(Set.of(0));
+        assertEquals(0.0, gauge(ctx, KafkaTrackerStore.SHARD_STATE_METRIC), "ASSIGNED");
+        assertEquals(0.0, gauge(ctx, KafkaTrackerStore.REPLAY_REMAINING_METRIC), "barrier not yet known");
+
+        store.beginRecovery(0, new TrackerCursor(0, ""), 3);
+        assertEquals(1.0, gauge(ctx, KafkaTrackerStore.SHARD_STATE_METRIC), "RECOVERING");
+        assertEquals(3.0, gauge(ctx, KafkaTrackerStore.REPLAY_REMAINING_METRIC));
+
+        store.onTrackerPosition(0, 2);
+        assertEquals(1.0, gauge(ctx, KafkaTrackerStore.REPLAY_REMAINING_METRIC));
+
+        store.onTrackerPosition(0, 3); // position reaches the barrier
+        assertEquals(2.0, gauge(ctx, KafkaTrackerStore.SHARD_STATE_METRIC), "ACTIVE");
+        assertEquals(0.0, gauge(ctx, KafkaTrackerStore.REPLAY_REMAINING_METRIC));
+
+        store.onPartitionsRevoked(Set.of(0));
+        assertNull(ctx.registry().find(KafkaTrackerStore.SHARD_STATE_METRIC).gauge());
+        assertNull(
+                ctx.registry().find(KafkaTrackerStore.REPLAY_REMAINING_METRIC).gauge());
+    }
+
+    private static double gauge(FixedIdentityStoreContext ctx, String name) {
+        return ctx.registry().get(name).tag("partition", "0").gauge().value();
+    }
+
+    @Test
     void gaugesRegisterOnAssignAndDeregisterOnRevoke() {
         FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(2);
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
+        assertEquals(0.0, gauge(ctx, "cesium.pending.entries"), "published per loop iteration, not read live");
+        store.maintenance(); // the dispatch loop calls this once per iteration
 
         assertEquals(
                 1.0,

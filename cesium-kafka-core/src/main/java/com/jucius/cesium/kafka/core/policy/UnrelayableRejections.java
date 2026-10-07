@@ -1,5 +1,7 @@
 package com.jucius.cesium.kafka.core.policy;
 
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.anyCause;
+
 import org.apache.kafka.common.InvalidRecordException;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.jspecify.annotations.Nullable;
@@ -39,16 +41,7 @@ public final class UnrelayableRejections {
      * @param error the failure surfaced by a send callback, {@code commitTransaction}, or
      *     {@code sendOffsetsToTransaction}; {@code null} is treated as "not a rejection"
      */
-    // ReferenceEquality: `t.getCause() == t` is the self-referential-cause guard — a Throwable
-    // whose getCause() returns itself would loop forever. Identity is the intended test, and Error
-    // Prone's suggested .equals() is wrong (Throwable does not override it). Flagged from 2.50.0.
-    @SuppressWarnings("ReferenceEquality")
     public static boolean isPermanentRecordRejection(@Nullable Throwable error) {
-        for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof RecordTooLargeException || t instanceof InvalidRecordException) {
-                return true;
-            }
-        }
-        return false;
+        return anyCause(error, RecordTooLargeException.class, InvalidRecordException.class);
     }
 }

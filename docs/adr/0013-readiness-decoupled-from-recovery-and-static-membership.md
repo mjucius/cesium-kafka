@@ -18,9 +18,8 @@ already-`ACTIVE` shards while others recover (recovery is per-partition,
 **Readiness is decoupled from shard recovery (D21).** Readiness = startup checks passed AND loops
 alive AND consumers have assignments AND a recent poll. Per-shard recovery state is **explicitly
 not** part of readiness — it is exposed instead through the `/health/ready` detail payload (per-shard
-state + records remaining + ETA) and `cesium_shard_paused`. (The design-§9 `cesium_shard_state` /
-`cesium_replay_remaining_records` gauges are deferred past M8 and not emitted in this release — see
-[operations.md](../operations.md) §13.) Liveness is loop-heartbeat freshness + thread liveness.
+state + records remaining + ETA), the `cesium_shard_state` / `cesium_replay_remaining_records`
+gauges (emitted since 1.2.0), and `cesium_shard_paused`. Liveness is loop-heartbeat freshness + thread liveness.
 
 **Static membership is default on (D10/D21):** `group.instance.id` is derived from the *required*
 stable `instanceId` (which also seeds the transactional ids), so with `session.timeout.ms` greater

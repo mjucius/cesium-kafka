@@ -114,7 +114,7 @@ class AppQuickstartIT extends KafkaIT {
                 "0.0.0.0",
                 0,
                 true,
-                registry,
+                registry::scrape,
                 new HealthAssessor(engine.health(), clock, LIVENESS_STALE_AFTER),
                 this::serviceInfo);
         server.start();
@@ -178,6 +178,8 @@ class AppQuickstartIT extends KafkaIT {
                 "the per-loop heartbeat gauge feeding liveness must be exposed");
         assertTrue(
                 metrics.body().contains("cesium_ingest_records_total"), "ingest disposition counter must be exposed");
+        assertTrue(metrics.body().contains("cesium_shard_state{"), "per-shard recovery state feeding /health/ready");
+        assertTrue(metrics.body().contains("cesium_replay_remaining_records{"), "per-shard replay backlog");
 
         // Recovery + degraded are readiness DETAIL, not gates (D21, §3.8): the instance stays ready.
         HttpResponse<String> ready = get("/health/ready");
