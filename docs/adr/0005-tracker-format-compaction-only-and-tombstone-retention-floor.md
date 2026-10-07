@@ -48,3 +48,6 @@ is lowered to `P1D` to keep default tracker disk sane.
 - Wire-format versioning belongs to the store, not the SPI
   ([ADR-0003](0003-sealed-two-archetype-store-spi.md)); the `CANCEL` reservation leaves room for a
   future cancellation API.
+
+> **As shipped:** only the `delay.max` term of the floor is validated, at startup. The periodic
+> re-validation of the observed terms (oldest-pending age, committed-cursor age) is not built yet.

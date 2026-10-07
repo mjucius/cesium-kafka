@@ -4,7 +4,8 @@ JMH micro-benchmarks for the `KafkaTrackerStore` hot paths (design §11.4). They
 measure the in-memory index structures (`PartitionShard` / `TrackerIndex`) and the `SidecarCodec`
 directly. The broker-backed *macro* perf lane lives in `cesium-kafka-it` (nightly `macro-perf` job).
 
-This module is not wired into `build` / `check`. Run it on demand:
+The JMH run is not wired into `build` / `check` (only `compileJmhJava` is, so the benchmark sources
+compile on every build). Run it on demand:
 
 ```bash
 ./gradlew :cesium-kafka-benchmarks:jmh
@@ -51,7 +52,10 @@ and flags regressions >10 %. It is report-only in v1, because a flaky perf gate 
 
 ## Build wiring
 
-* Applies `cesium.java-conventions` + `me.champeau.jmh` (version from the `jmh-plugin` catalog entry).
+* Applies the `cesium.jmh-conventions` build-logic plugin, which brings in `cesium.java-conventions` +
+  `me.champeau.jmh` (version from the `jmh-plugin` catalog entry).
+* `check` depends on `compileJmhJava`, so benchmark sources must compile on the default lane; the
+  `jmh` run itself stays off `build` / `check`.
 * `NullAway` is disabled for the `jmh` source set only (benchmarks are not production code); the repo
   default `NullAway=ERROR` applies everywhere else.
 * The forked benchmark JVM is pinned to the project's JDK 21 toolchain.

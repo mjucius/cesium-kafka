@@ -42,3 +42,8 @@ specification each archetype's implementers subclass.
   DB-backed stores.
 - `StoreContext.epoch()` reports the dispatch group's (group B) ownership, so it can fence
   dispatch-side writes only; ingest (group A) may own the same partition elsewhere.
+
+> **As shipped:** selection is by `typeId` only; there is no `store.type: class:...` fallback, and an
+> unknown or duplicate `typeId` fails startup (`CesiumEngine.resolveStore`). The external branch of
+> the archetype `switch` has no dispatch loop yet: the app accepts a `TrackerBackedStore` and rejects
+> any other archetype at startup.

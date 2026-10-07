@@ -67,7 +67,7 @@ DispatchLoop loop = switch (store) {
 };
 ```
 
-> As shipped (1.1.x), the external branch has no loop behind it yet: the app build accepts a
+> As shipped (1.x), the external branch has no loop behind it yet: the app build accepts a
 > `TrackerBackedStore` and rejects any other archetype at startup (`CesiumEngine.resolveStore`).
 > A store you write today must therefore implement `TrackerBackedStore` to be runnable by the
 > shipped app; `ExternalSchedulerStore` is a stable, contract-tested surface you can build against,
@@ -136,7 +136,7 @@ public interface DueBatch {
 }
 ```
 
-Backed by parallel `long[]` arrays, so iterating a 10,000-entry batch allocates nothing per entry.
+Backed by parallel primitive arrays, so iterating a 10,000-entry batch allocates nothing per entry.
 
 ### 3.3 Shared value types
 
@@ -308,14 +308,14 @@ class MyTrackerStoreContractTest extends TrackerBackedStoreContract {
 }
 ```
 
-~30 tests + jqwik properties exercise: encode/decode round-trip via `onTrackerRecord`; due ordering
+36 tests (one of them the soak test) and 2 jqwik properties exercise: encode/decode round-trip via `onTrackerRecord`; due ordering
 and dueness; replay idempotence; complete-before-add tolerance; the cursor invariant (every
 pending entry ≥ cursor offset or in the sidecar; monotone under random interleavings vs a reference
 model; sidecar round-trips through `beginRecovery` seeding); overflow-fallback equivalence; the
 recovery barrier (`pollDue` empty while recovering); recovery completing when pending exceeds the
 backpressure threshold; stage→abort→recover ⇒ unchanged; stage→commit→recover ⇒ converged; the
 in-doubt path (drop + re-recover converges, no restore); revoke clears / lost ≠ flush;
-epoch-fencing rejection; pre-compacted-log scripts; and a `@Tag("soak")` 1 M-entry memory-ceiling
+pre-compacted-log scripts; and a `@Tag("soak")` 1 M-entry memory-ceiling
 check.
 
 The kit also ships fixtures you can use directly: `FakeStoreContext` (builder with `partitions`,
@@ -330,8 +330,8 @@ The external archetype's `ExternalSchedulerStore` interface and its companion
 contract ships in `cesium-kafka-store-testkit` today (design [§11.2](design.md#112-store-spi-contract-kit-cesium-kafka-store-testkit-published)),
 even though v1 ships no production external store implementation (a documented non-goal). The SPI
 is fixed now so the contract cannot drift, and the contract is the executable spec you write a
-DB-backed store against. The testkit's own `InMemoryExternalSchedulerStore` reference impl passes it
-in both modes.
+DB-backed store against. The testkit's own `InMemoryExternalSchedulerStore` reference impl (in
+the testkit's test sources, not the published jar) passes it in both modes.
 
 Subclass it and implement `createStore`; override the cursor hooks only if you implement
 reconciliation (the effectively-once upgrade):
@@ -357,7 +357,7 @@ class MyExternalStoreContractTest extends ExternalSchedulerStoreContract {
 }
 ```
 
-~16 tests assert: `capabilities()` declares `EXTERNAL` affinity with a `DispatchGuarantee` consistent
+16 tests assert: `capabilities()` declares `EXTERNAL` affinity with a `DispatchGuarantee` consistent
 with whether reconciliation is implemented (`EXACTLY_ONCE` only when it is); `coordination()` is
 declared; `upsertScheduled` is idempotent on `(partition, sourceOffset)`; `scanPending` streams only
 the requested partition; `markDispatched` (applied strictly *after* the dispatch commit) excludes
@@ -404,13 +404,12 @@ engine never auto-selects:
 ```yaml
 store:
   type: my-tracker          # the provider's typeId()
-  # type: class:com.example.MyTrackerStore   # FQCN fallback
   properties:               # your store's ConfigView subtree
     ...
 ```
 
-Duplicate `typeId`s on the classpath fail startup, listing the offending jars (the
-Kafka-Connect-proven model). The flagship store registers `typeId = "kafka-tracker"` and is selected
+Duplicate `typeId`s on the classpath fail startup (naming the `store.type`), as does an unknown
+`typeId`; there is no FQCN fallback. The flagship store registers `typeId = "kafka-tracker"` and is selected
 with `store.type: kafka-tracker`.
 
 ---

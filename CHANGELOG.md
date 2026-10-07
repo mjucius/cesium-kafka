@@ -27,8 +27,8 @@ No upgrade can newly fail at startup.
 - The documented startup check against broker `offset.metadata.max.bytes` did not exist. Startup
   now reads it and, when the sidecar budget exceeds it, warns and clamps the budget so cursor commits
   pin fewer entries instead of failing at commit time. It only ever warns; an explicit store-side value
-  is warned about but not overridden. A broker set below 128 bytes now fails the store's own
-  validation, as such a broker cannot hold a cursor.
+  is warned about but not overridden. If the clamped budget falls below the store's 128-byte minimum
+  (a broker set that low), it is ignored with a warning and the store keeps its default.
 - `/health/ready` always reported `"recovery": []`. The per-shard recovery detail (state,
   records remaining, ETA) is now fed from the store's shard-state gauges. Recovery still never affects
   readiness (D21).

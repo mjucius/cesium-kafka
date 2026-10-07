@@ -55,7 +55,7 @@ Source: `./gradlew :cesium-kafka-benchmarks:jmh` → `build/results/jmh/results.
 | sidecar decode (300 entries) | ≥ 100 k ops/s | 429 k ops/s | ✅ 4.3× |
 | sidecar roundtrip (300 entries) | none (informational) | 260 k ops/s | n/a |
 | JOL footprint | ≤ 40 B/entry *(rev 1 gate: ≤ 56 B)* | 40.54 B/entry @ 1 M, 45.96 B/entry @ 10 M (`ShardFootprintTest`; 10 M = `@Tag("soak")` variant) | ✅ |
-| JFR steady-state allocation | ~0 B/op insert/drain | < 2 B/op (`SteadyStateAllocationTest`) | ✅ |
+| Steady-state allocation (`ThreadMXBean`) | ~0 B/op insert/drain | < 2 B/op (`SteadyStateAllocationTest`) | ✅ |
 
 `ops/s` for the `SingleShotTime` benchmarks (insert/drain/replay) is `1e9 / (ns per op)`; the raw
 JMH metric is the per-op time in parentheses.
@@ -124,7 +124,7 @@ different workloads, and they differ by ~230×.
   contiguous per-partition source offsets, and held fully index-resident (the §5.3 high-water and
   store cap are raised so nothing is paused). The `KafkaSeekFetcher` does one `seek` + a sequential
   forward scan per partition (the §7 / risk #8 seek-friendly extreme), and the drain commits in large
-  batches. The ~190 k rec/s is read off `cesium_dispatch_records` over a coarse ~0.2 s window (a
+  batches. The ~190 k rec/s is read off `cesium_dispatch_records_total` over a coarse ~0.2 s window (a
   handful of batch commits; see §3.2). It is not a deployment SLA. It shows that the index and
   transaction path are not the bottleneck: the heap pop, ring search, and EOS commit keep up with
   six-figure bursts on this box.
@@ -289,8 +289,8 @@ exceeds the heap budget and prints the computed worst-case footprint. Pause stat
 
 ## 6. GC guidance
 
-The index is long-lived, primitive, chunked, and allocation-free in steady state (JFR < 2 B/op in
-insert/drain). There are no per-entry objects for the GC to trace, unlike the PoC's
+The index is long-lived, primitive, chunked, and allocation-free in steady state (< 2 B/op in
+insert/drain, `SteadyStateAllocationTest`). There are no per-entry objects for the GC to trace, unlike the PoC's
 `DelayQueue<DelayEntry>`.
 
 | Scale | GC | Flags |
@@ -339,8 +339,9 @@ broker cost), `cesium_fetch_bytes_total` (decompressed volume, for the budget),
 `cesium_fetch_penalized_partitions` (penalty-box occupancy), `cesium_fetch_attempts_total` /
 `_misses_total` / `_unfetchable_total`.
 
-A small partition-affine seek-consumer pool (2–4) is a reserved v1.1 extension
-(`dispatch.fetch.parallelism` namespace reserved); the penalty box is the v1 isolation mechanism.
+A small partition-affine seek-consumer pool (2–4) is a possible future extension, not implemented
+(`dispatch.fetch.parallelism` is not an accepted key today; unknown keys fail startup). The penalty
+box is the v1 isolation mechanism.
 
 ---
 
@@ -460,7 +461,7 @@ Open items, tracked against design `§15` risk #9:
 3. Sustained scattered-due dispatch ≈ 826 rec/s is below the 10 k CI target (§3.1). The
    single-thread re-fetch goes random-seek under sparse due-sets (risk #8) and per-transaction
    batches shrink. Re-measure on a dedicated multi-broker cluster (warm fetch sessions, real disk
-   IOPS) and determine whether a partition-affine seek-consumer pool (the reserved v1.1
+   IOPS) and determine whether a partition-affine seek-consumer pool (a possible future
    `dispatch.fetch.parallelism`) is needed. The 190 k best-case burst does not measure this.
 4. Throughput windows are coarse (~0.1–0.2 s) because localhost I/O is fast. Re-run with larger
    `-Dperf.*` counts on a server-class host for a smooth, representative per-instance ceiling

@@ -42,3 +42,7 @@ Guard payload availability explicitly:
   acknowledgment, an accurate margin gauge, a DLQ loss-notice with a versioned JSON contract) where
   the PoC lost payloads silently.
 - Source-topic compaction is unsupported for routes that schedule delays.
+
+> **As shipped:** retention is validated at startup only; there is no periodic re-validation. The
+> runtime earliest-available-age probe and the `cesium_retention_margin_seconds` gauge are not built
+> yet, so monitor source-partition earliest-record age externally.

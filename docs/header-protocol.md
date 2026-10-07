@@ -26,24 +26,28 @@ A producer requests a delay by attaching one control header to a record.
 ### 1.1 Encoding
 
 - Control-header values **MUST** be canonical UTF-8 ASCII decimal, 1–19 digits
-  (`^[0-9]{1,19}$`, the range that renders a non-negative Java `long`). ASCII decimal is producible
-  from every client ecosystem without helper code.
+  (`^[0-9]{1,19}$`), and the value **MUST** fit a signed 64-bit `long` (at most
+  `9223372036854775807`). A 19-digit value that matches the regex but exceeds that is malformed; it
+  is never wrapped. ASCII decimal is producible from every client ecosystem without helper code.
 - A value **MUST NOT** carry a sign, leading `+`, whitespace, decimal point, or thousands separator.
   Such a value is *malformed* (§4).
 - An 8-byte big-endian `long` binary decode exists only behind the `headers.accept-binary-long-values`
   configuration flag (default off). When that flag is on, control-header values are decoded as 8-byte
   big-endian longs instead of ASCII decimal. The two modes are mutually exclusive, because a
-  length-8 value is ambiguous between "8 ASCII digits" and "an 8-byte long". A deployment **MUST**
+  length-8 value is ambiguous between "8 ASCII digits" and "an 8-byte long". In binary mode a value
+  that is not exactly 8 bytes, or a negative `cesium-delay-ms`, is malformed. A deployment **MUST**
   choose one mode for the whole route. Unless you have a specific binary-only producer, leave the
   flag off and produce ASCII decimal.
 
 ### 1.2 `cesium-delay-ms` reference instant
 
-- The relay time is `source-record-timestamp + N`. The source timestamp is the record's CreateTime.
-  Using the producer-controlled CreateTime makes the relay time deterministic across exactly-once
+- The relay time is `source-record-timestamp + N`. The source timestamp is the record's Kafka
+  timestamp: the producer's CreateTime, or the broker's append time on a `LogAppendTime` topic.
+  Either is fixed once the record is written, so the relay time is deterministic across exactly-once
   abort/retry cycles.
-- If the source record has no timestamp (`NO_TIMESTAMP`), cesium **MUST** fall back to the ingest
-  wall clock at the instant the record is first consumed.
+- If the source record has no timestamp (`NO_TIMESTAMP`, or a negative timestamp), cesium **MUST**
+  fall back to the ingest wall clock. The clock is read once per ingest transaction, so a retried
+  transaction can compute a different relay time for such a record.
 
 ### 1.3 `cesium-deliver-at` reference instant
 
@@ -63,10 +67,11 @@ A producer requests a delay by attaching one control header to a record.
 Let `delay.max` be the configured maximum delay (`delay.max`, default `P1D`) and `now` the ingest
 clock.
 
-- `cesium-delay-ms` **MUST** be in `[0, delay.max]`.
+- `cesium-delay-ms` **MUST** be in `[0, delay.max]`, and the resulting relay time **MUST** be
+  `≤ now + delay.max`. An in-range delay on a future-dated source timestamp is over-max.
 - `cesium-deliver-at` **MUST** be `≤ now + delay.max`. There is no lower bound.
-- A value that is past or zero (a `cesium-delay-ms` of `0`, or a `cesium-deliver-at` already
-  elapsed) is not an error: the record relays immediately (a past-due relay). A past
+- A request whose relay time is `now` or earlier (a `cesium-delay-ms` of `0`, or a
+  `cesium-deliver-at` already elapsed) is not an error: the record relays immediately (a past-due relay). A past
   `cesium-deliver-at` is valid.
 - A value failing the grammar of §1.1 is malformed and handled by the malformed-header policy
   (§4.1).
@@ -91,7 +96,9 @@ clock.
 When `headers.stamp-provenance` is `true` (default), cesium stamps the following on every relayed
 record. Values are ASCII decimal or UTF-8 as noted. These headers are delivered (not stripped);
 they are additive and **MUST NOT** collide with a producer's own headers (do not set
-`cesium-`-prefixed headers other than the two control headers).
+`cesium-`-prefixed headers other than the two control headers). `cesium-clamped` is the exception
+to the flag: it is part of the `CLAMP` policy contract and is stamped even when
+`headers.stamp-provenance` is `false`.
 
 | Header | Value | Present on |
 |---|---|---|
@@ -113,7 +120,8 @@ they are additive and **MUST NOT** collide with a producer's own headers (do not
 - By default the relayed record's Kafka timestamp is the dispatch instant (`route.relay.timestamp:
   DISPATCH`). This avoids violating the destination's `message.timestamp.difference.max.ms` and
   skewing time-based retention with an hours-old CreateTime.
-- `route.relay.timestamp: SOURCE` preserves the original CreateTime instead.
+- `route.relay.timestamp: SOURCE` preserves the source record's timestamp instead. A source record
+  without a timestamp gets one assigned by the producer or broker.
 
 ---
 
@@ -183,7 +191,12 @@ all original headers, including the offending control headers, plus:
 |---|---|
 | `cesium-error-reason` | `malformed-header` or `over-max-delay` |
 | `cesium-error-detail` | UTF-8 human-readable detail (e.g. the offending value) |
-| provenance headers | the §2 set, always stamped on DLQ records regardless of `headers.stamp-provenance` |
+| provenance headers | `cesium-relayed-at`, `cesium-source-topic`, `cesium-source-partition`, `cesium-source-offset`, and `cesium-source-timestamp` when the source record had one; always stamped on DLQ records regardless of `headers.stamp-provenance`. `cesium-scheduled-for` and `cesium-clamped` are not stamped. |
+
+`unrelayable` records (§5.3) use the same shape, produced in the ingest transaction for an
+immediate relay or the dispatch transaction for a delayed relay. The record is the one being
+relayed (the source record, or the fetched payload for a delayed relay), and `cesium-error-detail`
+carries the producer's exception message.
 
 ### 5.2 Payload-expired loss notices
 

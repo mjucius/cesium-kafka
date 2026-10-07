@@ -42,3 +42,8 @@ O(1)-drop revocation.
   Plan capacity with 64/80 and expect about 40.
 - The chunked design remains a contained, behavior-preserving swap if measurements at 10 M+ scale
   ever miss targets; the swap changes no semantics or invariants.
+
+> **As shipped:** completion is not a separate `BitSet`. Each slot's lifecycle state
+> (`FREE`, `PENDING`, `IN_FLIGHT`, `COMPLETED`) is one byte in `EntryPool`, stored in 64 KiB chunks,
+> and the arrival log reads completion from it. `EntryPool` also keeps a `BitSet` of CLAMP bits.
+> Lazy deletion in `DispatchHeap` discards any slot whose pool state is no longer `PENDING`.

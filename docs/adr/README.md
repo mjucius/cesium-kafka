@@ -37,4 +37,5 @@ failure matrix need a corresponding test and an ADR.
 ADRs 0001–0015 are the set planned in design §12. 0016 and 0017 record three later project-owner
 decisions: the fastutil index backing, and the bundle of Kafka 4.0 broker floor, repo-only
 publishing, and app as product surface. The design records them in the revision block at the top of
-[`../design.md`](../design.md), and they supersede the affected design text.
+[`../design.md`](../design.md), and they supersede the affected design text. 0018 records a later
+fix: a bounded wait for metadata of topics whose existence startup has already proven.

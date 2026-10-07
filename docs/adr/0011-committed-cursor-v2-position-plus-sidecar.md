@@ -47,3 +47,7 @@ either has `trackerAddOffset ≥ cursorOffset` or rides the sidecar.
 - The external archetype mirrors this idea: an offset-metadata reconciliation cursor upgrades it
   from at-least-once to effectively-once
   ([ADR-0003](0003-sealed-two-archetype-store-spi.md); finalized in the store testkit).
+
+> **As shipped:** the store (`KafkaTrackerStore`, via `SidecarCodec`), not the engine, computes the
+> cursor and encodes the sidecar. Each sidecar entry also carries a flags byte whose bit 0 is the
+> CLAMP marker, so a pinned entry keeps its clamp bit across recovery.

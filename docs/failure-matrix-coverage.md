@@ -50,13 +50,13 @@ Legend for the Lane column:
 | D-12 | Huge due backlog ⇒ time-sliced drain, bounded poll gap | `DispatchLoopTest` (due-storm poll-gap) and `RebalanceScaleIT` (`cesium.dispatch.poll.gap.seconds` bounded under backlog); `BackpressureIT` (§5.3 bounded-memory pause/resume: `cesium.shard.paused` / `cesium.pending.entries` under backlog) | nightly + unit |
 | D-13 | `commitTransaction` ambiguous (live) ⇒ in-doubt, never restore | `DispatchLoopTest` in-doubt fault injection; `TrackerBackedStoreContract` drop+re-recover converges | unit + contract |
 | D-14 | Predecessor stalled between accepted `sendOffsets` and `commit`; commits after takeover | `BarrierOrderingI8IT` (non-negotiable, §11.3-5) | PR + kip848 |
-| D-15 | Abortable-retry exhaustion ⇒ park + degrade | `DegradationIT` (oversized relay ⇒ park-and-degrade, membership stable) | nightly |
+| D-15 | Abortable-retry exhaustion ⇒ park + degrade | `DispatchLoopTest.parkAndDegradeRaisesGaugeAtThresholdAndClearsOnSuccess` (gauge raise/clear, membership preserved); no real-broker trigger exists (an oversized relay now goes to the DLQ, `UnrelayableDlqIT`) | unit; see [gap 5](#gaps-and-concerns) |
 
 ## Recovery / environment (§3.9)
 
 | Row | Fault | Covering test(s) | Lane |
 |-----|-------|------------------|------|
-| R-1 | Full restart | `DispatchRestartRecoveryIT`; `CursorReplayIT`; `KafkaTrackerStoreRecoveryTest` | PR + kip848 |
+| R-1 | Full restart | `DispatchRestartRecoveryIT`; `CursorReplayIT`; `KafkaTrackerStoreRecoveryTest` | PR (kip848: [finding 2](#gaps-and-concerns)) |
 | R-2 | Scale-out | `RebalanceScaleIT` (scale 1→2→1); `CooperativeRevocationIT` | nightly |
 | R-3 | `onPartitionsLost` (fenced member) | `PartitionsLostIT` | nightly |
 | R-4 | Tracker ADD ages (compaction-only, never expires) | `CompactionIT` (lone pending ADD survives cleaning); `TrackerBackedStoreContract` pre-compacted-log scripts | nightly + contract |
@@ -64,8 +64,8 @@ Legend for the Lane column:
 | R-6 | Clock skew between dispatch workers | No EOS test (skew has no EOS impact); surfaced via `dispatch_lag` histogram | n/a; see [gap 3](#gaps-and-concerns) |
 | R-7 | Tracker/source partition-count drift | `StartupValidatorTest`; `StartupChecksIT` (mismatch ⇒ fail-fast) | PR |
 | R-8 | `delete.retention.ms` below the D14 floor ⇒ startup FAIL | `CompactionIT` (startup rejection); `StartupValidatorTest` | nightly + PR |
-| R-9 | Tracker topic deleted/recreated/truncated ⇒ fail-fast | `StartupChecksIT` (committed-offset > end; topic-ID mismatch) | PR |
-| R-10 | Source topic recreated (same name) ⇒ topic-ID mismatch | `StartupChecksIT` (source/tracker recreation ⇒ identity-blob mismatch) | PR |
+| R-9 | Tracker topic deleted/recreated/truncated ⇒ fail-fast | `DispatchLoopTest` (`committedCursorBelowBeginningIsFailFast`, `missingCommittedOffsetWithGroupHistoryIsFailFast`); the out-of-range poll path has no dedicated test | unit |
+| R-10 | Source topic recreated (same name) ⇒ topic-ID mismatch | `StartupChecksIT` (source recreation ⇒ identity-blob mismatch); `StartupValidatorTest`, `IdentityBlobTest` | PR |
 | R-11 | Source evicting by `retention.bytes`/tiered ⇒ explicit ack | `StartupChecksIT` (size-based-retention acknowledgment gate); `StartupValidatorTest` | PR |
 
 ---
@@ -75,7 +75,7 @@ Legend for the Lane column:
 | # | Scenario | Covering test(s) | Lane |
 |---|----------|------------------|------|
 | 1 | Happy path (immediate / delay / deliver-at / precedence) | `HappyPathImmediateIT`, `HappyPathDelayedIT`, `DelayedDeliveryIT`, `HeaderPolicyIT` | PR |
-| 2 | Restart-recovery with crash-point injection | `IngestCrashPointsIT`, `DispatchCrashPointsIT`, `DispatchRestartRecoveryIT` | PR + kip848 |
+| 2 | Restart-recovery with crash-point injection | `IngestCrashPointsIT`, `DispatchCrashPointsIT`, `DispatchRestartRecoveryIT` | PR (kip848: [finding 2](#gaps-and-concerns)) |
 | 3 | Zombie fencing (deterministic) | `ZombieFencingIT`, `ZombieStaticIdFencingIT` | nightly (classic); KIP-848 [finding 2](#gaps-and-concerns) |
 | 4 | LSO / barrier hazard (non-negotiable) | `LsoBarrierHazardIT` | PR + kip848 |
 | 5 | Barrier-ordering hazard I8 (non-negotiable) | `BarrierOrderingI8IT` | PR + kip848 |
@@ -83,7 +83,7 @@ Legend for the Lane column:
 | 7 | Cursor-bounded replay incl. heterogeneous delays | `CursorReplayIT`, `DispatchRestartRecoveryIT` (pins survive partial dispatch) | PR |
 | 8 | Compaction | `CompactionIT` + broker-free backstop `TrackerBackedStoreContract` pre-compacted-log | nightly + contract |
 | 9 | Integrity & environment checks | `StartupChecksIT`, `PayloadExpiryDlqIT`, `HeaderPolicyIT` | PR |
-| 10 | Degradation (park + penalty box) | `DegradationIT` | nightly |
+| 10 | Degradation (park + penalty box) | `DegradationIT` (penalty box); park-and-degrade in `DispatchLoopTest` / `IngestLoopTest` | nightly + unit |
 | 11 | KIP-848 lane | LSO + barrier-ordering kip848 variants (pass); zombie, rebalance and kill-and-restart are [findings](#gaps-and-concerns) (gap 2) | nightly (continue-on-error) |
 | 12 | Crash-loop soak (true SIGKILL, separate JVMs) | Not built | [gap 1](#gaps-and-concerns) |
 
@@ -97,7 +97,7 @@ variant is `@Tag("kip848")`. Verified on `apache/kafka:4.3.0` (KRaft):
 
 | Scenario | Consumer-protocol result |
 |----------|--------------------------|
-| Restart-recovery (`DispatchRestartRecoveryIT`) | PASS |
+| Restart-recovery (`DispatchRestartRecoveryIT`) | Finding (same-id kill-and-restart stalls for the session timeout; variant removed, see finding 2) |
 | LSO / HW barrier (`LsoBarrierHazardIT`) | PASS |
 | Barrier-ordering I8 (`BarrierOrderingI8IT`) | PASS; also verifies takeover/fence under consumer (fast client-side `max.poll.interval.ms` eviction) |
 | Zombie fencing: duplicate `group.instance.id` | Finding (KIP-848 semantic change; see finding 2) |
@@ -166,13 +166,16 @@ consumer protocol when the §8 tuning or the K8s static-membership recipe sets t
    IT that drives a real server-side transaction timeout. Low risk (the abort path is the same as
    D-2, which has an IT); a forced-timeout IT could be added in a later hardening pass.
 
-5. **I-10 ingest-side broker-degradation park-and-degrade: thin IT coverage.** The park-and-degrade
-   state machine is unit-tested (`IngestLoopTest`), and the dispatch-side analog is exercised
-   end-to-end by `DegradationIT`. There is no ingest-specific degradation IT; the loops share the
-   park-and-degrade implementation, so the risk is low, but an ingest-side IT would close the row at
-   the same fidelity as D-15.
+5. **I-10 / D-15 park-and-degrade: unit-only.** The park-and-degrade state machine is unit-tested
+   on both sides (`IngestLoopTest`, `DispatchLoopTest`
+   `parkAndDegradeRaisesGaugeAtThresholdAndClearsOnSuccess`). There is no IT on either side: the one
+   clean real-broker trigger (an oversized relay) is now an unrelayable record routed to the DLQ
+   (`UnrelayableDlqIT`), and transient relay failures surface as delivery timeouts, which the loops
+   classify as in-doubt rather than abortable-retry exhaustion. `DegradationIT` covers only the
+   penalty box.
 
-6. **§11.4 performance (JMH macro / >10% regression gate): later milestone.** The `nightly.yml` soak job runs the
-   `@Tag("soak")` memory-ceiling / JOL-footprint tests (`ShardFootprintTest`,
-   `TrackerBackedStoreContract` 1M-entry soak). The JMH benchmarks module and the macro perf smoke
-   (§11.4) are later-milestone deliverables and are noted as a follow-on lane in `nightly.yml`.
+6. **§11.4 performance: built, non-gating.** The `nightly.yml` `soak` job runs the `@Tag("soak")`
+   memory-ceiling / JOL-footprint tests (`ShardFootprintTest`, `TrackerBackedStoreContract` 1M-entry
+   soak) and the scaled `SoakPerfIT` (`soakPerf`); the `macro-perf` job runs the `*PerfIT` suite; the
+   `benchmarks` job runs the JMH module (`continue-on-error`). The >10% JMH regression gate is
+   report-only (`results/compare.py`). See [performance.md](performance.md).

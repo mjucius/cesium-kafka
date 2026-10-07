@@ -215,7 +215,7 @@ Replaces the PoC's unversioned sign-negation hack. Unknown flags are ignored; un
 
 - **Preserved byte-for-byte:** key, value, all headers minus `cesium-*` control headers.
 - **Provenance headers** (default on, `headers.stamp-provenance`): `cesium-relayed-at`, `cesium-source-topic`, `cesium-source-partition`, `cesium-source-offset`, `cesium-source-timestamp`, `cesium-scheduled-for` (delayed records only). ASCII decimal/UTF-8.
-- **Timestamp:** default `DISPATCH` (now). Rationale: a delayed record carrying an hours-old CreateTime can violate destination `message.timestamp.difference.max.ms` or skew time-based retention; original time is recoverable from `cesium-source-timestamp`. Config `relay.timestamp: DISPATCH | SOURCE`.
+- **Timestamp:** default `DISPATCH` (now). Rationale: a delayed record carrying an hours-old CreateTime can violate destination `message.timestamp.difference.max.ms` or skew time-based retention; original time is recoverable from `cesium-source-timestamp`. Config `route.relay.timestamp: DISPATCH | SOURCE`.
 - **Partitioning:** default `BY_KEY` (destination partition count may differ); `SOURCE_PARTITION` opt-in (partition counts validated equal at startup).
 - **Unrelayable policy** (§3.8 I-8): `route.relay.on-unrelayable: DLQ | DROP | FAIL` (default `DLQ`; `DLQ` requires the dlq topic configured or startup fails). Governs a record the destination broker permanently rejects on produce: `RecordTooLargeException` (relay size + provenance overhead exceeds the producer `max.request.size` or the destination `max.message.bytes`), `InvalidRecordException`, or any other clearly record-scoped permanent rejection. Applies on both relay paths (ingest immediate-relay and dispatch delayed-relay). Transient or availability produce failures are not governed here; they stay on the abort-retry / park-and-degrade path. Sizing destination `max.message.bytes ≥ source + provenance overhead` remains the way to avoid the DLQ entirely.
 - **DLQ contract** (versioned, public): header-error records carry original key/value/all headers (incl. offending control headers) + `cesium-error-reason` (`malformed-header | over-max-delay`) + `cesium-error-detail` + provenance; produced inside the ingest transaction. Unrelayable records reuse the same shape with `cesium-error-reason: unrelayable` + `cesium-error-detail` (the destination rejection message); produced inside whichever transaction was relaying the record (ingest for an immediate relay, dispatch for a delayed relay). Payload-expired loss notices (payload is gone, only the pointer remains): key=null, value = UTF-8 JSON `{"v":1,"sourceTopic","sourcePartition","sourceOffset","scheduledFor","detectedAt","reason":"payload-expired"}` + `cesium-error-reason: payload-expired`; produced inside the dispatch transaction.
@@ -552,6 +552,16 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
 public interface SchedulerStoreProvider { String typeId(); SchedulerStore create(); }
 ```
 
+> **As shipped: additive differences in `cesium-kafka-api`.** `ScheduledRef` carries a fourth
+> component, `boolean clamped` (a three-argument constructor defaults it to `false`), and `DueBatch`
+> has a matching `default boolean clamped(int i)`, so a `CLAMP`-policy entry keeps its
+> `cesium-clamped` stamp through to relay. `TrackerBackedStore` adds two default methods: an
+> `onTrackerRecord(partition, trackerOffset, key, value, Headers headers)` overload (the engine
+> calls it so a store can read the tombstone's completion-reason header) and
+> `onTrackerPosition(int partition, long position)`, which reports the consumer's next-fetch offset
+> so a store can promote a shard ACTIVE across transaction-marker gaps where no record arrives.
+> `value` on `onTrackerRecord` and in `TrackerRecordData` is `@Nullable` (tombstones).
+
 Engine wiring is an exhaustive pattern-match with no instanceof chains:
 
 ```java
@@ -595,6 +605,10 @@ DispatchLoop loop = switch (store) {
 
 `SchedulerStoreProvider` registered via `META-INF/services`; ServiceLoader populates a registry; selection is always explicit: `store.type: kafka-tracker` (typeId) or `store.type: class:com.example.FooStore` (FQCN fallback). There is no auto-selection; duplicate typeIds fail startup listing the offending jars (the model Kafka Connect uses). `cesium-kafka-api` is semver-stable from 1.0; additive evolution via default methods; wire-format versioning belongs to stores, not the SPI. The contract-test kit (§11.2) is the executable specification.
 
+> **As shipped:** the app resolves `store.type` by typeId only (`CesiumEngine.resolveStore`). The
+> `class:<fqcn>` fallback is not implemented, and a duplicate typeId fails startup with a message
+> naming the typeId, not the offending jars.
+
 ---
 
 ## 5. In-Memory Store Implementation (`KafkaTrackerStore`, module `cesium-kafka-store-kafka`)
@@ -615,6 +629,13 @@ Per tracker partition (per-partition rather than global so revocation is O(1) dr
    - **Anomalous duplicate ADD** (R1): found by the same binary search; `dispatchAtMs` updated in place; `trackerAddOffset` never modified while ring-resident (I5).
 
 The chunked layout matters: `long[][]`/`int[][]` with power-of-two chunks (default 131,072 entries → 1 MB long chunks; first chunks geometrically smaller so hundreds of near-empty partitions don't pre-pay megabytes). No G1 humongous allocations (a flat 100 M-entry `long[]` is 800 MB); growth is O(1) and copy-free; slack bounded by one chunk per array; indexing is one extra load + shift/mask, which is negligible next to heap-compare cache misses.
+
+> **As shipped (post-approval revision 1):** the chunked arrays above were replaced by fastutil
+> collections in `com.jucius.cesium.kafka.store.tracker.index`. `EntryPool` holds three
+> `LongBigArrayBigList`s with an `IntArrayList` free-slot stack (not an intrusive free list);
+> `DispatchHeap` wraps `IntHeapPriorityQueue`; the "ring" is `ArrivalLog`, an append-only
+> `IntBigArrayBigList` with a head pointer. Completion is not a separate bitmap: each slot has one
+> metadata byte (lifecycle state plus a saturating heap-copy count). There is no chunk-size setting.
 
 ### 5.3 Slot lifecycle, the slot-reuse hazard, and backpressure
 
@@ -657,7 +678,7 @@ GC guidance (ops doc): the index is long-lived, chunked, and allocation-free in 
 - Shard state machine: `ASSIGNED → RECOVERING → ACTIVE`, exits `REVOKED`/`LOST`; identical under classic-eager, classic-cooperative, and KIP-848 incremental protocols (per-partition, additive, idempotent).
 - Recovery is sidecar seeding plus ordinary consumption from the cursor offset to the HW barrier (§3.6); replay and live tailing share one code path (`onTrackerRecord`). Replay throughput is fetch-bound: ~1–3 M records/s per partition. With the v2 cursor, the replay range ≈ traffic since the last successful commit (+ downtime traffic); in overflow mode the formula is `completion_rate × age(cut) + pending` (§3.5). Live progress: `cesium_replay_remaining_records{partition}` (barrier − position) and `cesium_store_recovery_duration_seconds`.
 - Self-consumed COMPLETE echoes: ring search finds the entry already finalized at commit ⇒ no-op (R2).
-- Cross-partition scheduling: a small binary heap of partitions keyed by `peekNextDispatchTime()` (size = owned partitions), consulted together with the penalty box (§7); `nextDue = partitionHeap.min()` drives the poll timeout (§6), so there is no busy-polling.
+- Cross-partition scheduling: a small binary heap of partitions keyed by `peekNextDispatchTime()` (size = owned partitions), consulted together with the penalty box (§7); `nextDue = partitionHeap.min()` drives the poll timeout (§6), so there is no busy-polling. As shipped, `TrackerIndex` keeps no partition heap: `drainDue` and `nextDeadlineMs` scan the owned shards in O(owned partitions), taking `max(shard deadline, penalty not-before)` per partition.
 
 ---
 
@@ -671,6 +692,16 @@ Kafka clients are not thread-safe, so every client is owned by exactly one threa
 | `cesium-dispatch-{n}` (default 1; useful N ≤ tracker partitions fleet-wide; each gets its own group-B consumer, producer, seek consumer, disjoint shards) | tracker consumer (group B) + dispatch transactional producer + seek consumer + shards | below |
 | `cesium-admin` | AdminClient: startup validation, periodic parity/retention/compaction/topic-ID/tracker-size re-validation, barrier `listOffsets` futures, empirical retention probes | low duty |
 | observability | metrics/health HTTP, gauge sampling, heartbeat freshness | n/a |
+
+> **As shipped:** there is no `cesium-admin` thread, and periodic re-validation is not yet built.
+> Admin work runs once at startup (`StartupValidator`, called from `CesiumEngine.start()` on the
+> caller's thread), and the dispatch loop issues barrier `listOffsets` through `KafkaDispatchAdmin`
+> on a shared `Admin` client. Partition parity, source retention, tracker
+> configs and the `delay.max` term of the D14 floor are checked at startup only. The observed-age
+> terms of the D14 floor, the tracker-size monitor and the empirical retention probe are not yet built
+> (`cesium_retention_margin_seconds` is not emitted, §9). Identity blobs are re-checked when
+> committed offsets are fetched on assignment. The observability threads are
+> `cesium-health` (a scheduled health sampler) and `cesium-obs-<n>` (the HTTP pool).
 
 `roles: [ingest, dispatch]` (default both) selects which loops start, so the halves scale on separate fleets.
 
@@ -701,7 +732,7 @@ while (running) {
 
 - No missed wakeups: an earlier-deadline ADD can only arrive via `poll()`, which returns immediately on new records. No timers, no condition variables, no 10 ms spin (the PoC busy-polled in three places). Burst behavior: back-to-back transactions until the slice deadline, each separated by a zero-timeout poll, so the maximum poll gap is one transaction (bounded by the fetch budgets in §7), observable as `cesium_dispatch_poll_gap_seconds` with an alert threshold well below `max.poll.interval.ms`.
 - Rebalance callbacks do O(1) bookkeeping only (they run inside `poll()` on this thread, and by I3 no transaction is open): `onPartitionsAssigned` marks shards ASSIGNED with an epoch; `onPartitionsRevoked` drops shards and cancels their barrier futures; `onPartitionsLost` drops everything and aborts producer state. Callbacks make no network round-trips, run no replay, and take no barrier snapshots (I8), so the PoC's group-stalling inline replay cannot happen. Already-ACTIVE shards keep dispatching while new ones recover.
-- `consumer.wakeup()` for shutdown. Graceful shutdown: readiness flips false → ingest finishes/aborts its open txn at a batch boundary and stops → dispatch likewise → producers closed (clean commit/abort then close) → consumers closed (clean revocation triggers nothing heavy) → bounded by `shutdown.timeout`; then hard abort, which is always safe because aborts are safe by construction. Exit non-zero on timeout.
+- `consumer.wakeup()` for shutdown. Graceful shutdown: readiness flips false → ingest finishes/aborts its open txn at a batch boundary and stops → dispatch likewise → producers closed (clean commit/abort then close) → consumers closed (clean revocation triggers nothing heavy) → bounded by a shutdown timeout (as shipped a fixed 30 s, `CesiumApp.SHUTDOWN_TIMEOUT`, not a config key); then hard abort, which is always safe because aborts are safe by construction. Exit non-zero on timeout.
 - Error handling follows the §3.8 taxonomy verbatim: definitively-abortable → abort/restore/retry; fatal → close clients, fail the loop, exit non-zero (readiness already false); in-doubt commit → I9 procedure (never restore); retry exhaustion → park-and-degrade (entries to pending with penalty not-before, membership alive, `cesium_degraded` + alert).
 
 ---
@@ -715,10 +746,10 @@ The PoC did one `seek` + one 10 ms `poll` per entry and silently dropped the mes
 3. **Tri-state classification:**
    - `FOUND`: record at offset retrieved.
    - `GONE` (provably expired): `beginningOffsets(partition) > wantedOffset`, or position passed the offset without yielding it; the payload was lost to retention/compaction/size-eviction.
-   - `TRANSIENT`: slice/deadline exhausted or transport error. Re-check `beginningOffsets` before classifying; still-unresolved entries stay pending (never silently dropped), and the source partition enters the penalty box: a per-partition `not-before = now + backoff` (`dispatch.fetch.penalty.backoff`: exponential `PT0.05S → PT10S` on consecutive failures, reset on success), stored in one `long[]` indexed by partition. `drainDue` skips penalized entries even when due, so there is no hot-spin and no head-of-line blocking of healthy partitions (D22). Observability: `cesium_fetch_penalized_partitions`, `cesium_fetch_duration_seconds` (histogram), `cesium_fetch_bytes_total`.
+   - `TRANSIENT`: slice/deadline exhausted or transport error. Re-check `beginningOffsets` before classifying; still-unresolved entries stay pending (never silently dropped), and the source partition enters the penalty box: a per-partition `not-before = now + backoff` (`dispatch.fetch.penalty.backoff`: exponential `PT0.05S → PT10S` on consecutive failures, reset on success), stored in one `long[]` indexed by partition (as shipped, an `Int2LongOpenHashMap` in `TrackerIndex`). `drainDue` skips penalized entries even when due, so there is no hot-spin and no head-of-line blocking of healthy partitions (D22). Observability: `cesium_fetch_penalized_partitions`, `cesium_fetch_duration_seconds` (histogram), `cesium_fetch_bytes_total`.
 4. **Unfetchable policy** `dispatch.on-unfetchable-payload: DLQ | DROP | FAIL` (default `DLQ`): DLQ loss-notice per §2.4, produced inside the same dispatch transaction as the COMPLETE tombstone and offsets, so the entry is resolved exactly once even when its payload is gone (D-9). `DROP` writes the COMPLETE only (+ metric). In all non-FAIL modes the COMPLETE is always written; otherwise the entry would replay forever (poison loop).
 5. Keep fetch sessions warm: assign the union of partitions seen in recent passes rather than churning assignment.
-6. **Startup + periodic retention validation (size- and tier-aware):** source `retention.ms` vs `delay.max + margin` (`startup-checks.retention: FAIL | WARN | SKIP`, default FAIL). `retention.ms=-1` alone is not a pass: when `retention.bytes != -1` or remote/tiered storage is enabled on the source, time-based validation cannot bound payload lifetime, so startup fails unless the operator sets `startup-checks.size-based-retention: ACKNOWLEDGED` (an explicit, named acceptance). At runtime, the admin thread probes each source partition's observed earliest-available record age (beginningOffsets + earliest-timestamp lookup; exact API verified at implementation) and feeds `cesium_retention_margin_seconds = observed_earliest_age − delay.max`, which stays accurate under time-, size-, and tier-based eviction, with an alert before the loss class can bite. Compacted source topics fail/warn (pointer-only storage cannot survive source compaction).
+6. **Startup + periodic retention validation (size- and tier-aware):** source `retention.ms` vs `delay.max + margin` (`startup-checks.retention: FAIL | WARN | SKIP`, default FAIL). `retention.ms=-1` alone is not a pass: when `retention.bytes != -1` or remote/tiered storage is enabled on the source, time-based validation cannot bound payload lifetime, so startup fails unless the operator sets `startup-checks.size-based-retention: ACKNOWLEDGED` (an explicit, named acceptance). At runtime, the admin thread probes each source partition's observed earliest-available record age (beginningOffsets + earliest-timestamp lookup; exact API verified at implementation) and feeds `cesium_retention_margin_seconds = observed_earliest_age − delay.max`, which stays accurate under time-, size-, and tier-based eviction, with an alert before the loss class can bite. (As shipped: the runtime probe and this gauge are not yet built; retention is validated at startup only, see §6.) Compacted source topics fail/warn (pointer-only storage cannot survive source compaction).
 7. Ops note: dispatch-time fetches hit cold (non-page-cache) segments for long delays; per-partition forward scans are the mitigation; broker disk IOPS must be budgeted (ops guide). A small partition-affine seek-consumer pool (2–4) feeding the dispatch thread via a bounded queue remains a reserved v1.1 extension (`dispatch.fetch.parallelism` namespace reserved); the penalty box above is the v1 isolation mechanism.
 
 ---
@@ -728,7 +759,7 @@ The PoC did one `seek` + one 10 ms `poll` per entry and silently dropped the mes
 Pipeline: YAML (`--config /etc/cesium/cesium.yaml`) → Jackson-dataformat-yaml into immutable Java records → aggregate validation (every violation reported at once; exit 78/EX_CONFIG) → frozen `CesiumConfig`. Precedence: defaults < YAML < env < `-D`. Env mapping: `CESIUM_` prefix, `__` path separator (`CESIUM_ROUTE__SOURCE__TOPIC`); unknown keys (YAML or env-under-prefix) are startup errors; `${env:VAR}` interpolation for secrets. No framework. Secret hygiene (L6): the passthrough property maps (`kafka.*.properties`, `store.properties`) are wrapped in a value-redacting `SecretMap`, so a credential never surfaces through a record `toString`. Because `${env:VAR}` interpolation runs *before* binding, a typed-scalar binding failure reports only the field path + expected format, never the raw (possibly interpolated-secret) value.
 
 ```java
-public record CesiumConfig(String applicationId, String instanceId, Set<Role> roles,
+public record CesiumConfig(String applicationId, InstanceId instanceId, Set<Role> roles,
     KafkaConfig kafka, RouteConfig route, DelayConfig delay, HeadersConfig headers,
     StoreConfig store, IngestConfig ingest, DispatchConfig dispatch,
     ObservabilityConfig observability, StartupChecks startupChecks) {}
@@ -743,8 +774,8 @@ Key defaults (durations ISO-8601):
 
 | Key | Default | Notes |
 |---|---|---|
-| `applicationId` | required | Namespaces groups, txn ids, default topic names |
-| `instanceId` | required (or explicit `random`) | Txn-id stability (D10) + default `group.instance.id` (D21) |
+| `application-id` | required | Namespaces groups, txn ids, default topic names |
+| `instance-id` | required (or explicit `random`) | Txn-id stability (D10) + default `group.instance.id` (D21) |
 | `roles` | `[ingest, dispatch]` | Independent scaling |
 | `route.tracker.bootstrap` | `CREATE` | `CREATE \| FAIL`; CREATE applies §2.1 configs + ACL (when `acl-principal` set), partitions mirrored from source |
 | `delay.max` | `P1D` | Lowered from P7D: drives the tombstone-retention floor and tracker disk (§12 worksheet); raising it is an explicit, worksheet-reviewed decision |
@@ -766,10 +797,10 @@ Key defaults (durations ISO-8601):
 | `route.relay.timestamp` / `partitioning` | `DISPATCH` / `BY_KEY` | §2.4; nested in `route` per the sketch (post-approval revision 3) |
 | `headers.stamp-provenance` | `true` | |
 | `store.type` | `kafka-tracker` | explicit always |
-| `index.chunk.entries` | 131072 | §5.2 |
+| `index.chunk.entries` | 131072 | §5.2. As shipped: no such key; the fastutil index (post-approval revision 1) has no chunk setting |
 | `startup-checks.retention` | `FAIL` | §7.6 |
 | `startup-checks.size-based-retention` | unset (⇒ FAIL when size/tiered eviction detected) | explicit `ACKNOWLEDGED` to proceed |
-| `startup-checks.max-tolerated-outage` | `P7D` | checked against broker `offsets.retention.minutes`; WARN/FAIL configurable |
+| `startup-checks.max-tolerated-outage` | `P7D` | checked against broker `offsets.retention.minutes`; WARN/FAIL via `startup-checks.outage-check` (default `FAIL`) |
 | `startup-checks.tracker-acl` | `WARN` | R12 tracker write-ACL verified at startup; `WARN` surfaces a missing/foreign/unset grant, `FAIL` (recommended for production) refuses to start when it is not in force, `SKIP` omits the check |
 | `observability.port` | 8081 | |
 | `observability.bind-address` | `0.0.0.0` | wildcard for k8s probes; set `127.0.0.1` to restrict the unauthenticated endpoints to loopback (L1) |
@@ -781,24 +812,24 @@ Kafka client passthrough: `kafka.properties` (common) + `kafka.{ingest-consumer|
 
 ## 9. Observability
 
-Stack: Micrometer `PrometheusMeterRegistry` + JDK `com.sun.net.httpserver` (zero extra deps) serving `/metrics`, `/health/live`, `/health/ready`, `/info`. The endpoints are unauthenticated, so by default `/info` discloses only version + commit + store type. The sensitive fields (applicationId, which seeds the fencing ids; roles; store capabilities; acknowledgments) are opt-in behind `observability.detailed-info` (M3). The server binds `observability.bind-address` (default `0.0.0.0`; set `127.0.0.1` for a loopback-only scrape, L1), caps accepted connections (`jdk.httpserver.maxConnections`, default 64) and enables the JDK slow-client reaper (`sun.net.httpserver.maxReqTime`/`maxRspTime`, default 10s, operator-overridable) over a small bounded dispatch pool, so neither a slowloris nor an idle-socket flood can starve the health probes (M1). Kafka client metrics bridged via `KafkaClientMetrics`. Common tags: `application_id`, `role`. SLF4J + Logback, JSON encoder behind `LOG_FORMAT=json`; MDC `applicationId`/`loop`/`partition`/`txn`; one-line lifecycle events; never log payloads; no logging in per-entry hot paths. One attacker-influenced value does reach a log line: a tombstone's `cesium-completion-reason` header on the unknown-reason path. It is control-char-stripped and length-capped before logging (L7), so it cannot forge log lines under the default plain encoder.
+Stack: Micrometer `PrometheusMeterRegistry` + JDK `com.sun.net.httpserver` (zero extra deps) serving `/metrics`, `/health/live`, `/health/ready`, `/info`. The endpoints are unauthenticated, so by default `/info` discloses only version + commit + store type. The sensitive fields (applicationId, which seeds the fencing ids; roles; store capabilities; acknowledgments) are opt-in behind `observability.detailed-info` (M3). The server binds `observability.bind-address` (default `0.0.0.0`; set `127.0.0.1` for a loopback-only scrape, L1), caps accepted connections (`jdk.httpserver.maxConnections`, default 64) and enables the JDK slow-client reaper (`sun.net.httpserver.maxReqTime`/`maxRspTime`, default 10s, operator-overridable) over a small bounded dispatch pool, so neither a slowloris nor an idle-socket flood can starve the health probes (M1). Kafka client metrics bridged via `KafkaClientMetrics`. Common tags: `application_id`, `role`. (As shipped: neither. No `KafkaClientMetrics`/JVM binders are wired, so `kafka_*` and JVM series come from a JMX exporter sidecar, and no common tags are applied; meters carry only their own tags such as `loop` and `partition`.) SLF4J + Logback, JSON encoder behind `LOG_FORMAT=json`; MDC `applicationId`/`loop`/`partition`/`txn` (as shipped, both encoders render these MDC keys but no engine code populates them yet); one-line lifecycle events; never log payloads; no logging in per-entry hot paths. One attacker-influenced value does reach a log line: a tombstone's `cesium-completion-reason` header on the unknown-reason path. It is control-char-stripped and length-capped before logging (L7), so it cannot forge log lines under the default plain encoder.
 
 Health (decoupled from recovery, D21):
 - **Liveness** = loop heartbeat freshness (epoch-nanos atomic bumped per iteration) + thread liveness.
-- **Readiness** = startup checks passed AND loops alive AND consumers have assignments AND recent poll. Shard recovery state is not part of readiness: a healthily replaying instance is ready, and gating rollouts on replay completion wedges deploys behind replay durations and multiplies replay work through churn. Recovery progress is exposed instead via the `/health/ready` detail payload (per-shard state + records remaining + ETA), `cesium_shard_state`, and `cesium_replay_remaining_records`. Readiness flips false on shutdown signal before consumers close (preStop drain). A `degraded` detail flag (with cause) surfaces park-and-degrade states (§3.8) without failing probes.
+- **Readiness** = startup checks passed AND loops alive AND consumers have assignments AND recent poll (as shipped, loop iteration is the proxy for "has assignments": the health sampler cannot see a loop's consumer assignment). Shard recovery state is not part of readiness: a healthily replaying instance is ready, and gating rollouts on replay completion wedges deploys behind replay durations and multiplies replay work through churn. Recovery progress is exposed instead via the `/health/ready` detail payload (per-shard state + records remaining + ETA), `cesium_shard_state`, and `cesium_replay_remaining_records`. Readiness flips false on shutdown signal before consumers close (preStop drain). A `degraded` detail flag (with cause) surfaces park-and-degrade states (§3.8) without failing probes.
 - **K8s rollout recipe (documented + integration-tested):** static membership default on + `session.timeout.ms` > pod restart time ⇒ rolling restarts move zero partitions and replay happens on the returning member. **Do not** HPA dispatch-role fleets on CPU: replay is CPU/network-heavy and scale-out mid-recovery triggers rebalances that multiply replay work. The docs warn about this prominently.
 
 Metric inventory (final names, `cesium_` prefix):
 
-> **Not all of these ship in 1.1.x.** Rows marked **[not yet emitted]** are specified here but were
+> **Not all of these ship yet.** Rows marked **[not yet emitted]** are specified here but were
 > deferred past M8. Those series do not exist in the release, so no alert may be written against
 > them. [`docs/operations.md`](operations.md) §13 is the authoritative inventory of what a
 > running cesium actually exposes, and lists the proxy metrics to use until these land.
 
 | Metric | Type | Tags | Meaning |
 |---|---|---|---|
-| `cesium_ingest_records_total` | counter | `outcome=relayed_immediate\|scheduled\|dlq\|clamped` | ingest dispositions |
-| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped` | dispatch dispositions |
+| `cesium_ingest_records_total` | counter | `outcome=relayed_immediate\|scheduled\|dlq\|clamped\|unrelayable_dropped` | ingest dispositions |
+| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped\|unrelayable` | dispatch dispositions |
 | `cesium_dispatch_lag_seconds` | histogram | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | max time between group-B polls; alert ≪ `max.poll.interval.ms` (§6) |
 | `cesium_pending_entries` | gauge | `partition` | index size, refreshed every dispatch-loop iteration; alert on step-collapse (tracker-integrity canary, R-9) |
@@ -833,31 +864,31 @@ The operations runbook ties alerts to remedies: cursor age vs tombstone retentio
 
 ## 10. Project / Module Layout
 
-Gradle (Kotlin DSL), version catalog (`gradle/libs.versions.toml`), convention plugins via included `build-logic`, Java toolchain 21 (CI also tests latest LTS). Group id `com.jucius.cesium`; package root `com.jucius.cesium.kafka`. Dependencies minimal: kafka-clients 4.x, slf4j (+logback in app), micrometer-core, jackson-dataformat-yaml (app); no Spring. Test-only: Testcontainers, Toxiproxy module (deterministic fault injection, §11.3), jqwik, awaitility, JOL. JPMS: `Automatic-Module-Name` only (kafka-clients is not module-safe).
+Gradle (Kotlin DSL), version catalog (`gradle/libs.versions.toml`), convention plugins via included `build-logic`, Java toolchain 21 (CI also tests latest LTS). Group id `com.jucius.cesium`; package root `com.jucius.cesium.kafka`. Dependencies minimal: kafka-clients 4.x, slf4j (+logback in app), micrometer-core, jackson-dataformat-yaml (app), fastutil-core (store-kafka, post-approval revision 1); no Spring. Test-only: Testcontainers, Toxiproxy module (deterministic fault injection, §11.3), jqwik, awaitility, JOL. JPMS: `Automatic-Module-Name` only (kafka-clients is not module-safe). As shipped, the jars carry no JPMS metadata at all (no `Automatic-Module-Name` manifest entry).
 
 ```
 cesium-kafka/
 ├── settings.gradle.kts / build.gradle.kts / gradle/libs.versions.toml
-├── build-logic/                       # cesium.java-conventions, publish-, test- (jvm-test-suite),
-│                                      # quality-conventions (spotless palantir-java-format, errorprone+nullaway)
+├── build-logic/                       # as shipped: cesium.java-conventions (toolchain, tests, spotless
+│                                      # palantir-java-format, errorprone+nullaway) + cesium.jmh-conventions
 ├── cesium-kafka-api/                  # SPI (§4), header constants, ScheduledRef/DueBatch/TrackerCursor/ConfigView. Published.
-│   └── com.jucius.cesium.kafka.api.{store,headers,config}
+│   └── com.jucius.cesium.kafka.api.{store,headers}
 ├── cesium-kafka-core/                 # engine: loops, txn manager + error taxonomy, cursor/barrier orchestration,
 │   │                                  # policies, header codec, penalty box, admin validation (parity, retention,
 │   │                                  # topic-ID identity, offsets-retention), shard state machine. Published.
-│   └── com.jucius.cesium.kafka.core.{engine,ingest,dispatch,fetch,admin,config}
+│   └── com.jucius.cesium.kafka.core.{ingest,dispatch,fetch,admin,config,headers,policy,kafka,loop,testing}
 ├── cesium-kafka-store-kafka/          # KafkaTrackerStore: tracker wire format, sidecar codec, packed index (§5). Published.
-│   └── com.jucius.cesium.kafka.store.tracker
+│   └── com.jucius.cesium.kafka.store.tracker{,.index}
 ├── cesium-kafka-store-testkit/        # SPI contract kit + fixtures (MutableClock, FakeStoreContext,
 │   │                                  # TrackerEventScript incl. pre-compacted-log scripts, jqwik arbitraries). Published.
 │   └── com.jucius.cesium.kafka.testkit
 ├── cesium-kafka-app/                  # main(), YAML config, lifecycle, health/metrics HTTP, distTar/Zip,
 │   │                                  # Dockerfile (eclipse-temurin:21-jre; the dist start script needs a shell)
-│   └── com.jucius.cesium.kafka.app
+│   └── com.jucius.cesium.kafka.app.{config,lifecycle,health,metrics,logging}
 ├── cesium-kafka-benchmarks/           # JMH + JOL footprint tests (not CI-gating; nightly)
 ├── cesium-kafka-it/                   # Testcontainers integration (separate-JVM process model for kill tests),
 │                                      # EOS/fencing/LSO/barrier-ordering scenarios, soak, macro perf
-├── config/cesium-example.yaml, docker-compose.yaml   # README quickstart (apache/kafka 4.x KRaft + cesium)
+├── config/cesium-example.yaml, config/docker-compose.yaml   # README quickstart (apache/kafka 4.x KRaft + cesium)
 ├── docs/                              # §12
 └── .github/workflows/                 # §13
 ```
@@ -959,6 +990,16 @@ The ~190 k rec/s dispatch figure is a best-case burst and is not a sustained SLA
 - **codeql.yml**: Java analysis on PR + weekly.
 - **release.yml** (tag `v*`): full build/test incl. one full integration matrix pass, publish `api`/`core`/`store-kafka`/`testkit` to Maven Central (signed; OIDC where possible), app image to GHCR, draft Release with changelog. **Superseded for v1.0 (post-approval revision 2 / [ADR-0017](adr/0017-kafka-4-floor-and-repo-only-publishing.md)): publishing is repo-only.** `release.yml` runs the representative integration lane (which already includes the two non-negotiable hazard tests) and publishes a GitHub Release with the `distTar`/`distZip` archives only; no Maven Central, no GHCR. Those are additive 1.x steps, documented in the workflow header.
 - **Renovate** (over Dependabot: native version-catalog support, grouped PRs); kafka-clients/testcontainers/micrometer majors grouped for manual review. Branch protection: ci required, linear history; `gradle/actions/setup-gradle` caching; PR concurrency-cancel; quarantine tag (`@Tag("quarantine")`) excluded from required jobs, reported nightly. Security-audit revision (M4): ahead of Renovate adoption, a `.github/dependabot.yml` (github-actions + gradle ecosystems, weekly) is committed now so the SHA-pinned third-party actions and the jackson/logback pins do not silently rot. Every third-party action in `ci`/`nightly`/`release.yml` is pinned to a full 40-char commit SHA (with a `# vX.Y.Z` comment), and the Docker base images (`Dockerfile`) plus the Gradle distribution (`gradle-wrapper.properties` `distributionSha256Sum`) are content-pinned. Full Maven-dependency verification metadata is a deferred follow-up (too brittle pre-1.0).
+
+> **As shipped:** three workflows exist, `ci.yml`, `nightly.yml` and `release.yml`. `ci.yml` has
+> two jobs: `build-and-unit` (test JVM matrix 21 and 25; `./gradlew build`, which includes
+> Spotless and Error Prone/NullAway, so there is no separate `quality` job) and `integration`
+> (`:cesium-kafka-it:integrationTest`, the representative lane). There is no `docs-lint` job, no
+> JaCoCo, and no `codeql.yml`. `nightly.yml` runs `integration-full` (classic, `-PincludeNightly`),
+> `macro-perf`, a KIP-848 job (`-Pkip848Only`, `continue-on-error: true`), `soak` and
+> `benchmarks`; there are no separate 1-instance or combined-roles matrix legs. Dependency updates
+> come from `.github/dependabot.yml`; Renovate is not adopted, and no `@Tag("quarantine")`
+> exclusion exists.
 
 ---
 

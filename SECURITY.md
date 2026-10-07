@@ -81,14 +81,16 @@ privilege means granting that one principal exactly the ACLs below and nothing e
 |   |  | `Topic` · *tracker* | WRITE | completion tombstones |
 |   |  | `Topic` · *DLQ* | WRITE | unfetchable-payload loss notices |
 |   |  | `Group` · `cesium.<app>.dispatch` | READ | `sendOffsetsToTransaction` commits the cursor |
-| 6 | **Admin client** | `Cluster` | DESCRIBE, DESCRIBE_CONFIGS | `describeCluster`, broker-config validation |
-|   |  | `Topic` · *source*, *destination*, *tracker*, *DLQ* | DESCRIBE, DESCRIBE_CONFIGS | startup/periodic topic-config validation |
-|   |  | `Group` · `cesium.<app>.ingest`, `cesium.<app>.dispatch` | DESCRIBE | first-run offset probe (`listConsumerGroupOffsets`) |
+| 6 | **Admin client** | `Cluster` | DESCRIBE, DESCRIBE_CONFIGS | `describeCluster`, broker-config validation, `describeAcls` (tracker ACL check) |
+|   |  | `Topic` · *source*, *destination*, *tracker*, *DLQ* | DESCRIBE, DESCRIBE_CONFIGS | startup topic-config validation |
+|   |  | `Group` · `cesium.<app>.ingest`, `cesium.<app>.dispatch` | DESCRIBE | `listConsumerGroupOffsets`: startup source-identity check (ingest group), first-run probe (dispatch group) |
 |   |  | `Cluster` (`CREATE` bootstrap only) | CREATE, ALTER | `createTopics` (tracker) + `createAcls` (apply the tracker ACL) |
 
-> **The `TransactionalId` ACLs (rows 4 and 5) are required.** cesium's transactional and
-> `group.instance.id` ids are fully deterministic (`cesium.<app>.<role>.<instance>.<ordinal>`), and
-> the `application-id` seed is disclosed on the unauthenticated `/info` endpoint. **Without a
+> **The `TransactionalId` ACLs (rows 4 and 5) are required.** cesium's transactional ids
+> (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
+> (`cesium.<app>.<role>.<instance>`) are fully deterministic. The `application-id` seed is easy to
+> infer (it names the consumer groups and the default tracker topic) and is disclosed on the
+> unauthenticated `/info` endpoint when `observability.detailed-info: true`. **Without a
 > `TransactionalId` ACL scoping `cesium.<app>.*` to the cesium principal, any authenticated co-tenant
 > can open a producer with cesium's transactional id, call `initTransactions()`, and fence cesium's
 > producer into a `ProducerFencedException` → fatal exit → restart → re-fence crash-loop** (finding
@@ -168,20 +170,23 @@ or fairness. Capacity and abuse isolation rely entirely on controls that sit bef
 Budget for two sizing consequences. `delay.max` directly multiplies tracker disk: the
 tombstone-retention floor is `2 × delay.max` (see the
 [operations sizing worksheet](docs/operations.md#2-the-tracker-sizing-worksheet)). The DLQ also
-needs its own retention bound, because cesium validates that the DLQ exists but not its retention, so
-a malformed-record flood can fill an unbounded DLQ.
+needs its own retention bound: a malformed-record flood can fill an unbounded DLQ. Startup validates
+that the DLQ exists and only warns when its retention is fully unbounded (`retention.ms=-1` and
+`retention.bytes=-1`).
 
 ### 6. Observability port is unauthenticated (L1)
 
 The observability HTTP server (default `observability.port: 8081`, serving `/metrics`, `/info`,
 `/health/live`, `/health/ready`) is read-only but **completely unauthenticated**: no token, no mTLS,
-no source-IP gate. `/info` and `/metrics` disclose the build version, the `application-id`,
-per-partition operational gauges, and store capabilities (reconnaissance that also seeds the M3
-fencing ids).
+no source-IP gate. `/metrics` discloses per-partition operational gauges. `/info` returns only the
+build version, git commit, and store type by default; `observability.detailed-info: true` (default
+`false`) adds the `application-id` (which seeds the M3 fencing ids), roles, store capabilities, and
+acknowledgments, so leave it off on any port you cannot restrict.
 
 The listener binds all interfaces by default (`observability.bind-address: 0.0.0.0`) so k8s probes
-reach it, and it now caps accepted connections (`jdk.httpserver.maxConnections`, default 64) on top of
-the existing slow-client reaper, closing the M1 idle-socket exhaustion vector.
+reach it, and it caps accepted connections (`jdk.httpserver.maxConnections`, default 64) on top of
+the slow-client reaper (`sun.net.httpserver.maxReqTime`/`maxRspTime`, default 10 s), closing the M1
+idle-socket exhaustion vector.
 
 **The port MUST be network-restricted**, because there is no in-process auth to fall back on:
 

@@ -18,7 +18,8 @@ non-`cesium-*` headers are preserved byte-for-byte.
 
 ## Status
 
-**v1.0**, a ground-up rewrite of an earlier proof-of-concept. See the
+**v1** (latest release 1.1.5; 1.2.0 in development), a ground-up rewrite of an earlier
+proof-of-concept. See the
 [CHANGELOG](CHANGELOG.md) for the release notes and [docs/design.md](docs/design.md) for the complete
 design (architecture, exactly-once transaction/fencing analysis, failure matrix, store SPI).
 
@@ -203,7 +204,7 @@ part of it.
 | Doc | What it covers |
 |---|---|
 | [Store SPI guide](docs/store-spi.md) | Implementers' guide: archetype flowchart, ordering/cursor contracts, the contract test kit, packaging |
-| [Architecture Decision Records](docs/adr/) | ADRs 0001–0017: the main design decisions, in Status/Context/Decision/Consequences form |
+| [Architecture Decision Records](docs/adr/) | ADRs 0001–0018: the main design decisions, in Status/Context/Decision/Consequences form |
 | [Design document](docs/design.md) | The full design: invariants, the complete failure matrix, the proofs |
 
 ## Building

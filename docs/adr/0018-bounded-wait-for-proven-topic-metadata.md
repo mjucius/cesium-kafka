@@ -78,7 +78,7 @@ time a deployment actually needs a different value.
   gets at most 10 s slower; a healthy one is unchanged (the first attempt still succeeds and costs no
   extra RPC).
 - This introduces the first `Thread.sleep` in production source in this repository, on the
-  `cesium-admin` startup thread. There is no liveness impact (readiness is already false and no
+  startup thread (there is no dedicated `cesium-admin` thread; startup runs on the main thread). There is no liveness impact (readiness is already false and no
   loops are running), and the interrupt path restores the flag and returns immediately, so a SIGTERM
   during startup is not converted into a cluster finding.
 - `KafkaClusterAdmin.DEFAULT_TIMEOUT` (30 s) still applies to each individual call underneath, so the

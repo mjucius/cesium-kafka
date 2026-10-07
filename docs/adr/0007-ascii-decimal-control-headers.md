@@ -26,7 +26,8 @@ An 8-byte big-endian long decode exists only behind `headers.accept-binary-long-
 `cesium-deliver-at` wins if both are present (`cesium_header_errors_total{type="conflict"}` +
 WARN); `lastHeader` wins for multi-valued headers. Validation is regex + range
 (`delay-ms ∈ [0, delay.max]`, `deliver-at ∈ (−∞, now + delay.max]`); past or zero values relay
-immediately (`reason="past_due"`) and are not errors. The PoC's unprefixed names are not
+immediately (counted as `cesium_ingest_records_total{outcome="relayed_immediate"}`) and are not
+errors. The PoC's unprefixed names are not
 honored (a clean break, covered by the migration doc).
 
 ## Consequences

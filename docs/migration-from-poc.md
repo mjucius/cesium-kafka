@@ -70,8 +70,8 @@ tool for verifying delivery.
 ### 3.2 No silent message loss on a missing payload
 
 The PoC did one `seek` + one short `poll` per entry and silently dropped the message if the
-payload was no longer available. cesium-kafka classifies each fetch as `FOUND` / `GONE` / `TRANSIENT`
-and, on a provably-expired payload, produces an explicit payload-expired DLQ loss notice inside
+payload was no longer available. cesium-kafka classifies each fetch as `FOUND` / `GONE` / `TRANSIENT` (plus
+`CARRY_OVER` for entries deferred by the fetch byte budget) and, on a provably-expired payload, produces an explicit payload-expired DLQ loss notice inside
 the dispatch transaction (`dispatch.on-unfetchable-payload: DLQ`, the default). The entry resolves
 exactly once and is never silently lost. See the [DLQ contract](header-protocol.md).
 
@@ -97,7 +97,8 @@ runbook instead of relaying the wrong bytes (R17). The tracker topic is likewise
 
 The PoC's `Properties(defaults)` style let correctness-critical Kafka client settings drift.
 cesium-kafka locks `isolation.level`, `auto.offset.reset`, `enable.idempotence`,
-`enable.auto.commit`, `group.id`, `group.instance.id`, and `transactional.id`, rejecting any override
+`enable.auto.commit`, `group.id`, `group.instance.id`, `transactional.id`, and the key/value
+(de)serializers, rejecting any override
 with an explanation. See [configuration.md](configuration.md). Because `auto.offset.reset=none` is locked,
 a brand-new deployment needs a one-time explicit offset seed for the ingest group (an operator step;
 see [operations.md](operations.md)), and the group never silently resets after an outage.
@@ -105,9 +106,10 @@ see [operations.md](operations.md)), and the group never silently resets after a
 ### 3.6 Memory and the event loop (informational)
 
 cesium-kafka stores `(partition, offset, dispatchAtMs)` pointers in a packed primitive index
-(~32 B/entry nominal, ~40 B measured) instead of the PoC's `DelayQueue<DelayEntry>` (~64–80 B/entry
-of pointer-chasing objects plus O(n) scans), and replaces the PoC's busy-polling and coarse
-read/write lock with a single per-partition event loop. Producers and consumers see no difference;
+(~40–46 B/entry measured; the heap-budget check provisions 64 B/entry) instead of the PoC's
+`DelayQueue<DelayEntry>` (~64–80 B/entry of pointer-chasing objects plus O(n) scans), and replaces
+the PoC's busy-polling and coarse read/write lock with single-threaded event loops (one per dispatch
+worker, over per-partition index shards). Producers and consumers see no difference;
 millions of pending messages fit in a modest heap. See
 [performance.md](performance.md).
 

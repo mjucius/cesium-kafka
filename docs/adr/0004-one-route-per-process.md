@@ -36,3 +36,8 @@ engine per route; the app does not expose that.
 - A future multi-route app is a compatible schema evolution: `route:` → `routes:` adds a list
   without breaking single-route configs, so the decision can be reversed.
 - Library users keep full multi-engine flexibility; only the packaged app is constrained.
+
+> **As shipped:** the per-route engine class, `CesiumEngine`, lives in `cesium-kafka-app`
+> (`com.jucius.cesium.kafka.app.lifecycle`), not `cesium-kafka-core`; `core` holds the ingest and
+> dispatch loops it wires. An embedder needing several routes in one JVM constructs one
+> `CesiumEngine` per route, and that programmatic API is internal-until-1.x.

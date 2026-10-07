@@ -59,8 +59,9 @@ an optional DLQ.
   centrally controlled; provision the topic to match §2.1 and §3 below.
 
 > The tracker topic's **partition count MUST equal the source's**: every tracker record for source
-> partition *p* lands on tracker partition *p*. This is validated at startup and periodically; a
-> mismatch is a fail-fast (§9, §14).
+> partition *p* lands on tracker partition *p*. This is validated at startup (a mismatch is a
+> fail-fast). At runtime, ingest fails fast on the first record from a source partition that has no
+> tracker partition (I-7). There is no periodic parity validator in this release (§9, §14).
 
 The DLQ topic's existence is validated whenever a policy routes to it. Create it with a partition
 count that suits your DLQ-drain tooling (it need not match the source).
@@ -146,8 +147,9 @@ on disk, bounded only by controls that sit in front of cesium. Rely on:
 - a considered `delay.max`, which multiplies tracker disk through the `2 × delay.max`
   tombstone-retention floor (this worksheet).
 
-**Bound the DLQ's retention yourself.** Startup validates only that the DLQ topic exists, not its
-retention. A malformed-record flood (default `DLQ` policy copies the full original payload 1:1) can
+**Bound the DLQ's retention yourself.** Startup checks that the DLQ topic exists and logs a warning
+only when its retention is fully unbounded (`retention.ms=-1` and `retention.bytes=-1`); it does not
+check that a bound fits your drain cadence. A malformed-record flood (default `DLQ` policy copies the full original payload 1:1) can
 fill an unbounded DLQ. Set `retention.ms`/`retention.bytes` on the DLQ topic to match your drain
 cadence.
 
@@ -155,13 +157,12 @@ cadence.
 
 ## 3. Tracker settings that correctness depends on
 
-cesium validates these at startup (and the observed-age terms periodically). Getting them wrong can
-cause a duplicate or silent loss.
+cesium validates these at startup. Getting them wrong can cause a duplicate or silent loss.
 
 | Setting | Required value | Why it matters |
 |---|---|---|
 | `cleanup.policy` | `compact` (never `compact,delete`) | `compact,delete` would delete a still-pending ADD older than retention → silent loss (D4). Compaction-only means a lone pending ADD can never expire. |
-| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. The observed-age terms are re-validated periodically and refuse to advance into the unsafe regime (degraded + alert) (D14, §3.7). |
+| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. As shipped, the observed-age terms are not checked: design D14/§3.7 specifies a periodic re-validation, but this release does not implement it, so keeping retention above them is on you ([§4](#4-lowering-delaymax-runbook)). |
 | `min.compaction.lag.ms` | `≥ max(2 × transaction.timeout.ms, 1 h)` | Keeps the cleaner away from the active tail / LSO region. Below the floor is a startup FAIL. |
 | `segment.ms` | `≈ 1 h` | So cleaning happens. Larger is a WARN (delays tombstone collection, grows disk). |
 | `message.timestamp.type` | `LogAppendTime` | So tracker record timestamps reflect append order. Otherwise a WARN. |
@@ -183,8 +184,9 @@ The startup failure when it is too low (from `StartupValidator`):
 
 Lowering `delay.max` and shrinking `delete.retention.ms` together can strand pending entries that
 were scheduled under the old, larger maximum: their tombstones could be cleaned before a replay
-reads them (R20). The periodic re-validation against observed oldest-pending age refuses the unsafe
-regime, but you have to drain before you can shrink retention.
+reads them (R20). You have to drain before you can shrink retention. As shipped, nothing checks
+observed oldest-pending age at runtime (the periodic re-validation in design D14 is not implemented),
+so the drain below is the only control.
 
 1. **Lower `delay.max` in config and restart.** New records are now capped at the lower ceiling.
    Older pending entries (scheduled under the previous maximum) remain valid and are still honored.
@@ -195,7 +197,8 @@ regime, but you have to drain before you can shrink retention.
 4. **Only then lower `delete.retention.ms`** to the floor for the new `delay.max`
    (`2 × new delay.max`), and restart so startup re-validates.
 
-If you skip the drain, the periodic re-validation refuses to advance and flags a degraded state.
+If you skip the drain, cesium does not detect it: startup re-validates only against `2 × delay.max`,
+so an early shrink passes and a later overflow-mode replay can deliver a duplicate.
 
 ---
 
@@ -228,11 +231,13 @@ Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the
 | Seek consumer (group-less) | `Topic` *source* | READ (**no `Group` ACL**) |
 | Ingest txn producer | `TransactionalId` `cesium.<app>.ingest.*` (prefixed); `Topic` *tracker* / *destination* / *DLQ*; `Group` `cesium.<app>.ingest` | WRITE; WRITE; READ |
 | Dispatch txn producer | `TransactionalId` `cesium.<app>.dispatch.*` (prefixed); `Topic` *destination* / *tracker* / *DLQ*; `Group` `cesium.<app>.dispatch` | WRITE; WRITE; READ |
-| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE); **`CREATE` bootstrap only:** `Cluster` CREATE + ALTER | per cell |
+| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: startup identity check, first-run probe); **`CREATE` bootstrap only:** `Cluster` CREATE + ALTER | per cell |
 
-> **The `TransactionalId` and `Group` ACLs are required (M3).** cesium's transactional and
-> `group.instance.id` ids are deterministic (`cesium.<app>.<role>.<instance>.<ordinal>`), and the
-> `application-id` seed leaks on the unauthenticated `/info`. Without a `TransactionalId` ACL scoping
+> **The `TransactionalId` and `Group` ACLs are required (M3).** cesium's transactional ids
+> (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
+> (`cesium.<app>.<role>.<instance>`) are deterministic. The `application-id` seed is easy to infer
+> (it names the consumer groups and the default tracker topic) and appears on the unauthenticated
+> `/info` when `observability.detailed-info: true`. Without a `TransactionalId` ACL scoping
 > `cesium.<app>.*` to the cesium principal, any authenticated co-tenant can open a producer with
 > cesium's transactional id and fence it into a `ProducerFencedException` → fatal exit → restart →
 > re-fence crash-loop (and likewise `FencedInstanceIdException` via the static group id). The tracker
@@ -287,8 +292,10 @@ k8s probes reach it. It caps accepted connections (`jdk.httpserver.maxConnection
 top of the slow-client reaper (M1). **It MUST be network-restricted.** Set
 `observability.bind-address: 127.0.0.1` to restrict it to a loopback sidecar scrape (recommended when
 off-host probes are not required), or keep `0.0.0.0` and apply a NetworkPolicy scoping port 8081 to the
-monitoring namespace (the scraper) only. `/info` discloses the `application-id`, which seeds the
-fencing ids above, so this restriction is part of the `TransactionalId` ACL control (M3).
+monitoring namespace (the scraper) only. By default `/info` returns only `version`, `gitCommit`, and
+the store type; `observability.detailed-info: true` adds the `application-id` (the seed of the fencing
+ids above), roles, store capabilities, and acknowledgments. Leave it off unless the port is
+restricted (M3).
 
 See also [SECURITY.md](../SECURITY.md).
 
@@ -299,7 +306,7 @@ See also [SECURITY.md](../SECURITY.md).
 The tracker topic must never be silently recreated or truncated: an `earliest` reset on an empty
 topic looks healthy after all pending state is gone. cesium guards against this:
 committed-offset identity (cluster id, source/tracker topic ids) and offset-range sanity are checked
-at takeover and periodically, and it never auto-resets into an empty or out-of-range log.
+at startup and at each partition takeover, and it never auto-resets into an empty or out-of-range log.
 
 **Symptoms / triggers:**
 
@@ -376,8 +383,9 @@ to land its ADD on.
    validated equal at startup.)
 
 In this order, producers never reach a new source partition before its tracker
-partition exists. cesium's periodic partition-parity validator alerts on drift; the startup check
-fails fast on a mismatch (I-7, R-7). Adding partitions changes key→partition hashing for new
+partition exists. The startup check fails fast on a mismatch, and at runtime ingest fails fast on
+the first record from a source partition with no tracker partition (I-7, R-7). There is no periodic
+parity validator or drift alert in this release, so watch partition counts with your own tooling. Adding partitions changes key→partition hashing for new
 records; existing pending entries keep their original partition.
 
 ---
@@ -443,7 +451,8 @@ spec:
             failureThreshold: 6             # generous: never kill a healthy slow-replaying pod
           lifecycle:
             preStop:
-              # Flip readiness false and drain before SIGTERM closes consumers cleanly.
+              # Delay SIGTERM so endpoint removal propagates; on SIGTERM readiness flips false
+              # and the loops drain (engine shutdown budget 30 s).
               exec: { command: ["sh", "-c", "sleep 5"] }
   updateStrategy:
     type: RollingUpdate
@@ -457,8 +466,9 @@ Key points:
   `cesium_replay_remaining_records`; the probe does not fail.
 - Liveness is loop-heartbeat freshness, with a generous `failureThreshold` so a slow but healthy
   replay is never killed.
-- `preStop` + `terminationGracePeriodSeconds` let readiness flip false and the loops finish/abort
-  their open transaction at a batch boundary before consumers close (graceful, fenced shutdown).
+- `preStop` delays SIGTERM; on SIGTERM readiness flips false and the loops finish/abort their open
+  transaction at a batch boundary before consumers close (graceful, fenced shutdown, bounded at
+  30 s). Keep `terminationGracePeriodSeconds` above the `preStop` delay plus 30 s.
 - A rolling restart moves zero partitions because the returning member reclaims its own assignment
   within the session timeout.
 - Restrict the observability port (8081). It is unauthenticated; add a NetworkPolicy scoping
@@ -502,9 +512,11 @@ Full detail and the memory worksheet are in [performance.md §5–§6](performan
 
 - **Backpressure.** `dispatch.max-pending-per-partition` pauses ACTIVE shards above its high-water
   (resumes below half); the global `dispatch.max-pending-total` (AUTO ≈ 25 % of `Xmx` ÷ 64 B) pauses
-  ACTIVE shards above the total. A RECOVERING shard is never paused; if recovery could breach the
-  heap, the startup heap-budget check (`startup-checks.heap-budget`) should have refused. Watch
-  `cesium_shard_paused`.
+  ACTIVE shards above the total. A RECOVERING shard is never paused. The startup heap-budget check
+  (`startup-checks.heap-budget`) sizes the steady-state caps only; recovery is bounded by a runtime
+  resident-entry ceiling that fails fast instead of running out of heap
+  (`cesium_recovery_over_budget_total`, [§14.3](#143-runtime-fail-fast-exit-1-readiness-false)).
+  Watch `cesium_shard_paused`.
 
 ---
 
@@ -543,7 +555,7 @@ and `jvm_*` series are absent. Do not write alerts against them. For JVM/client 
 JMX→Prometheus exporter sidecar against the JVM.
 
 > **This port is unauthenticated and MUST be network-restricted.** Anyone with network reach can read
-> all four endpoints (and the `application-id` that `/info` discloses). It binds all interfaces by
+> all four endpoints (and the `application-id`, if `observability.detailed-info: true`). It binds all interfaces by
 > default (`0.0.0.0`) and caps accepted connections (`jdk.httpserver.maxConnections`, default 64) on
 > top of the slow-client reaper (M1). Set `observability.bind-address: 127.0.0.1` to
 > restrict it to loopback, or scope it with a Kubernetes NetworkPolicy (monitoring namespace only)
@@ -556,14 +568,15 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 
 | Metric | Type | Tags | Meaning |
 |---|---|---|---|
-| `cesium_ingest_records_total` | counter | `outcome=relayed_immediate\|scheduled\|clamped\|dlq` | ingest dispositions |
-| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped` | dispatch dispositions (flushed only after commit) |
+| `cesium_ingest_records_total` | counter | `outcome=relayed_immediate\|scheduled\|clamped\|dlq\|unrelayable_dropped` | ingest dispositions |
+| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped\|unrelayable` | dispatch dispositions (flushed only after commit) |
 | `cesium_dispatch_lag_seconds` | timer (histogram) | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | recent max time between group-B polls; alert ≪ `max.poll.interval.ms` |
 | `cesium_txn_commit_seconds` | timer | `loop` | `commitTransaction` latency per attempt |
 | `cesium_transactions_total` | counter | `loop`, `result=committed\|aborted\|in_doubt`, `cause` | aborts ⇒ fencing/contention; in-doubt occurrences |
 | `cesium_header_errors_total` | counter | `type=malformed\|over_max\|conflict` | protocol violations |
 | `cesium_dlq_records_total` | counter | `reason` | DLQ production |
+| `cesium_unrelayable_dlq_rejected_total` | counter | | an unrelayable record's DLQ write was also permanently rejected, so it escalated to DROP (registered on first occurrence) |
 | `cesium_ingest_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-A churn; `lost` = fenced/unclean |
 | `cesium_dispatch_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-B churn; `lost` = fenced/unclean |
 | `cesium_fetch_attempts_total` | counter | | seek-fetch attempts |
@@ -587,6 +600,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | `cesium_store_index_anomalies_total` | counter | | duplicate ADDs / out-of-order drops (R1) |
 | `cesium_store_heap_rebuilds_total` | counter | | dispatch-heap rebuilds across shards |
 | `cesium_store_log_sweeps_total` | counter | | arrival-log sweeps across shards |
+| `cesium_recovery_over_budget_total` | counter | | recovery seed/replay refused because the backlog would exceed the heap budget (H1); the process then fails fast |
 
 > **Not yet emitted (specified in design `§9`, deferred).** Do not write alerts against these; the
 > series do not exist in this release: `cesium_lso_lag`,
@@ -606,8 +620,9 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
   detail payload lists each non-ACTIVE shard (`partition`, `state`, `recordsRemaining`,
   `etaMillis`; `-1` until two 1 s samples show the backlog shrinking); a `degraded` flag (with cause) surfaces
   park-and-degrade without failing the probe.
-- **`/info`**: version, commit, `application-id`, store type + capabilities, and any acknowledged
-  escape hatches.
+- **`/info`**: by default only `version`, `gitCommit`, and `store.type`. With
+  `observability.detailed-info: true` it adds `applicationId`, `roles`, store `capabilities`, and any
+  acknowledged escape hatches (`acknowledgments`).
 
 ### Suggested alerts (real metrics only)
 
@@ -623,7 +638,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | Payload expiry | `rate(cesium_fetch_unfetchable_total[10m]) > 0` (sustained) | Payloads gone at dispatch: source retention too short or size/tier eviction. Raise source retention; inspect DLQ. |
 | Degraded source partition | `cesium_fetch_penalized_partitions > 0` (sustained) | A source partition's leader/disk is degraded. Investigate broker. |
 | Cold-fetch cost | `histogram_quantile(0.99, cesium_fetch_duration_seconds_bucket) > threshold` | Cold-segment / IOPS pressure ([§12](#12-broker-iops-budgeting-for-seek-fetch)). |
-| Sidecar overflow (replay cost rising) | `cesium_pinned_entries` near `dispatch.cursor.sidecar-max-bytes/12` and `cesium_cursor_sidecar_bytes` near budget, sustained | Overflow mode (§3.5): replay reverts to `completion_rate × pin age`. Raise `dispatch.cursor.sidecar-max-bytes` (with broker `offset.metadata.max.bytes`), or inspect long-delay producers. |
+| Sidecar overflow (replay cost rising) | `cesium_cursor_sidecar_bytes` near `dispatch.cursor.sidecar-max-bytes` with `cesium_pinned_entries` flat at its ceiling, sustained (entries are variable-length, so there is no fixed entry ceiling) | Overflow mode (§3.5): replay reverts to `completion_rate × pin age`. Raise `dispatch.cursor.sidecar-max-bytes` (with broker `offset.metadata.max.bytes`), or inspect long-delay producers. |
 | Tracker integrity canary | step-collapse of `cesium_pending_entries` | Tracker possibly truncated/recreated (R-9). Follow [§6](#6-tracker-disaster-recovery-runbook). |
 | Malformed tracker write / foreign writer | `rate(cesium_tracker_invalid_records_total[10m]) > 0` | A *malformed or version-skewed* write hit the tracker. Check the ACL ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix)). A well-formed forgery would not move this counter; detecting competent tampering needs broker authorizer audit logging (L2). |
 | Cursor-guard / index anomaly | `rate(cesium_cursor_guard_violations_total[15m]) > 0` or `rate(cesium_store_index_anomalies_total[15m]) > 0` | A surfaced invariant violation. No data is lost (the last safe cursor is returned), but file a bug with logs. |
@@ -661,8 +676,7 @@ The app prints the full aggregate report and exits 78. Causes and fixes:
 | Locked Kafka key set in passthrough | Remove it. The message explains why it is engine-owned ([configuration.md §3](configuration.md#locked-kafka-keys-rejected-with-an-explanation)). |
 | `${env:VAR}` references an undefined variable | Define the variable or fix the reference. |
 | DLQ policy active but no `route.dlq.topic` | Configure the DLQ topic, or change the policy off DLQ. |
-| Worst-case index footprint exceeds the heap budget | Lower `dispatch.max-pending-per-partition` / `store.properties.max-pending-per-partition`, raise the heap, or set `startup-checks.heap-budget: WARN` to accept. |
-| `dispatch.cursor.sidecar-max-bytes` > broker `offset.metadata.max.bytes` (warning; the budget is clamped to the broker cap) | Raise the broker setting to keep the configured budget, or lower the sidecar budget to silence the warning. |
+| Worst-case index footprint exceeds the heap budget (config load assumes 1 partition; the check re-runs at the real partition count after cluster validation and fails with exit 1 there) | Lower `dispatch.max-pending-per-partition` / `store.properties.max-pending-per-partition`, raise the heap, or set `startup-checks.heap-budget: WARN` to accept. |
 
 ### 14.2 Startup validation against the cluster (exit 1)
 
@@ -670,6 +684,7 @@ Discovered after config binds, against the live cluster:
 
 | Failure | Runbook |
 |---|---|
+| Source or destination topic does not exist; DLQ topic does not exist while a policy routes to it | Create the topic or fix the name. |
 | Source topic is compacted | cesium needs fetchable offsets; point at a non-compacted source. |
 | Source `retention.ms` < `delay.max + margin` (`startup-checks.retention: FAIL`) | Raise source retention above `delay.max`, lower `delay.max`, or set the check to `WARN`/`SKIP` accepting the payload-expiry risk. |
 | Size/tier eviction detected, not acknowledged | Set `startup-checks.size-based-retention: ACKNOWLEDGED` (named acceptance) or remove `retention.bytes`/tiered storage from the source. |
@@ -680,8 +695,11 @@ Discovered after config binds, against the live cluster:
 | Tracker `min.compaction.lag.ms` below floor | Raise to `≥ max(2 × transaction.timeout.ms, 1 h)`. |
 | Broker `offsets.retention.minutes` < `max-tolerated-outage` (`outage-check: FAIL`) | Raise broker `offsets.retention.minutes`, lower `max-tolerated-outage`, or set the check to `WARN` ([§7](#7-offsets-retention-vs-outage-tolerance)). |
 | `SOURCE_PARTITION` relay but destination partition count ≠ source | Grow the destination to match, or use `BY_KEY`. |
+| Tracker write ACL not verifiably in force (`startup-checks.tracker-acl: FAIL`): no matching grant, a foreign writer, `route.tracker.acl-principal` unset, or no authorizer | Grant the cesium principal exclusive write and revoke foreign writers ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix)), set `route.tracker.acl-principal`, or set the check to `WARN`/`SKIP` if you enforce it out of band. |
+| Applying the tracker write ACL failed in `CREATE` mode (an error other than "no authorizer") | Give the admin client `Cluster` ALTER, or apply the ACL by hand and retry. |
 | **Source topic identity mismatch** (recreated under the same name) | The source was deleted and recreated (new topic id), so delivering old-offset payloads would be wrong (R-10/R17). Reset the tracker (accept loss) or restore the original source, as an explicit decision. |
-| Tracker topic created but never became describable within the metadata-propagation budget | cesium created the tracker, then waited out normal KRaft propagation (10 s) and still could not get any broker to describe it with its full partition count. The ordinary sub-millisecond window is already absorbed by that wait. Retry startup; if it recurs, investigate broker metadata lag (a stalled metadata publisher) or controller availability. A `WARNING` naming a multi-second propagation wait on a startup that *succeeded* is the early form of the same problem ([ADR-0018](adr/0018-bounded-wait-for-proven-topic-metadata.md)). |
+| Tracker topic created but never became describable within the metadata-propagation budget | cesium created the tracker, then waited out normal KRaft propagation (10 s) and still could not get any broker to describe it with its full partition count. The ordinary sub-millisecond window is already absorbed by that wait. Retry startup; if it recurs, investigate broker metadata lag (a stalled metadata publisher) or controller availability. A `WARNING` naming a propagation wait over 1 s on a startup that *succeeded* is the early form of the same problem ([ADR-0018](adr/0018-bounded-wait-for-proven-topic-metadata.md)). |
+| `dispatch.cursor.sidecar-max-bytes` > broker `offset.metadata.max.bytes` (warning only, no exit; the budget is clamped to the broker cap) | Raise the broker setting to keep the configured budget, or lower the sidecar budget to silence the warning. |
 | A topic is reported as not existing that you are sure exists | cesium fails fast on operator-provisioned topics and does not wait out metadata propagation for them (the common cause is a typo, and waiting would slow that diagnosis down). If your provisioning pipeline creates the topic and starts cesium in the same breath, have it wait for the topic to become describable, not merely for `createTopics` to return, before launching cesium. |
 
 ### 14.3 Runtime fail-fast (exit 1, readiness false)
@@ -693,7 +711,9 @@ Discovered after config binds, against the live cluster:
 | **Dispatch: tracker offset out of range**: *the tracker topic was truncated or recreated under the same name (§3.6 integrity, R-9). Never auto-reset — follow the tracker DR runbook* | The tracker was truncated/recreated. Follow [§6](#6-tracker-disaster-recovery-runbook). cesium will not auto-reset into an empty log. |
 | **Committed-offset identity mismatch** (source recreated) at a runtime offset fetch | Same as the startup identity mismatch ([§14.2](#142-startup-validation-against-the-cluster-exit-1)). |
 | **Fatal producer error** (`ProducerFencedException`, `OutOfOrderSequenceException`, unrecoverable auth/config) | The clients close, the worker fails, the process exits non-zero (the durable log is authoritative for the successor). Restart the instance; if it recurs, check fencing (duplicate `instance-id`?), ACLs, and broker health. |
-| **Partition-count drift** detected periodically (tracker ≠ source) | Fail-fast + alert. Grow the tracker first ([§9](#9-growing-partitions-runbook)). |
+| **Partition-count drift**: *source partition … has no tracker partition: tracker topic '…' has … partition(s) — the source partition count grew past the tracker (I-7, R-7)* | Raised by ingest on the first record from the new source partition (no periodic check). Grow the tracker first ([§9](#9-growing-partitions-runbook)). |
+| **Recovery over heap budget**: *RECOVERY OVER HEAP BUDGET — refusing to … another pending entry for tracker partition …* (`cesium_recovery_over_budget_total`) | The durable backlog exceeds what the heap can hold. Nothing was committed. Raise `-Xmx` (or `store.properties.heap-budget-bytes`) and/or shrink the backlog, then restart. |
+| **Ingest: `delay.on-*` policy FAIL fired** | A record violated the delay protocol under a `FAIL` policy; restart re-fails on the same record. Switch the policy to `DLQ`/`RELAY_IMMEDIATE` or move past the record explicitly ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L5). |
 
 ### 14.4 Park-and-degrade (NOT an exit)
 

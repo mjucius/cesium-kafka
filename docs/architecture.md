@@ -67,7 +67,7 @@ DISPATCH (group B subscribes tracker): tails tracker to build the in-memory inde
 | `source` | user | Records to relay; cesium treats key/value as opaque `byte[]`. Must not be compacted (offsets must stay fetchable). |
 | `destination` | user | Relay target. **Consumers MUST use `isolation.level=read_committed`** to observe exactly-once (§ [delivery-semantics](delivery-semantics.md)). |
 | `tracker` | cesium | Internal compacted topic, default `cesium.<applicationId>.tracker`. Partition count must equal the source's; a tracker record for source partition *p* always lands on tracker partition *p*. Writable only by the cesium principal (a forged ADD is a duplicate-injection primitive; a forged tombstone is a data-loss primitive). |
-| `dlq` | cesium/user | Default-on. Receives malformed-header, over-max-delay, and payload-expired loss notices. |
+| `dlq` | cesium/user | Default-on. Receives malformed-header, over-max-delay, and unrelayable records, and payload-expired loss notices. |
 
 - **Group A** (`cesium.<applicationId>.ingest`) subscribes to `source`. The ingest loop is
   stateless: it never touches the in-memory index. Locked client config: `read_committed`,
@@ -145,7 +145,7 @@ stateDiagram-v2
    live. The same consumer keeps tailing; live records flow through the same `onTrackerRecord`
    path as replay.
 5. **REVOKED / LOST.** `onPartitionsRevoked` (cooperative) or `onPartitionsLost` (fenced) drops the
-   shard in O(1) and cancels its barrier future. Pending entries are durable in the tracker topic;
+   shard in O(1) and discards its barrier future. Pending entries are durable in the tracker topic;
    the in-memory index is a cache. A revoked owner never writes.
 
 The LSO hazard and the I8 snapshot-ordering scenario, which show why this ordering matters, are
@@ -212,14 +212,14 @@ maintainability and familiar Collection interfaces.
 
 | Structure | Class | Backing | Purpose |
 |---|---|---|---|
-| **Entry pool** | `EntryPool` | parallel `LongBigArrayBigList` for `dispatchAtMs` / `sourceOffset` / `trackerAddOffset`, + `IntArrayList` free-slot stack | The 24 bytes of real per-entry state, indexed by a slot id. A freed slot returns to the free-list stack. |
-| **Min-heap on `dispatchAtMs`** | `DispatchHeap` (extends `IntHeapPriorityQueue`) | heap of slot ids + a `BitSet` of lazily-deleted slots | Drives `pollDue` / `nextDeadlineMs`. Lazy deletion (no reverse index, which saves 4 B/entry): a completed slot is flagged and discarded on pop; rebuilt in O(n) past a threshold. |
-| **Arrival log** | `ArrivalLog` | append-only `IntBigArrayBigList` of slot ids + head pointer, + `BitSet` completed bits | Slot ids in tracker-arrival order. Because ingest appends ADDs in source-offset order and there is a unique committed ADD per offset (§3.1), the log is sorted by tracker offset and by source offset at the same time. |
+| **Entry pool** | `EntryPool` | parallel `LongBigArrayBigList` for `dispatchAtMs` / `sourceOffset` / `trackerAddOffset`, + one chunked state byte per slot, + a `BitSet` of clamp bits, + `IntArrayList` free-slot stack | The 24 bytes of real per-entry state, indexed by a slot id, plus the slot's lifecycle state. A freed slot returns to the free-list stack. |
+| **Min-heap on `dispatchAtMs`** | `DispatchHeap` (extends `IntHeapPriorityQueue`) | heap of slot ids, ordered by `dispatchAtMs` then `sourceOffset` | Drives `pollDue` / `nextDeadlineMs`. Lazy deletion (no reverse index, which saves 4 B/entry): a slot whose pool state is no longer PENDING is discarded when it surfaces; rebuilt in O(n) once the stale backlog passes `max(floor, 25% of heap)`. |
+| **Arrival log** | `ArrivalLog` | append-only `IntBigArrayBigList` of slot ids + head pointer (completion is read from the slot's pool state) | Slot ids in tracker-arrival order. Because ingest appends ADDs in source-offset order and there is a unique committed ADD per offset (§3.1), the log is sorted by tracker offset and by source offset at the same time. |
 
 Three operations depend on that dual sortedness:
 
 - **Cursor inputs in O(1) amortized.** The oldest pending entries are read straight off the log head
-  (skipping completed bits), which is the greedy sidecar-encoding order.
+  (skipping completed slots), which is the greedy sidecar-encoding order.
 - **Completion lookup with no hash map.** A COMPLETE (key = source offset) resolves by binary search
   over the arrival log in O(log n), with zero per-entry map overhead. A naive `long→int` map would
   cost ~24 B/entry *transient* during a 10 M-entry replay (240 MB); the log search costs nothing.
@@ -228,7 +228,7 @@ Three operations depend on that dual sortedness:
   pending entries, violating invariant I5).
 
 **Slot lifecycle:** `FREE → PENDING (heap + log) → IN_FLIGHT (popped into a txn batch; still in log)
-→ COMPLETED (bit set; still in log) → FREE (only when it leaves the log)`. A slot is freed only when
+→ COMPLETED (state byte; still in log) → FREE (only when it leaves the log)`. A slot is freed only when
 it leaves the arrival log, never at dispatch time. Reusing a still-log-resident slot would corrupt
 source-offset ordering and silently break the binary search.
 
@@ -241,7 +241,7 @@ footprint (`assigned-partitions × per-partition-max × planning-bytes`) would b
 ### Memory
 
 Per pending entry, the irreducible primitive floor is `dispatchAtMs 8 + sourceOffset 8 +
-trackerAddOffset 8 + heap slot 4 + log slot 4 + completed bit 0.125 ≈ 32 B`. fastutil big-lists grow
+trackerAddOffset 8 + heap slot 4 + log slot 4 + slot state byte 1 + clamp bit 0.125 ≈ 33 B`. fastutil big-lists grow
 by power-of-two doubling, so live arrays carry up to ~2× slack at an arbitrary fill. Capacity
 planning therefore uses 64 B/entry typical, 80 B worst, while the measured JOL footprint is
 40.54 B/entry @ 1 M and 45.96 B/entry @ 10 M (`ShardFootprintTest`; the JOL gate is ≤ 56 B/entry).
@@ -268,8 +268,8 @@ life.
 |---|---|---|
 | `cesium-ingest-{n}` (default 1) | source consumer (group A) + ingest transactional producer | Poll → one transaction per non-empty batch (immediate relays + ADDs + DLQ + offsets). Stateless; degradation path is pause-all + heartbeat-poll + capped backoff. |
 | `cesium-dispatch-{n}` (default 1; useful up to the tracker partition count, fleet-wide) | tracker consumer (group B) + dispatch transactional producer + seek consumer + the shards it owns | The event loop below. Each dispatch worker gets its own clients and disjoint shards. |
-| `cesium-admin` | `AdminClient`: startup + periodic validation (partition parity, retention, compaction, topic-ID identity, offsets-retention), barrier `listOffsets` futures, empirical retention probes | Low duty. |
-| observability | metrics/health HTTP server, gauge sampling, heartbeat freshness | n/a |
+| (no dedicated thread) | one shared `AdminClient`, created at startup: startup validation (partition parity, retention, compaction, topic-ID identity, offsets-retention), then the dispatch loops' barrier `listOffsets` futures and committed-offset probes | Low duty. |
+| `cesium-obs-{n}`, `cesium-health` | metrics/health HTTP server workers; the 1 s health sampler (gauge sampling, heartbeat freshness) | n/a |
 
 `roles: [ingest, dispatch]` (default both) selects which loops start, so the halves can scale on
 separate fleets.
@@ -304,16 +304,17 @@ while (running) {
   condition variables, no fixed-interval spin.
 - **Rebalance callbacks do O(1) bookkeeping only.** They run inside `poll()` on this thread, and by
   I3 no transaction is open. `onPartitionsAssigned` marks shards ASSIGNED with an epoch;
-  `onPartitionsRevoked` drops shards and cancels barrier futures; `onPartitionsLost` drops everything
-  and aborts producer state. Callbacks make no network round-trips, run no replay, and take no
+  `onPartitionsRevoked` drops shards and discards their barrier futures; `onPartitionsLost` drops the
+  lost shards the same way. Callbacks make no network round-trips, run no replay, and take no
   barrier snapshots; barrier work happens in the loop body (I8). Already-ACTIVE shards keep
   dispatching while new ones recover.
 - **Bounded poll gap.** Back-to-back transactions are each separated by a `poll(Duration.ZERO)`, so
   the maximum gap between group-B polls is one transaction. It is observable as
   `cesium_dispatch_poll_gap_seconds` and alerted well below `max.poll.interval.ms`.
-- **Graceful shutdown:** readiness flips false → ingest finishes/aborts its open txn at a batch
-  boundary and stops → dispatch likewise → producers closed (clean commit/abort then close) →
-  consumers closed → bounded by `shutdown.timeout`, then hard abort (always safe by construction).
+- **Graceful shutdown:** readiness flips false → every loop is signalled to stop at a transaction
+  boundary and closes its own clients (ingest joined before dispatch) → store and admin client
+  closed, all within a fixed 30 s budget; an overrun is logged and the stop reports unclean (safe by
+  construction: an unfinished transaction is aborted by the broker or fenced on restart).
 
 Error handling follows the [§3.8 three-way taxonomy](delivery-semantics.md#7-in-doubt-commits-and-the-error-taxonomy):
 definitively-abortable → abort/restore/retry; fatal → close clients, fail the loop, exit non-zero;
@@ -331,7 +332,7 @@ in-doubt commit → never restore the batch (I9); retry exhaustion → park-and-
 | `cesium-kafka-store-testkit` | The SPI contract kit + fixtures (`TrackerBackedStoreContract`, `FakeStoreContext`, `MutableClock`, `TrackerEventScript`) | Published for store implementers |
 | `cesium-kafka-app` | `main()`, YAML config, lifecycle, health/metrics HTTP, distribution archives, Dockerfile | The supported v1 product surface |
 | `cesium-kafka-it` | Testcontainers integration suite (separate-JVM kill tests, EOS/fencing/LSO/barrier-ordering scenarios, soak, macro perf) | Tests |
-| `cesium-kafka-benchmarks` | JMH micro-benchmarks + JOL footprint tests | Tests |
+| `cesium-kafka-benchmarks` | JMH micro-benchmarks (the JOL footprint test, `ShardFootprintTest`, lives in `cesium-kafka-store-kafka`) | Tests |
 
 `KafkaTrackerStore` lives in its own module and is tested through the same published contract kit a
 third party would use. The runnable app is the supported v1 product; the store SPI + testkit are the

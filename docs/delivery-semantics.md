@@ -28,8 +28,9 @@ The guarantee has three qualifications, each expanded below:
 
 Records without a delay header, or already due, relay immediately. Malformed or over-max-delay
 records follow an explicit policy (default: dead-letter) and are never delivered early. Records
-whose payload is no longer fetchable at dispatch time are resolved exactly once via the DLQ
-loss-notice path and are never silently dropped.
+whose payload is no longer fetchable at dispatch time are resolved exactly once, by default via the
+DLQ loss-notice path (`dispatch.on-unfetchable-payload: DLQ`; `DROP` completes them with a metric
+instead), and are never silently dropped.
 
 ---
 
@@ -178,17 +179,21 @@ bites and tunable by raising the sidecar budget. The published contract kit make
 
 A single three-way classification governs every transactional failure
 ([`design.md` §3.8](design.md#38-producer-error-taxonomy--in-doubt-commits)). It was re-verified
-against the `kafka-clients` 4.3.0 client with MockProducer fault injection (and the LSO/barrier
-integration scenarios run against an `apache/kafka:4.3.0` broker).
+against the `kafka-clients` 4.3.0 client with MockProducer fault injection (the build now pins
+4.3.1), and the LSO/barrier integration scenarios run against an `apache/kafka:4.3.0` broker.
 
-1. **Definitively aborted**: `CommitFailedException` at `sendOffsetsToTransaction`, a fenced-member
-   offset commit, an explicit successful `abortTransaction()`, or any abortable exception
-   (`InvalidProducerEpochException` is abortable under KIP-588). ⇒ abort, restore the popped
-   entries to the heap, continue. Bounded retries with exponential backoff and a cause-tagged metric.
-2. **Fatal**: `ProducerFencedException`, `OutOfOrderSequenceException`, unrecoverable
-   authorization/config errors. ⇒ close clients, fail the worker, process exits non-zero (readiness
+1. **Definitively aborted**: any non-fatal failure before the commit call (for example
+   `CommitFailedException` at `sendOffsetsToTransaction` or a fenced-member offset commit), a
+   non-timeout failure of the first commit attempt, or `TransactionAbortableException` at any point
+   (the broker-affirmed "not committed" signal, KIP-890). `InvalidProducerEpochException` on the
+   produce path is abortable under KIP-588. ⇒ abort, restore the popped entries to the heap,
+   continue. Retries run under capped exponential backoff with a cause-tagged metric.
+2. **Fatal**: `ProducerFencedException`, `InvalidPidMappingException`,
+   `OutOfOrderSequenceException`, a fenced static-membership instance id, unrecoverable
+   authentication/authorization/config errors. ⇒ close clients, fail the worker, process exits non-zero (readiness
    already false). The durable log is authoritative for the successor.
-3. **In-doubt**: `TimeoutException` (or any ambiguous failure) from `commitTransaction`. The broker
+3. **In-doubt**: `TimeoutException` from `commitTransaction`, and, once a commit attempt has timed
+   out, every later non-fatal failure that does not prove an abort. The broker
    may have committed (`PREPARE_COMMIT` completes as commit). **The in-memory batch is never restored
    (invariant I9)**, because restoring is the duplicate vector when the durable state already
    contains the committed tombstones and destination writes. The procedure:
@@ -204,7 +209,7 @@ integration scenarios run against an `apache/kafka:4.3.0` broker).
 Retry exhaustion never causes a crash-loop. When definitively-abortable retries exhaust (e.g. the
 destination is under-replicated for 20 minutes), the loop parks the batch (entries return to pending
 with a penalty not-before), keeps polling (membership alive), flips a `degraded` health detail +
-`cesium_degraded` gauge, and alerts. Offsets stay unmoved; the system idles out broker degradation
+`cesium_degraded` gauge, and escalates logging. Offsets stay unmoved; the system idles out broker degradation
 instead of exiting and replaying every cycle.
 
 The contract kit proves a store survives this: an in-doubt commit drives neither `onBatchCommitted`
@@ -255,8 +260,10 @@ tombstone-paired or fully compacted), but it is logged prominently and may be sl
 ### 8.3 Tombstone retention and topic identity
 
 The tombstone-retention floor ([§6](#6-the-committed-cursor-and-i5)) must hold, or an overflow-mode
-replay could miss a needed tombstone (duplicate). It is validated at startup (FAIL) and re-validated
-periodically (refuses to advance into the unsafe regime). Source and tracker topic identity
+replay could miss a needed tombstone (duplicate). Startup validates the `delay.max` term
+(`delete.retention.ms ≥ 2 × delay.max`, FAIL). The observed-age terms (oldest-pending age,
+committed-cursor age) are not re-validated at runtime in this release, so when lowering `delay.max`
+follow the [lowering-delay.max runbook](operations.md#4-lowering-delaymax-runbook). Source and tracker topic identity
 (topic id + cluster id) is bound into every committed metadata blob and re-validated: a recreated or
 truncated topic fails fast and never causes a silent wrong-payload delivery or a replay into an
 empty log. An intentional same-id offset reset (e.g. a cluster restore from backup) cannot be
@@ -268,7 +275,7 @@ Payloads are pointer-only: the source must retain a record at least until its sc
 time. Startup validates `delay.max + margin ≤ effective source retention`, and because
 `retention.ms=-1` does not bound size-based or tiered eviction, size/tier modes require an explicit
 `startup-checks.size-based-retention: ACKNOWLEDGED`. A payload that expires anyway is resolved exactly
-once via the DLQ loss-notice path (`reason=payload-expired`). The payload itself is unrecoverable
+once, by default via the DLQ loss-notice path (`reason=payload-expired`). The payload itself is unrecoverable
 (pointer-only storage is a locked design choice), but its loss is never silent.
 
 ---

@@ -41,7 +41,7 @@ Two companion §11.4 gates live in the store-kafka test suite and are not duplic
 | Gate | Target | Measured | Where |
 |---|---|---|---|
 | JOL footprint | ≤ 40 B/entry (post-approval rev: ≤ 56) | 40.54 B/entry @ 1 M, 45.96 B/entry @ 10 M | `ShardFootprintTest` (10 M = `@Tag("soak")`) |
-| JFR / steady-state allocation | ~0 B/op insert/drain | < 2 B/op | `SteadyStateAllocationTest` |
+| Steady-state allocation (`ThreadMXBean` allocated bytes) | ~0 B/op insert/drain | < 2 B/op | `SteadyStateAllocationTest` |
 
 ## The two misses
 
@@ -93,6 +93,7 @@ archives `results.json`. `results/compare.py` diffs a run against the committed
 [`baseline.json`](baseline.json) and flags any benchmark past ±10 % (throughput drop / latency rise):
 
 ```bash
+# from cesium-kafka-benchmarks/
 python3 results/compare.py results/baseline.json build/results/jmh/results.json
 ```
 

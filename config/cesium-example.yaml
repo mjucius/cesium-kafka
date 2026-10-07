@@ -61,7 +61,7 @@ route:
   tracker:
     bootstrap: CREATE
     # topic: cesium.orders-delay.tracker
-    # acl-principal: User:cesium     # exclusive tracker write access (R12)
+    # acl-principal: User:cesium     # granted tracker write/read/describe ACLs (R12)
   # Dead-letter topic. Required whenever any policy routes to DLQ (the defaults do).
   dlq:
     topic: orders-dlq
@@ -144,3 +144,4 @@ startup-checks:
   max-tolerated-outage: P7D        # checked against broker offsets.retention.minutes (design D18, R6)
   outage-check: FAIL               # FAIL | WARN
   heap-budget: FAIL                # worst-case index footprint vs heap budget: FAIL | WARN
+  # tracker-acl: WARN              # R12 tracker write-ACL check: FAIL | WARN | SKIP (FAIL recommended in production)
