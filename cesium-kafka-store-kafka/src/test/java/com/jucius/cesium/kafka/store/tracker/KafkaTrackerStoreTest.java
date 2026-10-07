@@ -516,6 +516,8 @@ class KafkaTrackerStoreTest {
         FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(2);
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
+        assertEquals(0.0, gauge(ctx, "cesium.pending.entries"), "published per loop iteration, not read live");
+        store.maintenance(); // the dispatch loop calls this once per iteration
 
         assertEquals(
                 1.0,

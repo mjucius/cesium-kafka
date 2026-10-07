@@ -36,6 +36,10 @@ No upgrade can newly fail at startup.
   group's real generation/member epoch and member id for partitions this instance owns, and `(-1, "")`
   otherwise; it never throws. The epoch fences dispatch-side writes only (documented in
   `store-spi.md` and ADR-0003). No shipped store calls it.
+- **`cesium_pinned_entries`, `cesium_cursor_sidecar_bytes` and `cesium_pending_entries` raced the
+  dispatch thread.** Scrapes read the store's unsynchronized per-partition map and the index directly,
+  so a scrape during a rebalance could report a wrong value or NaN. The gauges now read volatile
+  per-partition snapshots; `cesium_pending_entries` is refreshed every dispatch-loop iteration.
 - Docs claimed a `past_due` relay reason that was never emitted anywhere; reworded.
 
 ### Deprecated

@@ -806,6 +806,7 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
 
     private void drainShardCounters(Wiring w, int partition, PartitionState state) {
         PartitionShard shard = w.index.shard(partition);
+        state.pendingEntries = shard.pendingCount();
         long anomalies = shard.anomalies();
         if (anomalies > state.lastAnomalies) {
             w.indexAnomalies.increment((double) (anomalies - state.lastAnomalies));
@@ -826,15 +827,15 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     private void registerGauges(Wiring w, int partition, PartitionState state) {
         String tag = Integer.toString(partition);
         // M4 lesson: per-partition gauges MUST be deregistered on revoke or they bind dead state.
-        state.pendingGauge = Gauge.builder("cesium.pending.entries", () -> w.index.pendingCount(partition))
+        state.pendingGauge = Gauge.builder("cesium.pending.entries", () -> state.pendingEntries)
                 .description("live index size for the partition (design §9)")
                 .tag("partition", tag)
                 .register(w.registry);
-        state.pinnedGauge = Gauge.builder("cesium.pinned.entries", () -> statePinned(w, partition))
+        state.pinnedGauge = Gauge.builder("cesium.pinned.entries", () -> state.pinnedEntries)
                 .description("sidecar occupancy of the last computed cursor; sustained at max = overflow mode (§3.5)")
                 .tag("partition", tag)
                 .register(w.registry);
-        state.sidecarBytesGauge = Gauge.builder("cesium.cursor.sidecar.bytes", () -> stateSidecarBytes(w, partition))
+        state.sidecarBytesGauge = Gauge.builder("cesium.cursor.sidecar.bytes", () -> state.sidecarBytes)
                 .description("encoded sidecar size of the last computed cursor vs the budget")
                 .tag("partition", tag)
                 .register(w.registry);
@@ -846,16 +847,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                 .description("barrier - position while recovering; feeds the replay-ETA alert (§3.5)")
                 .tag("partition", tag)
                 .register(w.registry);
-    }
-
-    private static long statePinned(Wiring w, int partition) {
-        PartitionState state = w.states.get(partition);
-        return state == null ? 0 : state.pinnedEntries;
-    }
-
-    private static long stateSidecarBytes(Wiring w, int partition) {
-        PartitionState state = w.states.get(partition);
-        return state == null ? 0 : state.sidecarBytes;
     }
 
     private static void removeGauges(Wiring w, PartitionState state) {
@@ -986,8 +977,8 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
 
     /**
      * Per-partition recovery, cursor and metrics bookkeeping. Written on the dispatch thread only;
-     * the four recovery fields are volatile because the state/remaining gauges read them from the
-     * scrape and health-sampler threads.
+     * every field a gauge reads is volatile, because gauges are read from the scrape and
+     * health-sampler threads (they capture this object, never look it up in the unsynchronized maps).
      */
     private static final class PartitionState {
         volatile boolean recoveryBegun;
@@ -999,8 +990,11 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         boolean hasProposal;
         long proposedOffset;
         String proposedMetadata = "";
-        long pinnedEntries;
-        long sidecarBytes;
+        volatile long pinnedEntries;
+        volatile long sidecarBytes;
+        /** The index's pending count, published by the dispatch thread once per loop iteration. */
+        volatile long pendingEntries;
+
         long lastAnomalies;
         long lastHeapRebuilds;
         long lastLogSweeps;

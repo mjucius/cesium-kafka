@@ -799,7 +799,7 @@ Key defaults (durations ISO-8601):
 | `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped` | dispatch dispositions |
 | `cesium_dispatch_lag_seconds` | histogram | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | max time between group-B polls; alert ≪ `max.poll.interval.ms` (§6) |
-| `cesium_pending_entries` | gauge | `partition` | live index size; alert on step-collapse (tracker-integrity canary, R-9) |
+| `cesium_pending_entries` | gauge | `partition` | index size, refreshed every dispatch-loop iteration; alert on step-collapse (tracker-integrity canary, R-9) |
 | `cesium_pending_oldest_deadline_seconds` | gauge | | **[not yet emitted]** now − earliest deadline |
 | `cesium_tracker_cursor_lag` / `_age_seconds` | gauge | `partition` | **[not yet emitted]** position − committed cursor / cursor age; alert vs `delete.retention.ms` |
 | `cesium_pinned_entries` | gauge | `partition` | sidecar occupancy; sustained at max ⇒ overflow mode (§3.5) |
