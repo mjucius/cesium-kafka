@@ -295,6 +295,7 @@ class DispatchLoopTest {
         assertEquals(1L, h.events.stream().filter(("send:" + DLQ)::equals).count(), "GONE ⇒ one DLQ loss notice (D-9)");
         assertEquals(2.0, h.counterValue("cesium.dispatch.records", "outcome", "dispatched"));
         assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "payload_expired"));
+        assertEquals(1.0, h.counterValue("cesium.dlq.records", "reason", "payload-expired"));
         assertRows(
                 h.store.committedBatches.get(0), new long[][] {{0, 1}, {0, 2}, {0, 3}}, "full settled set finalized");
     }
@@ -322,6 +323,7 @@ class DispatchLoopTest {
         assertFalse(drop.events.contains("send:" + DLQ), "DROP writes no loss notice");
         assertEquals(CompletionReason.DROPPED, drop.store.encodeCalls.get(0).reason());
         assertEquals(1.0, drop.counterValue("cesium.dispatch.records", "outcome", "dropped"));
+        assertEquals(0.0, drop.counterValue("cesium.dlq.records", "reason", "payload-expired"), "DROP writes no DLQ");
         assertEquals(1, drop.producer().commitCount(), "the COMPLETE is still written — never a poison loop (§7.4)");
 
         Harness fail = new Harness(config(c -> c.policy = UnfetchablePayloadPolicy.FAIL));
@@ -486,6 +488,7 @@ class DispatchLoopTest {
         assertEquals(
                 1.0,
                 h.counterValue("cesium.transactions", "loop", "dispatch", "result", "aborted", "cause", "unrelayable"));
+        assertEquals(0.0, h.counterValue("cesium.dlq.records", "reason", "unrelayable"));
 
         // The §3.8 I-8 retry (the entry re-drains): poison ⇒ DLQ notice + REJECTED tombstone + cursor,
         // all in ONE committed transaction — the partition advances past it. Clear the recordings
@@ -513,6 +516,7 @@ class DispatchLoopTest {
         assertRows(h.store.encodeCalls.get(0).entries(), new long[][] {{0, 1}});
         assertRows(h.store.committedBatches.get(0), new long[][] {{0, 1}}, "the entry is finalized — never replays");
         assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "unrelayable"));
+        assertEquals(1.0, h.counterValue("cesium.dlq.records", "reason", "unrelayable"), "dispatch-side DLQ counted");
         assertEquals(
                 0.0,
                 h.counterValue("cesium.dispatch.records", "outcome", "dispatched"),
@@ -542,6 +546,45 @@ class DispatchLoopTest {
         assertRows(
                 h.store.committedBatches.get(0), new long[][] {{0, 1}}, "the entry is still resolved — never replays");
         assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "unrelayable"));
+        assertEquals(0.0, h.counterValue("cesium.dlq.records", "reason", "unrelayable"), "DROP writes no DLQ");
+    }
+
+    @Test
+    void dispatchDlqCountsReflectCommittedTransactionsOnly() {
+        // payload-expired: the DLQ notice's transaction aborts, then the retry commits.
+        Harness expired = new Harness();
+        expired.startActive(0);
+        expired.fetcher.classify(0, 1, FetchOutcome.GONE);
+        expired.producer().failSendOffsetsTimes = 1;
+        expired.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        expired.loop.runOnce();
+        assertTrue(expired.events.contains("send:" + DLQ), "the notice was sent in the aborted transaction");
+        assertEquals(0.0, expired.counterValue("cesium.dlq.records", "reason", "payload-expired"), "aborted");
+        expired.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        expired.clock.advanceMillis(101);
+        expired.loop.runOnce();
+        assertEquals(1, expired.producer().commitCount());
+        assertEquals(1.0, expired.counterValue("cesium.dlq.records", "reason", "payload-expired"), "committed once");
+
+        // unrelayable: rejected attempt, then the DLQ-routing retry aborts, then it commits.
+        Harness poison = new Harness();
+        poison.startActive(0);
+        poison.producer().sendCallbackError = new RecordTooLargeException("too large");
+        poison.producer().failSendCallbackAt = 0;
+        poison.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        poison.loop.runOnce();
+        poison.producer().failSendCallbackAt = -1;
+        poison.producer().failSendOffsetsTimes = 1;
+        poison.events.clear();
+        poison.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        poison.loop.runOnce();
+        assertTrue(poison.events.contains("send:" + DLQ), "the notice was sent in the aborted transaction");
+        assertEquals(0.0, poison.counterValue("cesium.dlq.records", "reason", "unrelayable"), "aborted");
+        poison.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        poison.clock.advanceMillis(101);
+        poison.loop.runOnce();
+        assertEquals(1, poison.producer().commitCount());
+        assertEquals(1.0, poison.counterValue("cesium.dlq.records", "reason", "unrelayable"), "committed once");
     }
 
     @Test

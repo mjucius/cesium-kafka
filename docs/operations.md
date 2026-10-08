@@ -570,13 +570,13 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | Metric | Type | Tags | Meaning |
 |---|---|---|---|
 | `cesium_ingest_records_total` | counter | `outcome=relayed_immediate\|scheduled\|clamped\|dlq\|unrelayable_dropped` | ingest dispositions |
-| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped\|unrelayable` | dispatch dispositions (flushed only after commit) |
+| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped\|unrelayable` | dispatch dispositions (flushed only after commit); `unrelayable` also counts entries dropped under `on-unrelayable: DROP`, so use `cesium_dlq_records_total` for DLQ volume |
 | `cesium_dispatch_lag_seconds` | timer (histogram) | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | recent max time between group-B polls; alert ≪ `max.poll.interval.ms` |
 | `cesium_txn_commit_seconds` | timer | `loop` | `commitTransaction` latency per attempt |
 | `cesium_transactions_total` | counter | `loop`, `result=committed\|aborted\|in_doubt`, `cause` | aborts ⇒ fencing/contention; in-doubt occurrences |
 | `cesium_header_errors_total` | counter | `type=malformed\|over_max\|conflict` | protocol violations |
-| `cesium_dlq_records_total` | counter | `reason` | DLQ production |
+| `cesium_dlq_records_total` | counter | `reason=malformed-header\|over-max-delay\|unrelayable\|payload-expired` | committed DLQ records from both loops: ingest (header policy, unrelayable) and dispatch (payload-expired, unrelayable); flushed only after commit |
 | `cesium_unrelayable_dlq_rejected_total` | counter | | an unrelayable record's DLQ write was also permanently rejected, so it escalated to DROP (registered on first occurrence) |
 | `cesium_ingest_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-A churn; `lost` = fenced/unclean |
 | `cesium_dispatch_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-B churn; `lost` = fenced/unclean |
@@ -645,7 +645,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | Cursor-guard / index anomaly | `rate(cesium_cursor_guard_violations_total[15m]) > 0` or `rate(cesium_store_index_anomalies_total[15m]) > 0` | A surfaced invariant violation. No data is lost (the last safe cursor is returned), but file a bug with logs. |
 | Slow replay | `cesium_shard_state == 1` and `cesium_replay_remaining_records` not falling (sustained) | A shard is stuck recovering. Check group-B fetch throughput and tracker-topic size. Readiness is unaffected. |
 | Backpressure pause | `cesium_shard_paused > 0` (sustained) | Index near cap; intake paused. Add dispatch capacity or raise the heap / caps. |
-| DLQ drain | `rate(cesium_dlq_records_total[10m]) > 0` | Inspect and drain the DLQ; correlate `reason`. |
+| DLQ drain | `rate(cesium_dlq_records_total[10m]) > 0` | Inspect and drain the DLQ; correlate `reason` (`payload-expired` means a loss notice: the payload was gone at dispatch time). |
 | Header misuse | `rate(cesium_header_errors_total[10m]) > 0` | Producers sending malformed/over-max/conflicting headers. Fix the producer. |
 
 **Proxies for the not-yet-emitted metrics:** monitor tracker-topic disk/partition size and group-B

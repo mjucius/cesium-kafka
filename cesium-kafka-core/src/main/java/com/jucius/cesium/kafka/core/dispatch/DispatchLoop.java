@@ -4,6 +4,7 @@ import static com.jucius.cesium.kafka.core.loop.LoopSupport.abortOrReplace;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.anyCause;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.boundedExponential;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.causeTag;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.countDlq;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.promoteUnrelayable;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.throwIfAsyncSendFailed;
 
@@ -164,7 +165,8 @@ import org.slf4j.LoggerFactory;
  * path; the engine never calls {@code commitSync}).
  *
  * <p><strong>Metrics (§9):</strong> committed dispositions only ({@code cesium_dispatch_records},
- * the dispatch-lag histogram) flush after {@code commitTransaction} returns, so abort/retry
+ * the dispatch-lag histogram, and {@code cesium_dlq_records_total} for the dispatch-side
+ * {@code payload-expired} and {@code unrelayable} DLQ notices) flush after {@code commitTransaction} returns, so abort/retry
  * cycles never inflate them. {@code cesium_pending_entries}/{@code cesium_shard_state} are
  * store-owned gauges and not duplicated here; {@code cesium_lso_lag} needs a per-partition
  * read_uncommitted/read_committed offset diff from the admin plane and is deferred to the
@@ -236,6 +238,9 @@ public final class DispatchLoop implements Runnable {
      * outcome is known; reset per dispatch transaction.
      */
     private final ConcurrentLinkedQueue<UnrelayableHit> unrelayableHits = new ConcurrentLinkedQueue<>();
+
+    /** Unrelayable DLQ notices sent in the current dispatch transaction; counted only on commit. */
+    private int unrelayableDlq;
 
     // Cross-thread state: stop flag, health/metrics, async send errors from the producer I/O thread.
     private final AtomicBoolean running = new AtomicBoolean(true);
@@ -862,6 +867,7 @@ public final class DispatchLoop implements Runnable {
         CrashPoints.maybeFire(CrashPoints.DISPATCH_BEFORE_BEGIN);
         asyncSendError = null;
         unrelayableHits.clear();
+        unrelayableDlq = 0;
         producer.beginTransaction();
         transactionInFlight = true;
         boolean dlqNotices = config.onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ;
@@ -887,6 +893,7 @@ public final class DispatchLoop implements Runnable {
                             relayFactory.headerErrorDlqRecord(
                                     fetched.record(i), DlqReasons.UNRELAYABLE, known.detail(), nowMs),
                             new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)));
+                    unrelayableDlq++;
                 }
             } else {
                 // Attributed: a permanent destination rejection on this relay is captured against the
@@ -1474,12 +1481,14 @@ public final class DispatchLoop implements Runnable {
         dispatchedRecords.increment(classified.foundCount);
         if (config.onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ) {
             payloadExpiredRecords.increment(classified.goneCount);
+            countDlq(registry, DlqReasons.PAYLOAD_EXPIRED, classified.goneCount);
         } else {
             droppedRecords.increment(classified.goneCount);
         }
         // §3.8 I-8: entries the destination permanently rejected and we resolved out-of-band (DLQ
         // notice, or dropped). Never dispatched, so they carry no dispatch-lag sample.
         unrelayableRecords.increment(classified.rejectedCount);
+        countDlq(registry, DlqReasons.UNRELAYABLE, unrelayableDlq);
         for (int f = 0; f < classified.foundCount; f++) {
             long lagMs = Math.max(0, nowMs - batch.dispatchAtMs(classified.foundIndices[f]));
             dispatchLag.record(Duration.ofMillis(lagMs));

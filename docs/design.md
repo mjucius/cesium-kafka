@@ -41,6 +41,8 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 >    `store.properties.max-pending-per-partition` is removed, and `heap-budget-bytes` now feeds only
 >    the H1 recovery ceiling. `dispatch.max-pending-total` is process-wide; in 1.x every dispatch
 >    worker enforced the whole cap, so the effective cap grew with `dispatch.workers`.
+>    `cesium_dlq_records_total` now counts the dispatch loop's committed DLQ writes too
+>    (`payload-expired`, and dispatch-side `unrelayable`); in 1.x it counted only ingest.
 
 ## Design revisions
 
@@ -841,7 +843,7 @@ Metric inventory (final names, `cesium_` prefix):
 | Metric | Type | Tags | Meaning |
 |---|---|---|---|
 | `cesium_ingest_records_total` | counter | `outcome=relayed_immediate\|scheduled\|dlq\|clamped\|unrelayable_dropped` | ingest dispositions |
-| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped\|unrelayable` | dispatch dispositions |
+| `cesium_dispatch_records_total` | counter | `outcome=dispatched\|payload_expired\|dropped\|unrelayable` | dispatch dispositions (DLQ volume is `cesium_dlq_records_total`) |
 | `cesium_dispatch_lag_seconds` | histogram | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | max time between group-B polls; alert ≪ `max.poll.interval.ms` (§6) |
 | `cesium_pending_entries` | gauge | `partition` | index size, refreshed every dispatch-loop iteration; alert on step-collapse (tracker-integrity canary, R-9) |
@@ -862,7 +864,7 @@ Metric inventory (final names, `cesium_` prefix):
 | `cesium_header_errors_total` | counter | `type=malformed\|over_max\|conflict` | protocol violations |
 | `cesium_ingest_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-A rebalance churn; `lost` = fenced/unclean |
 | `cesium_dispatch_rebalances_total` | counter | `event=assigned\|revoked\|lost` | group-B rebalance churn; `lost` = fenced/unclean |
-| `cesium_dlq_records_total` | counter | `reason` | |
+| `cesium_dlq_records_total` | counter | `reason` | committed DLQ records from both loops, per §2.4 reason (revision 4: includes the dispatch-side `payload-expired` and `unrelayable` notices) |
 | `cesium_retention_margin_seconds` | gauge | | **[not yet emitted]** observed earliest-available age − delay.max (accurate under size/tier eviction); alert < 0 |
 | `cesium_tracker_invalid_records_total` | counter | | wire-format violations on tracker (malformed/version-skew); foreign-writer canary. Does not detect well-formed forgeries (L2; competent tampering needs broker authorizer audit logging or the reserved `store.kafka.hmac.*`) |
 | `cesium_degraded` | gauge | `loop` | park-and-degrade state (§3.8); the triggering cause is logged, not tagged, because a gauge's identity must be stable across cause changes (Micrometer registration) |

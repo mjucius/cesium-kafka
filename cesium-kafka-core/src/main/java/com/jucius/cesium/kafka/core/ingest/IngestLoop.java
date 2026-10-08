@@ -4,6 +4,7 @@ import static com.jucius.cesium.kafka.core.loop.LoopSupport.abortOrReplace;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.anyCause;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.boundedExponential;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.causeTag;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.countDlq;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.promoteUnrelayable;
 import static com.jucius.cesium.kafka.core.loop.LoopSupport.throwIfAsyncSendFailed;
 
@@ -981,8 +982,7 @@ public final class IngestLoop implements Runnable {
         overMaxHeaders.increment((double) batchCounts.overMax);
         conflictHeaders.increment((double) batchCounts.conflict);
         for (Map.Entry<String, Long> entry : batchCounts.dlqReasons.entrySet()) {
-            registry.counter("cesium.dlq.records", "reason", entry.getKey())
-                    .increment(entry.getValue().doubleValue());
+            countDlq(registry, entry.getKey(), entry.getValue());
         }
         batchCounts.reset();
     }

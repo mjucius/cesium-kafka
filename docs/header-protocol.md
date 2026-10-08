@@ -234,7 +234,8 @@ Field meanings:
 | `unrelayable` | ingest or dispatch transaction | The destination broker permanently rejected the relay on produce (record too large for `max.request.size`/`max.message.bytes`, invalid record) under `route.relay.on-unrelayable: DLQ` |
 | `payload-expired` | dispatch transaction | The payload was unfetchable at dispatch time |
 
-`cesium_dlq_records_total{reason=...}` counts records produced to the DLQ.
+`cesium_dlq_records_total{reason=...}` counts records produced to the DLQ by committed ingest and
+dispatch transactions, tagged with the values above.
 
 ---
 

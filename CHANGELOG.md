@@ -38,6 +38,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   resident-pending ceiling. It no longer feeds a startup footprint check.
 - `dispatch.max-pending-total` is now process-wide. Each dispatch worker enforces
   cap ÷ `dispatch.workers` (minimum 1); with `dispatch.workers` fixed at 1 that is the whole cap.
+- `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now
+  includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
@@ -86,6 +88,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `dispatch.max-pending-total` was enforced separately by every dispatch worker, so the effective
   process cap was `dispatch.workers` times the configured (or AUTO heap-derived) value. Each worker
   now gets an equal share.
+- `cesium_dlq_records_total` counted only ingest-side DLQ writes. The dispatch loop's
+  `payload-expired` loss notices and its `unrelayable` DLQ copies are now counted too, once per
+  committed transaction (an aborted attempt counts nothing).
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).

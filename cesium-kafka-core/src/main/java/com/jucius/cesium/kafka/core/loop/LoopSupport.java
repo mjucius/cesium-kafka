@@ -37,6 +37,16 @@ public final class LoopSupport {
         return false;
     }
 
+    /**
+     * Adds {@code n} committed DLQ records to {@code cesium_dlq_records_total{reason}}. A zero
+     * count registers nothing, so a reason never written has no series.
+     */
+    public static void countDlq(MeterRegistry registry, String reason, long n) {
+        if (n > 0) {
+            registry.counter("cesium.dlq.records", "reason", reason).increment((double) n);
+        }
+    }
+
     /** The {@code cause} tag on abort metrics and backoff logs: the failure's simple class name. */
     public static String causeTag(Throwable error) {
         return error.getClass().getSimpleName();
