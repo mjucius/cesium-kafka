@@ -3,7 +3,7 @@ plugins {
     `java-library`
 }
 
-description = "cesium-kafka engine: ingest/dispatch loops, transaction management, policies, validation (internal until 1.x)"
+description = "cesium-kafka engine: ingest/dispatch loops, transaction management, policies, validation (internal, no compatibility promise)"
 
 dependencies {
     api(project(":cesium-kafka-api"))

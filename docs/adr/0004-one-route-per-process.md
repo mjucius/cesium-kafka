@@ -40,4 +40,4 @@ engine per route; the app does not expose that.
 > **As shipped:** the per-route engine class, `CesiumEngine`, lives in `cesium-kafka-app`
 > (`com.jucius.cesium.kafka.app.lifecycle`), not `cesium-kafka-core`; `core` holds the ingest and
 > dispatch loops it wires. An embedder needing several routes in one JVM constructs one
-> `CesiumEngine` per route, and that programmatic API is internal-until-1.x.
+> `CesiumEngine` per route, and that programmatic API is internal (ADR-0019).

@@ -33,9 +33,11 @@ failure matrix need a corresponding test and an ADR.
 | [0016](0016-fastutil-backed-primitive-index.md) | fastutil-backed primitive index | Accepted | Post-approval rev 1, §5 |
 | [0017](0017-kafka-4-floor-and-repo-only-publishing.md) | Kafka 4.0 floor + repo-only publishing + app as product surface | Accepted | Post-approval rev 2, §13 |
 | [0018](0018-bounded-wait-for-proven-topic-metadata.md) | Bounded wait for proven-existing topic metadata | Accepted | §2.1, §7.6 |
+| [0019](0019-2-0-stability-baseline.md) | 2.0 stability baseline | Accepted | Post-approval rev 4 |
 
 ADRs 0001–0015 are the set planned in design §12. 0016 and 0017 record three later project-owner
 decisions: the fastutil index backing, and the bundle of Kafka 4.0 broker floor, repo-only
 publishing, and app as product surface. The design records them in the revision block at the top of
 [`../design.md`](../design.md), and they supersede the affected design text. 0018 records a later
-fix: a bounded wait for metadata of topics whose existence startup has already proven.
+fix: a bounded wait for metadata of topics whose existence startup has already proven. 0019 records
+the move to 2.0.0 and the stability promise that starts there.

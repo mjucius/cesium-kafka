@@ -7,8 +7,8 @@ name: Release
 #   * NO Maven Central / Sonatype publish of api/core/store-kafka/testkit, and
 #   * NO container image push to GHCR or any other registry.
 # Both are OUT OF SCOPE for v1.0 by owner decision (the runnable APP is the supported product; the
-# engine programmatic API stays internal-until-1.x). See docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md.
-# How they WOULD be added later (1.x), if/when the decision is revisited:
+# engine programmatic API stays internal; ADR-0019). See docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md.
+# How they WOULD be added later, if/when the decision is revisited:
 #   * Maven Central: add the `maven-publish` + `signing` plugins to api/core/store-kafka/testkit,
 #     a `publishToSonatype` step here gated on OIDC/Sonatype credentials (secrets), and POM metadata.
 #   * GHCR image: a `docker/build-push-action` step using the existing multi-stage Dockerfile, with

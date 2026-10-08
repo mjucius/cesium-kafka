@@ -1,6 +1,6 @@
 # cesium-kafka header protocol
 
-Status: normative · Protocol version: 1 · Stability: public wire contract (semver from 1.0)
+Status: normative · Protocol version: 1 · Stability: public wire contract (semver; protocol version 1 is unchanged in 2.0.0)
 
 This document specifies the Kafka record headers cesium-kafka reads from source records and stamps
 on relayed and dead-lettered records, and the dead-letter (DLQ) record contract. It is the

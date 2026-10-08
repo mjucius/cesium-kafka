@@ -42,7 +42,7 @@ application and can run anywhere a suitable JVM can reach Kafka:
 - under a service manager such as systemd
 - from the Gradle-built distribution archives or install directory
 
-The supported v1 product surface is the runnable app, not an embedded Java library API. That means
+The supported product surface is the runnable app, not an embedded Java library API. That means
 the recommended production shape is to run cesium-kafka as its own process or service and configure
 it with YAML, environment variables, and system properties.
 
@@ -193,7 +193,7 @@ Each waiting entry is small:
 So the default implementation scales to large pending counts: memory grows with the number of
 small pointers, not with the size of user payloads.
 
-The scheduler store is also pluggable. The default `kafka-tracker` store is the supported v1 store
+The scheduler store is also pluggable. The default `kafka-tracker` store is the supported store
 and is exactly-once when destination consumers use `read_committed`. The public store SPI allows
 other implementations, such as database-backed stores, but their delivery guarantees depend on the
 store archetype they implement. See [store-spi.md](store-spi.md) for implementer details.

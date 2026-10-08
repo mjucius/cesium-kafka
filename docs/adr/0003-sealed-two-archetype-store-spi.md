@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-06
+- **Amended by:** [ADR-0019](0019-2-0-stability-baseline.md) (2.0 stability baseline)
 - **Design reference:** [`../design.md`](../design.md) §4 (D7), §4.5
 
 ## Context
@@ -36,7 +37,7 @@ specification each archetype's implementers subclass.
   ADR, which puts that change through review.
 - Additive evolution within an archetype is via interface `default` methods; wire-format versioning
   belongs to stores, outside the SPI.
-- `cesium-kafka-api` and `cesium-kafka-store-testkit` are the stable, semver-published surface for
+- `cesium-kafka-api` and `cesium-kafka-store-testkit` are the stable, semver-published surface (from 2.0.0, ADR-0019) for
   store implementers from 1.0 (see [ADR-0017](0017-kafka-4-floor-and-repo-only-publishing.md)); the
   `ExternalSchedulerStore` contract is finalized in the testkit as the executable spec for future
   DB-backed stores.

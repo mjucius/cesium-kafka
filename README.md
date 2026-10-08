@@ -31,8 +31,9 @@ What is supported, and how stable, in v1:
   artifact or published container image in v1; build the image from the included `Dockerfile`. See
   [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md).
 - The store SPI (`cesium-kafka-api`) and its contract test kit (`cesium-kafka-store-testkit`) are
-  stable and semver-governed for store implementers. Start at [docs/store-spi.md](docs/store-spi.md).
-- The engine's programmatic API (`cesium-kafka-core`) is internal-until-1.x.
+  stable and semver-governed from 2.0.0 for store implementers. Start at [docs/store-spi.md](docs/store-spi.md).
+- The engine's programmatic API (`cesium-kafka-core`) is internal, with no compatibility promise
+  ([ADR-0019](docs/adr/0019-2-0-stability-baseline.md)).
 
 ## Design highlights
 

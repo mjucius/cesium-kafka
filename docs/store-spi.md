@@ -2,8 +2,8 @@
 
 This guide is for engineers implementing a scheduler store against the cesium-kafka SPI. The store
 SPI (`cesium-kafka-api`) and its contract-test kit (`cesium-kafka-store-testkit`) are the stable,
-published surface for store implementers. Both are semver-stable from 1.0 and evolve additively. (The
-runnable app is the supported v1 product; the engine's programmatic API is internal-until-1.x; the
+published surface for store implementers. Both are semver-stable from 2.0.0 (ADR-0019) and evolve additively. (The
+runnable app is the supported product; the engine's programmatic API is internal; the
 SPI + testkit are what you build against.)
 
 For the guarantees a store must preserve, see [`delivery-semantics.md`](delivery-semantics.md); for
@@ -67,7 +67,7 @@ DispatchLoop loop = switch (store) {
 };
 ```
 
-> As shipped (1.x), the external branch has no loop behind it yet: the app build accepts a
+> As shipped (2.0), the external branch has no loop behind it yet: the app build accepts a
 > `TrackerBackedStore` and rejects any other archetype at startup (`CesiumEngine.resolveStore`).
 > A store you write today must therefore implement `TrackerBackedStore` to be runnable by the
 > shipped app; `ExternalSchedulerStore` is a stable, contract-tested surface you can build against,
@@ -416,7 +416,7 @@ with `store.type: kafka-tracker`.
 
 ## 10. Stability and evolution
 
-`cesium-kafka-api` is semver-stable from 1.0. Evolution is additive: new optional behaviour
+`cesium-kafka-api` is semver-stable from 2.0.0. Evolution is additive: new optional behaviour
 arrives as `default` methods (as `onTrackerPosition`, `DueBatch.clamped`, and `ScheduledRef.clamped`
 already did), so existing stores keep compiling and working. Wire-format versioning belongs to your
 store; the engine never inspects your bytes. `capabilities()` must stay constant for an instance's

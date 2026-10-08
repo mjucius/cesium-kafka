@@ -29,7 +29,7 @@ public interface ConfigView {
      *
      * @param properties the {@code store.properties} subtree, keys relative to it
      * @return an immutable view
-     * @since 1.2.0
+     * @since 2.0.0
      */
     static ConfigView of(Map<String, String> properties) {
         return new MapConfigView(properties);

@@ -2,8 +2,8 @@
 
 A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exactly-once via Kafka transactions (KIP-447/KIP-890 era), pointer-only payload re-seek, and one production scheduler store (an in-memory index durably backed by a Kafka tracker topic) behind a pluggable SPI. This document is the implementation specification.
 
-> Changes made after approval (2026-06-05, project-owner decisions). Later sections cite these as
-> post-approval revisions 1–3.
+> Changes made after approval (revisions 1–3 on 2026-06-05, revision 4 on 2026-10-07; project-owner
+> decisions). Later sections cite these as post-approval revisions 1–4.
 > 1. Index backing uses fastutil instead of hand-rolled chunked arrays. §5's structures are built
 >    from fastutil primitive collections (`fastutil-core`, store-kafka module only): parallel
 >    `LongBigArrayBigList`s for the entry pool with an `IntArrayList` free-slot stack;
@@ -19,7 +19,8 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 > 2. The broker floor is Kafka 4.0+ (no 3.x lane). Publishing in v1.0 is repo-only: no Maven
 >    Central or GHCR, and §13's release workflow publishes a GitHub Release with distribution
 >    archives. The runnable app is the v1 product surface. The engine's programmatic API stays
->    internal until 1.x; the store SPI module remains stable for implementers.
+>    internal until 1.x (revision 4: internal with no compatibility promise); the store SPI module
+>    remains stable for implementers.
 > 3. §8 config key names now follow the `CesiumConfig` sketch, which is authoritative (M1 review).
 >    Transaction settings live at `kafka.transactions.{timeout,commit-retry}` because they are
 >    producer-level concerns and the sketch has no top-level `transactions` component. Relay
@@ -28,6 +29,9 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 >    every other key. `dispatch.max-pending-total` has no writable `AUTO` literal: leaving the key
 >    unset (or `0`) selects the heap-derived default. The §8 table uses these names, and the loader
 >    suggests the new paths when it sees the old top-level spellings.
+> 4. 2.0.0 (ADR-0019). The cleanup ships as 2.0.0 and may break the api, testkit, config keys,
+>    metrics and log shape where that gives the clean fix; wire formats are unchanged. The api and
+>    testkit are semver-stable from 2.0.0, and the engine's programmatic API stays internal.
 
 ## Design revisions
 
@@ -603,7 +607,7 @@ DispatchLoop loop = switch (store) {
 
 ### 4.5 Discovery, configuration, stability
 
-`SchedulerStoreProvider` registered via `META-INF/services`; ServiceLoader populates a registry; selection is always explicit: `store.type: kafka-tracker` (typeId) or `store.type: class:com.example.FooStore` (FQCN fallback). There is no auto-selection; duplicate typeIds fail startup listing the offending jars (the model Kafka Connect uses). `cesium-kafka-api` is semver-stable from 1.0; additive evolution via default methods; wire-format versioning belongs to stores, not the SPI. The contract-test kit (§11.2) is the executable specification.
+`SchedulerStoreProvider` registered via `META-INF/services`; ServiceLoader populates a registry; selection is always explicit: `store.type: kafka-tracker` (typeId) or `store.type: class:com.example.FooStore` (FQCN fallback). There is no auto-selection; duplicate typeIds fail startup listing the offending jars (the model Kafka Connect uses). `cesium-kafka-api` is semver-stable from 2.0; additive evolution via default methods; wire-format versioning belongs to stores, not the SPI. The contract-test kit (§11.2) is the executable specification.
 
 > **As shipped:** the app resolves `store.type` by typeId only (`CesiumEngine.resolveStore`). The
 > `class:<fqcn>` fallback is not implemented, and a duplicate typeId fails startup with a message
@@ -1048,7 +1052,7 @@ Dependency notes: M2/M3 can proceed in parallel with M4 after M1; M5 depends on 
 ## Open questions for the project owner
 
 1. Publish to Maven Central from day one, and confirm `com.jucius.cesium` group-id/domain ownership.
-2. Embeddable-library mode commitment: core is multi-engine by construction. Is the programmatic API a supported v1 surface or internal-until-1.x?
+2. Embeddable-library mode commitment: core is multi-engine by construction. Is the programmatic API a supported v1 surface or internal-until-1.x? Resolved by revision 4 / ADR-0019: internal.
 3. Cancellation API scope for 1.x (tracker `CANCEL 0x02` reserved; ring/index already supports it). The tracker write-ACL is now a v1 requirement regardless; a cancellation API would additionally need an authenticated front door (it must not be "produce to the internal topic").
 4. Minimum supported broker version statement: design recommends 4.0+ (KIP-890 v2, 848 testing); is a 3.x-broker support floor required (changes ops-guide guidance and the transactions-v2 posture)?
 5. Sub-second delays: the delay path costs ingest-commit + tracker-consume (~100–500 ms); document as best-effort, or relay-immediately below a threshold?

@@ -544,7 +544,7 @@ public final class StartupValidator {
      * strictness, reports when the configured principal's exclusive WRITE grant is missing, when a
      * foreign principal holds WRITE, when {@code acl-principal} is unset entirely, or when the cluster
      * has no authorizer to verify against. The default {@code WARN} surfaces any of these on every
-     * boot without blocking (backward-compatible); {@code FAIL} — recommended for production — refuses
+     * boot without blocking clusters that have no authorizer; {@code FAIL} — recommended for production — refuses
      * to start unless the R12 restriction is verifiably in force, since the whole security posture
      * delegates to this ACL and a forged ADD is a duplicate-injection primitive while a forged
      * tombstone is a data-loss primitive; {@code SKIP} omits the check for operators who enforce the

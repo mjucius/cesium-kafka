@@ -20,7 +20,7 @@
  *
  * <p>Discovery is via {@link java.util.ServiceLoader} registration of {@link
  * com.jucius.cesium.kafka.api.store.SchedulerStoreProvider}; selection is always explicit
- * ({@code store.type}), never automatic. This package is semver-stable from 1.0; evolution is
+ * ({@code store.type}), never automatic. This package is semver-stable from 2.0.0; evolution is
  * additive via default methods.
  */
 @org.jspecify.annotations.NullMarked

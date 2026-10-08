@@ -161,7 +161,7 @@ class KafkaClientFactoryTest {
     @Test
     void siblingWorkersGetDistinctStaticMembershipIds() {
         KafkaClientFactory factory = new KafkaClientFactory(defaults());
-        // Worker 0 keeps the pre-1.2 id so single-worker upgrades rejoin as the same static member.
+        // Worker 0 keeps its 1.x id so single-worker upgrades rejoin as the same static member.
         assertEquals(Optional.of("cesium.orders-delay.ingest.slot-0"), factory.ingestGroupInstanceId(0));
         assertEquals(Optional.of("cesium.orders-delay.ingest.slot-0.3"), factory.ingestGroupInstanceId(3));
         assertEquals(Optional.of("cesium.orders-delay.dispatch.slot-0"), factory.dispatchGroupInstanceId(0));

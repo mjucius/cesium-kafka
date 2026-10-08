@@ -53,8 +53,8 @@ public record StartupChecks(
         maxToleratedOutage = Objects.requireNonNullElse(maxToleratedOutage, DEFAULT_MAX_TOLERATED_OUTAGE);
         outageCheck = Objects.requireNonNullElse(outageCheck, CheckMode.FAIL);
         heapBudget = Objects.requireNonNullElse(heapBudget, CheckMode.FAIL);
-        // Default WARN (not FAIL): surfacing the unenforced R12 control on every boot without blocking
-        // is backward-compatible; operators opt into FAIL to have startup refuse an unverified ACL.
+        // Default WARN (not FAIL): surface the unenforced R12 control on every boot without blocking
+        // clusters that have no authorizer; operators opt into FAIL to refuse an unverified ACL.
         trackerAcl = Objects.requireNonNullElse(trackerAcl, CheckMode.WARN);
     }
 

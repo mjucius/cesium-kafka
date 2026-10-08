@@ -6,11 +6,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
-Cleanup and fixes from an over-engineering audit. Fully backward compatible: the published
-`cesium-kafka-api` and testkit surfaces only gain additions (verified with a `javap -public` diff
-against 1.1.5), and config keys, wire formats, metric names and the JSON log shape are unchanged.
+Cleanup and fixes from an over-engineering audit and a docs-versus-code audit, released as 2.0.0
+(ADR-0019): with no external users yet, the fixes take the clean form even where that breaks the
+api, testkit, config keys, metrics or log shape. Every break is listed under "Breaking changes".
+Wire formats are unchanged, so a mixed 1.1.5/2.0.0 rolling restart is safe.
 HTTP bodies are the same JSON, though an escaped control character there would now use uppercase hex.
-No upgrade can newly fail at startup.
+
+### Breaking changes
+- The release is 2.0.0, and `cesium-kafka-api`/`cesium-kafka-store-testkit` are semver-stable from
+  2.0.0 (ADR-0019). `cesium-kafka-core` stays internal.
+- Ingest and dispatch workers with ordinal 1 or higher join as `<group>.<instance>.<n>` (see Fixed).
+  Worker 0 keeps its 1.x `group.instance.id`.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
