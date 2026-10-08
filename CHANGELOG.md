@@ -143,6 +143,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `cesium_retention_margin_seconds`, a metric that was never emitted. It now cites
   `cesium_fetch_unfetchable_total`, `dispatch.on-unfetchable-payload` and broker-side monitoring of
   the source's earliest-record age.
+- `ConfigView.of` hid an unparseable `store.properties` value from its error message but kept the
+  JDK parse exception as the cause, whose message quotes the value (`For input string: "..."`), so a
+  logged stack trace could still print a secret. The error now carries no cause.
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).

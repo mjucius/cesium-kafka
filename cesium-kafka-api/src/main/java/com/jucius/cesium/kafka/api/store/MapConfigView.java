@@ -5,7 +5,6 @@ import java.time.format.DateTimeParseException;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import org.jspecify.annotations.Nullable;
 
 /**
  * The {@link ConfigView} behind {@link ConfigView#of}: the view the engine hands a store over the
@@ -99,7 +98,7 @@ final class MapConfigView implements ConfigView {
         try {
             return Integer.parseInt(value.trim());
         } catch (NumberFormatException e) {
-            throw typeError(key, "an int", value, e);
+            throw typeError(key, "an int", value);
         }
     }
 
@@ -107,7 +106,7 @@ final class MapConfigView implements ConfigView {
         try {
             return Long.parseLong(value.trim());
         } catch (NumberFormatException e) {
-            throw typeError(key, "a long", value, e);
+            throw typeError(key, "a long", value);
         }
     }
 
@@ -115,7 +114,7 @@ final class MapConfigView implements ConfigView {
         try {
             return Duration.parse(value.trim());
         } catch (DateTimeParseException e) {
-            throw typeError(key, "an ISO-8601 duration", value, e);
+            throw typeError(key, "an ISO-8601 duration", value);
         }
     }
 
@@ -127,20 +126,19 @@ final class MapConfigView implements ConfigView {
         if (trimmed.equalsIgnoreCase("false")) {
             return false;
         }
-        throw typeError(key, "true or false", value, null);
+        throw typeError(key, "true or false", value);
     }
 
     /**
      * Builds a type-mismatch error that names the key and the expected type but never echoes the
      * value (VULN-012 / L6): a {@code store.properties.*} value can carry a secret, and this exception
-     * message reaches {@code log.error}, so it reports only the value's coarse shape.
+     * message reaches {@code log.error}, so it reports only the value's coarse shape. It carries no
+     * cause: the JDK parse exceptions quote the input ({@code For input string: "..."}), and a logged
+     * stack trace prints the cause chain.
      */
-    private static IllegalArgumentException typeError(
-            String key, String expected, String value, @Nullable Throwable cause) {
-        return new IllegalArgumentException(
-                "store.properties." + key + " must be " + expected + ", but the value (" + describeValue(value)
-                        + ") could not be parsed",
-                cause);
+    private static IllegalArgumentException typeError(String key, String expected, String value) {
+        return new IllegalArgumentException("store.properties." + key + " must be " + expected + ", but the value ("
+                + describeValue(value) + ") could not be parsed");
     }
 
     /** A non-disclosing description of a value: shape only, never the content (VULN-012 / L6). */

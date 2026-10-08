@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /** {@link ConfigView#of}: defaulting vs required access, typed parsing, error shapes. */
 class MapConfigViewTest {
@@ -68,6 +69,24 @@ class MapConfigViewTest {
         assertTrue(e.getMessage().contains("store.properties.token-count"), e::getMessage);
         assertTrue(e.getMessage().contains("int"), e::getMessage);
         assertFalse(e.getMessage().contains("s3cr3t"), () -> "value leaked into message: " + e.getMessage());
+    }
+
+    @Test
+    void unparseableValueIsNeverEchoedIntoTheCauseChain() {
+        // A logged stack trace prints every cause; the JDK parse exceptions quote their input.
+        ConfigView secretView = ConfigView.of(Map.of("k", "s3cr3t"));
+        for (Executable read : new Executable[] {
+            () -> secretView.getInt("k"),
+            () -> secretView.getLong("k"),
+            () -> secretView.getDuration("k"),
+            () -> secretView.getBoolean("k")
+        }) {
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class, read);
+            for (Throwable t = e; t != null; t = t.getCause()) {
+                String message = String.valueOf(t.getMessage());
+                assertFalse(message.contains("s3cr3t"), () -> "value leaked into the cause chain: " + message);
+            }
+        }
     }
 
     @Test

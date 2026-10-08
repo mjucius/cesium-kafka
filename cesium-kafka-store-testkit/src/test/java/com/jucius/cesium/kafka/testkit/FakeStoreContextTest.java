@@ -3,6 +3,7 @@ package com.jucius.cesium.kafka.testkit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -56,6 +57,7 @@ class FakeStoreContextTest {
         assertTrue(config.getBoolean("flag"), "trimmed, case-insensitive boolean");
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> config.getInt("bad"));
         assertFalse(e.getMessage().contains("secret-x"), "a parse error never echoes the value");
+        assertNull(e.getCause(), "a JDK parse exception would quote the value in a logged stack trace");
     }
 
     @Test
