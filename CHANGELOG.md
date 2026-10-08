@@ -54,6 +54,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `fatal engine failure ({source}) — initiating engine shutdown` (for example `(ingest loop)`), and
   the exit line from `engine exited on a fatal loop failure` to
   `engine exited on a fatal engine failure`.
+- Core (internal): `ClusterAdmin` gains `offsetsAtOrAfter`, and `StartupValidator` gains
+  `revalidate` and a `(ClusterAdmin, Clock)` constructor. Out-of-tree `ClusterAdmin` implementations
+  must add the method.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive

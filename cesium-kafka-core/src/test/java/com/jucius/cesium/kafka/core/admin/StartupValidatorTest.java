@@ -11,6 +11,7 @@ import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.KafkaConfig;
 import com.jucius.cesium.kafka.core.config.RelayConfig;
+import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
 import com.jucius.cesium.kafka.core.config.StartupChecks;
 import com.jucius.cesium.kafka.core.config.TopicRef;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
@@ -105,6 +107,7 @@ class StartupValidatorTest {
         DispatchConfig dispatch;
         StartupChecks startupChecks;
         KafkaConfig kafka;
+        Set<Role> roles;
 
         CesiumConfig build() {
             TrackerConfig tracker = new TrackerConfig(
@@ -114,7 +117,7 @@ class StartupValidatorTest {
             return new CesiumConfig(
                     "orders-delay",
                     new InstanceId("slot-0"),
-                    null,
+                    roles,
                     kafka,
                     route,
                     delay,
@@ -1234,5 +1237,251 @@ class StartupValidatorTest {
         ValidationReport report = validator.validate(defaultConfig()).report();
 
         assertTrue(report.errors().size() >= 5, report::render);
+    }
+
+    // ------------------------------------------------------------------ runtime re-validation (D23)
+
+    @Nested
+    class Revalidate {
+
+        /** A plausible wall clock, far enough from the epoch for every window under test. */
+        private static final long NOW = 1_800_000_000_000L;
+
+        private static final String GROUP_B = "cesium.orders-delay.dispatch";
+        private static final long DAY = Duration.ofDays(1).toMillis();
+        private static final long HOUR = Duration.ofHours(1).toMillis();
+
+        private final VirtualWaits waits = new VirtualWaits(NOW);
+        private StartupValidator revalidator;
+        private IdentityBlob startupIdentity;
+        private Uuid trackerId;
+
+        @BeforeEach
+        void startedEngine() {
+            givenHealthyCluster();
+            revalidator = new StartupValidator(admin, waits.clock(), waits.waiter());
+            startupIdentity =
+                    new IdentityBlob(admin.clusterId, admin.topics.get(SOURCE).topicId());
+            trackerId = admin.topics.get(TRACKER).topicId();
+        }
+
+        private StartupValidator.Revalidation round(CesiumConfig config) {
+            return revalidator.revalidate(config, startupIdentity, trackerId);
+        }
+
+        private String errorsAt(StartupValidator.Revalidation result, String path) {
+            return findingsAt(result.report().errors(), path);
+        }
+
+        private void recreate(String topic) {
+            TopicFacts old = admin.topics.get(topic);
+            admin.topics.put(topic, new TopicFacts(topic, Uuid.randomUuid(), old.partitionCount()));
+        }
+
+        @Test
+        void aHealthyClusterIsClean() {
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertFalse(result.report().hasErrors(), () -> result.report().render());
+        }
+
+        @Test
+        void aRecreatedSourceIsTheFatalOutcome() {
+            recreate(SOURCE);
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            String change = result.identityChange().orElseThrow();
+            assertTrue(change.contains("recreated under the same name"), change);
+            assertTrue(change.contains("R17"), change);
+        }
+
+        @Test
+        void aRecreatedTrackerIsFatal() {
+            recreate(TRACKER);
+
+            String change = round(defaultConfig()).identityChange().orElseThrow();
+
+            assertTrue(change.contains("tracker topic '" + TRACKER + "' id changed"), change);
+        }
+
+        @Test
+        void aDifferentClusterIsFatal() {
+            admin.clusterId = Uuid.randomUuid().toString();
+
+            String change = round(defaultConfig()).identityChange().orElseThrow();
+
+            assertTrue(change.contains("cluster id changed"), change);
+        }
+
+        @Test
+        void aMissingTrackerDegradesAndIsNeverBootstrapped() {
+            admin.topics.remove(TRACKER);
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
+
+            StartupValidator.Revalidation result = round(builder.build());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertTrue(errorsAt(result, "route.tracker").contains("existed at startup"), result.report()::render);
+            assertEquals(List.of(), admin.created, "re-validation must never create a topic");
+            assertEquals(List.of(), admin.aclGrants, "re-validation must never apply an ACL");
+        }
+
+        @Test
+        void partitionDriftDegradesInsteadOfStopping() {
+            // The grow-partitions runbook's intermediate state: the tracker grew first.
+            admin.topics.put(TRACKER, new TopicFacts(TRACKER, trackerId, PARTITIONS + 1));
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertTrue(errorsAt(result, "route.tracker").contains("R-7"), result.report()::render);
+        }
+
+        @Test
+        void aChangedTrackerCleanupPolicyDegrades() {
+            admin.topicConfigs.get(TRACKER).put("cleanup.policy", "compact,delete");
+
+            assertTrue(errorsAt(round(defaultConfig()), "route.tracker").contains("MUST be exactly 'compact'"));
+        }
+
+        @Test
+        void anAdminFailureIsAFindingNotAThrow() {
+            admin.describeFailure = new ClusterAdminException("broker unreachable");
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertTrue(errorsAt(result, "kafka").contains("broker unreachable"), result.report()::render);
+            assertTrue(errorsAt(result, "route.source.topic").contains("broker unreachable"));
+        }
+
+        // ---- D14 committed-cursor age
+
+        /** delete.retention.ms = 2 x P1D, so the age limit is 1 day + 1 hour. */
+        private long cutoff() {
+            return NOW - (DAY + HOUR);
+        }
+
+        /** Tracker partition 0 holds ADDs appended just before, at, and after the cutoff (offsets 10..12). */
+        private void givenTrackerLog() {
+            admin.putLog(TRACKER, 0, 10, cutoff() - 1, cutoff(), cutoff() + 1);
+        }
+
+        private void commitCursor(long offset) {
+            admin.putGroupOffset(GROUP_B, new TopicPartition(TRACKER, 0), new OffsetAndMetadata(offset, ""));
+        }
+
+        @Test
+        void aCursorAtTheFirstAddInsideTheWindowIsClean() {
+            givenTrackerLog();
+            commitCursor(11); // exactly the record appended at the cutoff
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertEquals("", errorsAt(result, "route.tracker"), result.report()::render);
+            assertTrue(admin.offsetQueries.contains(new FakeClusterAdmin.OffsetQuery(TRACKER, cutoff())));
+        }
+
+        @Test
+        void aCursorOneRecordOlderDegrades() {
+            givenTrackerLog();
+            commitCursor(10);
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            String errors = errorsAt(result, "route.tracker");
+            assertTrue(errors.contains("committed cursor older than delete.retention.ms / 2"), errors);
+            assertTrue(errors.contains("partition(s) [0]"), errors);
+        }
+
+        @Test
+        void raisingDeleteRetentionClearsTheBreach() {
+            givenTrackerLog();
+            commitCursor(10);
+            admin.topicConfigs.get(TRACKER).put("delete.retention.ms", Long.toString(4 * DAY));
+
+            assertEquals("", errorsAt(round(defaultConfig()), "route.tracker"));
+        }
+
+        @Test
+        void unboundedDeleteRetentionSkipsTheCheck() {
+            givenTrackerLog();
+            commitCursor(0);
+            admin.topicConfigs.get(TRACKER).put("delete.retention.ms", Long.toString(Long.MAX_VALUE));
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertEquals("", errorsAt(result, "route.tracker"), result.report()::render);
+            assertTrue(admin.offsetQueries.isEmpty(), "no listOffsets when the cutoff precedes the epoch");
+        }
+
+        @Test
+        void ingestOnlyInstancesSkipTheCursorAgeCheck() {
+            givenTrackerLog();
+            commitCursor(10);
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.roles = Set.of(Role.INGEST);
+
+            StartupValidator.Revalidation result = round(builder.build());
+
+            assertEquals("", errorsAt(result, "route.tracker"), result.report()::render);
+            assertTrue(admin.offsetQueries.isEmpty());
+        }
+
+        // ---- R-11 earliest retained record under acknowledged size eviction
+
+        private CesiumConfig acknowledgedSizeEviction() {
+            admin.topicConfigs.get(SOURCE).put("retention.bytes", "1073741824");
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.startupChecks =
+                    new StartupChecks(null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null, null);
+            return builder.build();
+        }
+
+        /** delay.max P1D + 1h margin. */
+        private long windowStart() {
+            return NOW - (DAY + HOUR);
+        }
+
+        @Test
+        void sizeEvictionInsideTheDelayWindowDegrades() {
+            CesiumConfig config = acknowledgedSizeEviction();
+            admin.putLog(SOURCE, 1, 500, windowStart() + 1, windowStart() + 2);
+
+            StartupValidator.Revalidation result = round(config);
+
+            String errors = errorsAt(result, "startup-checks.size-based-retention");
+            assertTrue(errors.contains("partition(s) [1]"), result.report()::render);
+            assertTrue(errors.contains("R-11"), errors);
+        }
+
+        @Test
+        void anEarliestRecordOlderThanTheWindowIsClean() {
+            CesiumConfig config = acknowledgedSizeEviction();
+            admin.putLog(SOURCE, 1, 500, windowStart() - 1, windowStart() + 2);
+
+            assertEquals("", errorsAt(round(config), "startup-checks.size-based-retention"));
+        }
+
+        @Test
+        void aPartitionThatNeverEvictedIsClean() {
+            CesiumConfig config = acknowledgedSizeEviction();
+            admin.putLog(SOURCE, 1, 0, windowStart() + 1);
+
+            assertEquals("", errorsAt(round(config), "startup-checks.size-based-retention"));
+        }
+
+        @Test
+        void timeOnlyRetentionNeverListsSourceOffsets() {
+            admin.putLog(SOURCE, 1, 500, windowStart() + 1);
+
+            round(defaultConfig());
+
+            assertTrue(admin.offsetQueries.stream().noneMatch(q -> q.topic().equals(SOURCE)));
+        }
     }
 }

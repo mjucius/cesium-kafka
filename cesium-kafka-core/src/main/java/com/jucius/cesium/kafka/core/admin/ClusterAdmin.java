@@ -8,7 +8,8 @@ import org.apache.kafka.common.TopicPartition;
 
 /**
  * The narrow admin-plane boundary {@link StartupValidator} talks through (design §2.1, the §6 admin
- * plane). An interface rather than a direct {@code Admin} dependency so unit
+ * plane), both at startup and for the periodic re-validation rounds. An interface rather than a
+ * direct {@code Admin} dependency so unit
  * tests inject a deterministic fake; production wires {@link KafkaClusterAdmin} around the real
  * client.
  *
@@ -72,4 +73,13 @@ public interface ClusterAdmin {
      * ACL-apply path.
      */
     Set<String> describeTrackerWritePrincipals(String topic);
+
+    /**
+     * Per partition {@code 0..partitions-1}, the first committed offset whose record timestamp is at
+     * or after {@code timestampMs} ({@code Admin.listOffsets} with {@code OffsetSpec.forTimestamp},
+     * read-committed), or the log-end offset when no retained record is that new. Re-validation
+     * compares the dispatch group's committed tracker cursor against it (D14 cursor age) and reads
+     * the source's earliest retained record against {@code delay.max} with it (R-11).
+     */
+    Map<Integer, Long> offsetsAtOrAfter(String topic, int partitions, long timestampMs);
 }

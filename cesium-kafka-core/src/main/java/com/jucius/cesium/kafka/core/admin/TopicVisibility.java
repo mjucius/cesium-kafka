@@ -29,8 +29,9 @@ import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
  * the wait lives here rather than inside {@link KafkaClusterAdmin#describeTopic}, which every caller
  * — including the fail-fast existence checks — would otherwise inherit.
  *
- * <p>Not thread-safe: one instance belongs to one validation/startup pass, confined to the thread
- * running it, and {@link #lastWaitedMillis()} reports the most recent call's wait.
+ * <p>Not thread-safe: one instance belongs to one validator, confined to the thread running it
+ * (startup on start(), re-validation on {@code cesium-admin}), and {@link #lastWaitedMillis()}
+ * reports the most recent call's wait.
  */
 public final class TopicVisibility {
 

@@ -62,6 +62,7 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 
 /**
  * Assembles a real engine instance for integration tests: {@link CesiumConfig} records built
@@ -150,6 +151,15 @@ final class EngineHarness implements AutoCloseable {
             throw new IllegalStateException("test-assembled config is invalid:\n" + configReport.render());
         }
         return new StartupValidator(new KafkaClusterAdmin(admin)).validate(config);
+    }
+
+    /**
+     * One runtime re-validation round (D23) against the identity and tracker topic id startup
+     * captured, with its time checks read from {@code clock}.
+     */
+    StartupValidator.Revalidation revalidate(IdentityBlob startupIdentity, Uuid trackerTopicId, Clock clock) {
+        return new StartupValidator(new KafkaClusterAdmin(admin), clock)
+                .revalidate(config, startupIdentity, trackerTopicId);
     }
 
     /**

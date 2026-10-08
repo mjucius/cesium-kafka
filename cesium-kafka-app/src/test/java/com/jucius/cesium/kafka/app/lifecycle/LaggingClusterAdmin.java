@@ -78,4 +78,9 @@ final class LaggingClusterAdmin implements ClusterAdmin {
     public Set<String> describeTrackerWritePrincipals(String topic) {
         throw new UnsupportedOperationException("buildRouteDescriptor must not read ACLs");
     }
+
+    @Override
+    public Map<Integer, Long> offsetsAtOrAfter(String topic, int partitions, long timestampMs) {
+        throw new UnsupportedOperationException("buildRouteDescriptor must not list offsets");
+    }
 }

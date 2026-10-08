@@ -1,6 +1,6 @@
 /**
- * Admin-plane startup validation and tracker bootstrap (design §2.1, §3.1, §3.6, §7.6, §8; failure
- * rows R-7..R-11).
+ * Admin-plane startup validation, tracker bootstrap and runtime re-validation (design §2.1, §3.1,
+ * §3.6, §7.6, §8, D23; failure rows R-7..R-11).
  *
  * <p>{@link com.jucius.cesium.kafka.core.admin.StartupValidator} runs every environment check the
  * design requires before either loop starts — source/destination/DLQ existence, source
@@ -9,7 +9,10 @@
  * ({@code FAIL}) including the D14 tombstone-retention floor and partition parity (R-7), and the
  * broker offsets-retention vs max-tolerated-outage check (D18) — aggregating every finding into
  * one {@link com.jucius.cesium.kafka.core.config.ValidationReport} so an operator fixes a broken
- * environment in one round trip. The caller fail-fasts on errors.
+ * environment in one round trip. The caller fail-fasts on errors. Its {@code revalidate} method is
+ * the runtime half (D23, ADR-0020): the same checks without any bootstrap, plus the topic-identity
+ * comparison against startup, the D14 committed-cursor age and the R-11 earliest-retained-record
+ * check, for the engine to run periodically on {@code cesium-admin}.
  *
  * <p>{@link com.jucius.cesium.kafka.core.admin.IdentityBlob} is the versioned
  * {@code {v, clusterId, sourceTopicId}} blob both loops carry in their committed
