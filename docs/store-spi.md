@@ -358,7 +358,7 @@ class MyExternalStoreContractTest extends ExternalSchedulerStoreContract {
 }
 ```
 
-16 tests assert: `capabilities()` declares `EXTERNAL` affinity with a `DispatchGuarantee` consistent
+18 tests assert: `capabilities()` declares `EXTERNAL` affinity with a `DispatchGuarantee` consistent
 with whether reconciliation is implemented (`EXACTLY_ONCE` only when it is); `coordination()` is
 declared; `upsertScheduled` is idempotent on `(partition, sourceOffset)`; `scanPending` streams only
 the requested partition; `markDispatched` (applied strictly *after* the dispatch commit) excludes
@@ -369,14 +369,30 @@ every entry to pending; recovery rebuilds the dispatch index from durable rows; 
 assigned-but-unscanned partition contributes nothing and drives no poll timeout; the CLAMP marker
 survives the `upsertScheduled` → external store → index → batch round trip and recovery; revoke drops
 in-memory state in O(1) while durable rows survive; lost partitions are dropped and their in-flight
-work is abandoned to a new owner; and, for a reconciliation-capable store, `cursorToCommit` returns
+work is abandoned to a new owner; an in-doubt commit (I9, run in both modes) resolves neither
+`onBatchCommitted` nor `onBatchAborted` and converges by drop and re-recovery: a broker-committed
+cursor reconciles the batch, and a cursor computed for a transaction the broker aborted never leaks
+into a later one; and, for a reconciliation-capable store, `cursorToCommit` returns
 a non-empty cursor and rows at or below a delivered reconciliation cursor are reconciled as delivered
 after a crash (the at-least-once default skips those two via an assumption).
 
 The reference `InMemoryExternalSchedulerStore` and the two passing subclasses,
 `InMemoryExternalStoreContractTest` (reconciliation on ⇒ effectively-once) and
 `AtLeastOnceExternalStoreContractTest` (reconciliation off ⇒ baseline), are the worked example to
-extend. `coordination()` must be `FOLLOW_INGEST_GROUP`; `STORE_MANAGED` DB-lease ownership is
+extend.
+
+If you implement reconciliation, keep `cursorToCommit` pure. The engine calls it before committing,
+and the transaction may still abort or end in doubt. Advance any state later cursors build on (the
+reference store's per-partition high-water) only in `onBatchCommitted`, and call `markDispatched`
+only after `onBatchCommitted`. After an in-doubt commit the engine calls neither callback; it drops
+the partitions and re-recovers them from the committed cursor.
+
+> **Known gap:** the reference cursor orders entries by `(dispatchAtMs, sourceOffset)` only. An
+> upsert that lands after a cursor was committed but carries an earlier `dispatchAtMs` falls at or
+> below that cursor and would be reconciled as delivered. The cursor needs an ingest-order component
+> before a real external store, or an external dispatch loop, ships.
+
+`coordination()` must be `FOLLOW_INGEST_GROUP`; `STORE_MANAGED` DB-lease ownership is
 reserved for a later release and rejected at startup. Build also to the ordering contracts in
 §§[5](#5-tracker-offsets-are-not-dense-promote-on-the-reported-position)–[7](#7-the-correctness-checklist)
 and the [delivery-semantics archetype table](delivery-semantics.md#10-store-archetype-guarantees).

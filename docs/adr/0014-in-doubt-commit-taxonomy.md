@@ -50,8 +50,3 @@ return to pending with a penalty not-before
 - No fault path is a silent terminal state: every one ends in retry, park-and-degrade with an alert
   ([ADR-0013](0013-readiness-decoupled-from-recovery-and-static-membership.md)), or fail-fast with a
   runbook.
-
-> **As shipped:** the I9 in-doubt tests are in `TrackerBackedStoreContract`
-> (`inDoubtCommitThatActuallyCommittedConvergesByReplayNeverByRestore`,
-> `inDoubtCommitThatActuallyAbortedRedispatchesAfterReplay`). `ExternalSchedulerStoreContract` has
-> no in-doubt test yet.

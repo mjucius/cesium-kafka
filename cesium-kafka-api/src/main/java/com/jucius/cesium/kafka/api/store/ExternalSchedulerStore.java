@@ -36,11 +36,13 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
      * Marks a dispatched batch as settled in the external system (dispatch thread; invoked from
      * the store's {@link SchedulerStore#onBatchCommitted} handling).
      *
-     * <p><strong>ORDERING CONTRACT: called strictly AFTER the dispatch transaction commits.</strong>
-     * A crash between the commit and this call means recovery sees the entries as pending and
-     * re-dispatches them: the archetype's dispatch guarantee is
-     * {@link StoreCapabilities.DispatchGuarantee#AT_LEAST_ONCE} unless the store also implements
-     * {@link #cursorToCommit cursor reconciliation}, which closes exactly this window.
+     * <p><strong>ORDERING CONTRACT: called strictly AFTER the dispatch transaction commits</strong>,
+     * and after {@link SchedulerStore#onBatchCommitted} for the batch. A crash between the commit and
+     * this call means recovery sees the entries as pending and re-dispatches them: the archetype's
+     * dispatch guarantee is {@link StoreCapabilities.DispatchGuarantee#AT_LEAST_ONCE} unless the
+     * store also implements {@link #cursorToCommit cursor reconciliation}, which closes exactly this
+     * window. Never called after an in-doubt commit (I9): the engine cannot know the batch was
+     * delivered, so it drops and re-recovers the partitions instead.
      */
     void markDispatched(DueBatch dispatched);
 
@@ -62,6 +64,14 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
      * completion-fact channel that shares the dispatch transaction's atomicity (design §4.4
      * item 1). Recovery then reconciles rows {@code <=} cursor as delivered instead of trusting
      * row status, closing the commit/markDispatched crash window.
+     *
+     * <p><strong>Must not change state.</strong> The engine calls this before it commits, and the
+     * transaction may still abort or end in doubt. Any reconciliation state the cursor implies (for
+     * example a per-partition high-water that later cursors build on) may advance only in
+     * {@link SchedulerStore#onBatchCommitted}, which the engine calls once the commit is known to
+     * have succeeded. After an in-doubt commit (I9) neither {@code onBatchCommitted} nor
+     * {@link SchedulerStore#onBatchAborted} runs: the engine drops the partitions and re-recovers
+     * them, and recovery reconciles against whichever cursor the broker actually committed.
      *
      * @return the cursor to commit, or {@link Optional#empty()} (the default) when the store does
      *     not implement reconciliation and accepts the at-least-once window

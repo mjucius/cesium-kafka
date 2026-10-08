@@ -42,6 +42,10 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
 - `store.type: class:<FQCN>` is removed from the `SchedulerStoreProvider` contract. It was never
   implemented, and such a value still fails startup as an unknown typeId.
+- Testkit and SPI: `ExternalSchedulerStoreContract` gains two I9 in-doubt tests, run in both modes.
+  `ExternalSchedulerStore.cursorToCommit` may not change reconciliation state, its cursor counts as
+  committed only from `onBatchCommitted`, and `markDispatched` runs after `onBatchCommitted`. A store
+  whose `cursorToCommit` advances state that later cursors build on fails the new tests.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
@@ -49,6 +53,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - Metrics `cesium_shard_state{partition}` (0 = ASSIGNED, 1 = RECOVERING, 2 = ACTIVE) and
   `cesium_replay_remaining_records{partition}` (barrier − position while recovering), previously
   listed as "not yet emitted".
+- Testkit: `ExternalStoreHarness.inDoubtCommit(batch, brokerCommitted)` models an ambiguous
+  `commitTransaction` (I9) for external stores.
 
 ### Fixed
 - `dispatch.cursor.sidecar-max-bytes` had no effect. It is now passed to the `kafka-tracker`
@@ -93,6 +99,12 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `cesium_dlq_records_total` counted only ingest-side DLQ writes. The dispatch loop's
   `payload-expired` loss notices and its `unrelayable` DLQ copies are now counted too, once per
   committed transaction (an aborted attempt counts nothing).
+- The testkit's reference `InMemoryExternalSchedulerStore` advanced its reconciliation high-water
+  inside `cursorToCommit`, before the commit outcome was known. After an aborted or in-doubt
+  transaction, a later, smaller batch committed a cursor that covered entries never dispatched, and
+  recovery reconciled them as delivered: silent loss. The high-water now advances only in
+  `onBatchCommitted`, and `ExternalSchedulerStoreContract` covers in-doubt commits (ADR-0014 said it
+  did; it had no such test).
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).

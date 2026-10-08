@@ -52,6 +52,12 @@ import org.junit.jupiter.api.Test;
  * {@link #deliverReconciliationCursor} — override that (and {@link #supportsCursorReconciliation()})
  * to unlock the two reconciliation tests; the at-least-once default skips them via an assumption.
  *
+ * <p><strong>In-doubt commits (I9).</strong> Two tests, run in both modes, model an ambiguous
+ * {@code commitTransaction}: neither {@code onBatchCommitted} nor {@code onBatchAborted} runs, and
+ * the partition is dropped and re-recovered from whichever cursor the broker committed. They fail a
+ * store whose {@link ExternalSchedulerStore#cursorToCommit cursorToCommit} records state, because a
+ * cursor computed for a transaction that then aborted must not leak into a later one.
+ *
  * <p>The contract models a co-located {@code FOLLOW_INGEST_GROUP} instance (the only coordination
  * mode the v1 engine implements): upserts land on a partition the same instance dispatches.
  */
@@ -332,6 +338,71 @@ public abstract class ExternalSchedulerStoreContract {
     }
 
     // ----------------------------------------------------------------------------------------
+    // In-doubt commits (I9): neither callback runs; drop and re-recover
+    // ----------------------------------------------------------------------------------------
+
+    @Test
+    public void inDoubtCommitThatActuallyCommittedConvergesByRecoveryNeverByRestore() {
+        Fixture f = fixture(0);
+        for (int i = 1; i <= 3; i++) {
+            f.harness().schedule(ref(0, i, T0));
+        }
+        f.harness().schedule(ref(0, 4, T0 + 9_000_000)); // pin
+
+        DueBatch batch = f.store().pollDue(T0, 10);
+        assertEquals(3, batch.size());
+        // commitTransaction outcome ambiguous; the broker DID commit, cursor included. I9: neither
+        // callback runs and markDispatched never does, so the durable rows are still pending.
+        f.harness().inDoubtCommit(batch, true);
+        dropAndRecover(f, 0);
+
+        if (supportsCursorReconciliation()) {
+            assertEquals(
+                    List.of(new ScheduledRef(0, 4, T0 + 9_000_000, false)),
+                    durablePending(f.store(), 0),
+                    "broker committed: the committed cursor reconciles the batch as delivered (no duplicate)");
+            assertEquals(1, f.store().pendingCount(0));
+        } else {
+            assertEquals(4, f.store().pendingCount(0), "AT_LEAST_ONCE: without markDispatched the batch re-dispatches");
+        }
+        DueBatch rest = f.store().pollDue(Long.MAX_VALUE, 10);
+        f.harness().commitDispatch(rest);
+        assertEquals(0, f.store().pendingCount(0));
+    }
+
+    @Test
+    public void inDoubtCommitThatActuallyAbortedRedispatchesAfterRecovery() {
+        Fixture f = fixture(0);
+        for (int i = 1; i <= 3; i++) {
+            f.harness().schedule(ref(0, i, T0));
+        }
+        f.harness().schedule(ref(0, 4, T0 + 9_000_000)); // pin
+
+        DueBatch batch = f.store().pollDue(T0, 10);
+        assertEquals(3, batch.size());
+        // Ambiguous outcome again, but the broker aborted: the cursor the store computed for this
+        // transaction never became durable, so it must not leak into any later cursor.
+        f.harness().inDoubtCommit(batch, false);
+        dropAndRecover(f, 0);
+        assertEquals(4, f.store().pendingCount(0), "broker aborted: every entry remains pending (no loss)");
+
+        // Re-dispatch only the first entry, then crash before markDispatched.
+        DueBatch first = f.store().pollDue(T0, 1);
+        assertEquals(1, first.size());
+        assertEquals(1, first.sourceOffset(0));
+        f.harness().commitDispatchLosingMarkDispatched(first);
+
+        Fixture next = sibling(f);
+        dropAndRecover(next, 0);
+        List<Long> expected = supportsCursorReconciliation() ? List.of(2L, 3L, 4L) : List.of(1L, 2L, 3L, 4L);
+        assertEquals(
+                expected,
+                partitionAndOffsets(durablePending(next.store(), 0)),
+                "the committed cursor covers only what was really dispatched: entries 2 and 3 never were");
+        assertEquals(expected.size(), next.store().pendingCount(0));
+    }
+
+    // ----------------------------------------------------------------------------------------
     // Partition lifecycle: revoke, lost
     // ----------------------------------------------------------------------------------------
 
@@ -460,6 +531,22 @@ public abstract class ExternalSchedulerStoreContract {
                 contextBuilder().route(previous.context().route()).build();
         ExternalSchedulerStore store = createStore(ctx);
         return new Fixture(ctx, store, previous.harness().migrateTo(store));
+    }
+
+    /**
+     * The engine's I9 recovery for one partition: drop it ({@code onPartitionsLost} shape), re-adopt
+     * it, hand back the committed reconciliation cursor if there is one, and rebuild from the durable
+     * rows.
+     */
+    private void dropAndRecover(Fixture f, int partition) {
+        f.store().onPartitionsLost(Set.of(partition));
+        f.harness().assign(partition);
+        if (supportsCursorReconciliation()) {
+            f.harness()
+                    .committedCursor(partition)
+                    .ifPresent(cursor -> deliverReconciliationCursor(f.store(), partition, cursor));
+        }
+        f.harness().scan(partition);
     }
 
     /** Durable pending rows for {@code partition}, sorted by source offset (a pure read for assertions). */

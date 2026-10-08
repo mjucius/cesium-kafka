@@ -45,6 +45,9 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 >    (`payload-expired`, and dispatch-side `unrelayable`); in 1.x it counted only ingest.
 >    `store.type: class:<FQCN>` selection is dropped from the SPI contract: it was documented but never
 >    implemented, and selection is by typeId only.
+>    `ExternalSchedulerStoreContract` covers in-doubt commits (I9): `cursorToCommit` must not change
+>    state, its cursor counts as committed only from `onBatchCommitted`, and `markDispatched` runs
+>    after `onBatchCommitted`.
 
 ## Design revisions
 
@@ -544,9 +547,10 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
   void upsertScheduled(List<ScheduledRef> refs);
 
   /** ORDERING CONTRACT: called strictly AFTER the dispatch transaction commits
-   *  (from onBatchCommitted). A crash between commit and this call means the entry
+   *  (after onBatchCommitted). A crash between commit and this call means the entry
    *  re-dispatches on recovery: dispatchGuarantee = AT_LEAST_ONCE unless the store
-   *  also implements cursor reconciliation (below). */
+   *  also implements cursor reconciliation (below). Never called after an in-doubt
+   *  commit (I9): the engine drops and re-recovers the partitions instead. */
   void markDispatched(DueBatch dispatched);
 
   /** Recovery: stream pending refs for a partition into the in-memory time index. */
@@ -556,7 +560,9 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
    *  deterministic total order (dispatchAtMs, sourceOffset); the store returns a cursor
    *  encoding "all entries <= cursor dispatched", which the engine commits atomically in
    *  the offset-metadata channel. Recovery reconciles DB rows <= cursor as delivered
-   *  instead of trusting row status — closing the commit/markDispatched crash window. */
+   *  instead of trusting row status — closing the commit/markDispatched crash window.
+   *  Pure: the transaction may still abort or end in doubt, so any state the cursor
+   *  implies (a high-water later cursors build on) advances only in onBatchCommitted. */
   default Optional<String> cursorToCommit(int partition, DueBatch inFlight) { return Optional.empty(); }
 
   /** How dispatch ownership of partitions is decided. v1 engine implements
@@ -925,7 +931,7 @@ Why multi-module: the SPI must be consumable without the engine; the testkit mus
 
 ### 11.2 Store SPI contract kit (`cesium-kafka-store-testkit`, published)
 
-JUnit 5 abstract classes; implementers subclass with a factory. `TrackerBackedStoreContract` (~30 tests/properties): encode/decode round-trip via `onTrackerRecord`; schedule→pollDue ordering and dueness; replay idempotence (same records twice ⇒ pending unchanged); complete-before-add tolerance; cursor invariant (every pending entry ≥ cursor offset or in sidecar; monotone under random interleavings vs reference model; sidecar round-trips through `beginRecovery` seeding); overflow-fallback equivalence; recovery barrier (pollDue empty while recovering); recovery completes when pending exceeds the backpressure threshold (R7); stage→abort→recover ⇒ unchanged; stage→commit→recover ⇒ converged; in-doubt path (drop + re-recover converges, no restore); revoke clears, lost ≠ flush; epoch-fencing rejection for stale contexts; pre-compacted-log scripts; `@Tag("soak")` 1 M-entry memory-ceiling + O(log n) checks. `ExternalSchedulerStoreContract`: upsert idempotence; markDispatched excludes from scanPending; crash-sim (upsert without markDispatched reappears); cursor-reconciliation semantics when implemented; coordination declared. `KafkaTrackerStore`'s own tests are these contracts plus impl-specific cases, so the flagship store proves the kit first.
+JUnit 5 abstract classes; implementers subclass with a factory. `TrackerBackedStoreContract` (~30 tests/properties): encode/decode round-trip via `onTrackerRecord`; schedule→pollDue ordering and dueness; replay idempotence (same records twice ⇒ pending unchanged); complete-before-add tolerance; cursor invariant (every pending entry ≥ cursor offset or in sidecar; monotone under random interleavings vs reference model; sidecar round-trips through `beginRecovery` seeding); overflow-fallback equivalence; recovery barrier (pollDue empty while recovering); recovery completes when pending exceeds the backpressure threshold (R7); stage→abort→recover ⇒ unchanged; stage→commit→recover ⇒ converged; in-doubt path (drop + re-recover converges, no restore); revoke clears, lost ≠ flush; epoch-fencing rejection for stale contexts; pre-compacted-log scripts; `@Tag("soak")` 1 M-entry memory-ceiling + O(log n) checks. `ExternalSchedulerStoreContract`: upsert idempotence; markDispatched excludes from scanPending; crash-sim (upsert without markDispatched reappears); cursor-reconciliation semantics when implemented; in-doubt path in both modes (drop + re-recover; a cursor computed for a transaction that aborted never leaks into a later one); coordination declared. `KafkaTrackerStore`'s own tests are these contracts plus impl-specific cases, so the flagship store proves the kit first.
 
 ### 11.3 Integration (Testcontainers `org.testcontainers.kafka.KafkaContainer`, `apache/kafka:4.x` KRaft; `apache/kafka-native` for fast smoke; Toxiproxy for deterministic network faults). **Process model: cesium instances run as separate JVMs** (so SIGKILL/crash-point tests are real). **PR runs one representative lane** (classic protocol, 2 instances, split roles); the full matrix (× `group.protocol=consumer`, × 1 instance, × combined roles) runs nightly (R21).
 

@@ -37,7 +37,9 @@ import org.jspecify.annotations.Nullable;
  * durable row (idempotent on {@code (partition, sourceOffset)}); {@code markDispatched} flips the
  * row's dispatched flag <em>after</em> the dispatch commit. A row stays in {@code scanPending}
  * output until it is marked or reconciled — hence at-least-once. {@code cursorToCommit} encodes the
- * high-water {@code (dispatchAtMs, sourceOffset)} of the settled batch; {@link #reconcileFrom}
+ * high-water {@code (dispatchAtMs, sourceOffset)} of the settled batch without recording it; the
+ * high-water advances only in {@code onBatchCommitted}, so an aborted or in-doubt transaction
+ * cannot leak into a later cursor; {@link #reconcileFrom}
  * applies a committed cursor at recovery, flipping rows at or below it to dispatched and closing the
  * window (effectively-once).
  *
@@ -165,27 +167,26 @@ final class InMemoryExternalSchedulerStore implements ExternalSchedulerStore {
         if (!reconciliation) {
             return Optional.empty();
         }
-        long @Nullable [] highWater = reconcileHighWater.get(partition);
-        long bestAt = highWater == null ? Long.MIN_VALUE : highWater[0];
-        long bestOffset = highWater == null ? Long.MIN_VALUE : highWater[1];
-        boolean any = highWater != null;
-        for (int i = 0; i < inFlightBatch.size(); i++) {
-            if (inFlightBatch.sourcePartition(i) != partition) {
+        // Pure: the transaction may abort or end in doubt (I9), so the high-water advances only in
+        // onBatchCommitted.
+        long @Nullable [] highWater = highWaterWith(partition, inFlightBatch);
+        return highWater == null ? Optional.empty() : Optional.of(highWater[0] + ":" + highWater[1]);
+    }
+
+    /** {@code partition}'s reconciled high-water extended by the batch's entries for it, or null. */
+    private long @Nullable [] highWaterWith(int partition, DueBatch batch) {
+        long @Nullable [] best = reconcileHighWater.get(partition);
+        for (int i = 0; i < batch.size(); i++) {
+            if (batch.sourcePartition(i) != partition) {
                 continue;
             }
-            long at = inFlightBatch.dispatchAtMs(i);
-            long offset = inFlightBatch.sourceOffset(i);
-            if (!any || greater(at, offset, bestAt, bestOffset)) {
-                bestAt = at;
-                bestOffset = offset;
-                any = true;
+            long at = batch.dispatchAtMs(i);
+            long offset = batch.sourceOffset(i);
+            if (best == null || greater(at, offset, best[0], best[1])) {
+                best = new long[] {at, offset};
             }
         }
-        if (!any) {
-            return Optional.empty();
-        }
-        reconcileHighWater.put(partition, new long[] {bestAt, bestOffset});
-        return Optional.of(bestAt + ":" + bestOffset);
+        return best;
     }
 
     /**
@@ -289,10 +290,21 @@ final class InMemoryExternalSchedulerStore implements ExternalSchedulerStore {
 
     @Override
     public void onBatchCommitted(DueBatch batch) {
+        Set<Integer> touched = new TreeSet<>();
         for (int i = 0; i < batch.size(); i++) {
+            touched.add(batch.sourcePartition(i));
             Map<Long, Entry> partitionInFlight = inFlight.get(batch.sourcePartition(i));
             if (partitionInFlight != null) {
                 partitionInFlight.remove(batch.sourceOffset(i));
+            }
+        }
+        if (reconciliation) {
+            // The cursor cursorToCommit returned for this batch is now durable.
+            for (int partition : touched) {
+                long @Nullable [] highWater = highWaterWith(partition, batch);
+                if (highWater != null) {
+                    reconcileHighWater.put(partition, highWater);
+                }
             }
         }
     }

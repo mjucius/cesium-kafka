@@ -38,7 +38,7 @@ Legend for the Lane column:
 |-----|-------|------------------|------|
 | D-1 | Crash before `begin` (incl. after payload fetch) | `DispatchCrashPointsIT` (D-1); `DispatchRestartRecoveryIT` | PR |
 | D-2 | After dest+COMPLETE sends, before commit (abort) | `DispatchCrashPointsIT` (D-2); `DispatchLoopTest` abort path | PR |
-| D-3 | Crash during `commitTransaction` | `DispatchCrashPointsIT` (D-3); `DispatchLoopTest` + `TrackerBackedStoreContract` in-doubt | PR |
+| D-3 | Crash during `commitTransaction` | `DispatchCrashPointsIT` (D-3); `DispatchLoopTest` + `TrackerBackedStoreContract` and `ExternalSchedulerStoreContract` in-doubt | PR |
 | D-4 | Zombie dispatcher commits after losing *p* ⇒ fenced at `TxnOffsetCommit` | `ZombieFencingIT` (Toxiproxy partition); `ZombieStaticIdFencingIT.duplicateDispatchInstanceIdFences…` | nightly |
 | D-5 | Cooperative revocation of *p* between txns | `CooperativeRevocationIT`; `DispatchLoopTest` (callback ordering, `onPartitionsRevoked` drops shard) | nightly + unit |
 | D-6 | Crash during replay (pure state rebuild) | `KafkaTrackerStoreRecoveryTest`; `TrackerBackedStoreContract` replay idempotence | contract |
@@ -48,7 +48,7 @@ Legend for the Lane column:
 | D-10 | Open foreign txn holds LSO below a committed COMPLETE ⇒ HW barrier | `LsoBarrierHazardIT` (non-negotiable, §11.3-4) | PR + kip848 |
 | D-11 | Dispatch txn exceeds `transaction.timeout` ⇒ server abort | `DispatchLoopTest` (abort == retry); batch bounds prevent | unit; see [gap 4](#gaps-and-concerns) |
 | D-12 | Huge due backlog ⇒ time-sliced drain, bounded poll gap | `DispatchLoopTest` (due-storm poll-gap) and `RebalanceScaleIT` (`cesium.dispatch.poll.gap.seconds` bounded under backlog); `BackpressureIT` (§5.3 bounded-memory pause/resume: `cesium.shard.paused` / `cesium.pending.entries` under backlog) | nightly + unit |
-| D-13 | `commitTransaction` ambiguous (live) ⇒ in-doubt, never restore | `DispatchLoopTest` in-doubt fault injection; `TrackerBackedStoreContract` drop+re-recover converges | unit + contract |
+| D-13 | `commitTransaction` ambiguous (live) ⇒ in-doubt, never restore | `DispatchLoopTest` in-doubt fault injection; `TrackerBackedStoreContract` and `ExternalSchedulerStoreContract` drop+re-recover converges | unit + contract |
 | D-14 | Predecessor stalled between accepted `sendOffsets` and `commit`; commits after takeover | `BarrierOrderingI8IT` (non-negotiable, §11.3-5) | PR + kip848 |
 | D-15 | Abortable-retry exhaustion ⇒ park + degrade | `DispatchLoopTest.parkAndDegradeRaisesGaugeAtThresholdAndClearsOnSuccess` (gauge raise/clear, membership preserved); no real-broker trigger exists (an oversized relay now goes to the DLQ, `UnrelayableDlqIT`) | unit; see [gap 5](#gaps-and-concerns) |
 

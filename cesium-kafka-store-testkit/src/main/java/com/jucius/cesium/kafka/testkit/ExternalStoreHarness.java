@@ -35,6 +35,10 @@ import java.util.TreeSet;
  *       entry's durable row stays pending, which is exactly the
  *       {@link com.jucius.cesium.kafka.api.store.StoreCapabilities.DispatchGuarantee#AT_LEAST_ONCE}
  *       window the cursor reconciliation closes.
+ *   <li><strong>In-doubt commit (I9):</strong> {@link #inDoubtCommit} computes the cursor the engine
+ *       puts in the transaction, keeps it only if the broker committed, and resolves neither
+ *       {@code onBatchCommitted} nor {@code onBatchAborted}; the contract then drops and re-recovers
+ *       the touched partitions, as the engine does.
  *   <li><strong>Recovery:</strong> {@link #recover} assigns the partition and streams
  *       {@code scanPending} into the store's dispatch index. Cursor reconciliation (when the store
  *       implements it) is delivered by the contract <em>between</em> {@code onPartitionsAssigned}
@@ -117,7 +121,7 @@ public final class ExternalStoreHarness {
      * write ({@code markDispatched}).
      */
     public void commitDispatch(DueBatch batch) {
-        captureCursors(batch);
+        committedCursors.putAll(cursorsFor(batch));
         store.onBatchCommitted(batch);
         store.markDispatched(batch);
     }
@@ -129,7 +133,7 @@ public final class ExternalStoreHarness {
      * unless cursor reconciliation closes the window.
      */
     public void commitDispatchLosingMarkDispatched(DueBatch batch) {
-        captureCursors(batch);
+        committedCursors.putAll(cursorsFor(batch));
         store.onBatchCommitted(batch);
         // markDispatched intentionally NOT called.
     }
@@ -139,18 +143,39 @@ public final class ExternalStoreHarness {
         store.onBatchAborted(batch);
     }
 
+    /**
+     * An in-doubt {@code commitTransaction} outcome (I9, design §3.8). The engine asked the store for
+     * the cursor before committing, so {@code cursorToCommit} runs either way; the cursor becomes
+     * durable only if {@code brokerCommitted}. The engine cannot know which happened, so it resolves
+     * NEITHER {@code onBatchCommitted} nor {@code onBatchAborted}, and never calls
+     * {@code markDispatched}. Callers follow by dropping and re-recovering every touched partition,
+     * handing back whatever cursor is committed.
+     *
+     * @since 2.0.0
+     */
+    public void inDoubtCommit(DueBatch batch, boolean brokerCommitted) {
+        Map<Integer, String> cursors = cursorsFor(batch);
+        if (brokerCommitted) {
+            committedCursors.putAll(cursors);
+        }
+        // I9: neither onBatchCommitted nor onBatchAborted, and no markDispatched.
+    }
+
     /** The reconciliation cursor durably committed for {@code partition}, if the store produced one. */
     public Optional<String> committedCursor(int partition) {
         return Optional.ofNullable(committedCursors.get(partition));
     }
 
-    private void captureCursors(DueBatch batch) {
+    /** The cursor {@code cursorToCommit} returns for each partition {@code batch} touches. */
+    private Map<Integer, String> cursorsFor(DueBatch batch) {
         Set<Integer> touched = new TreeSet<>();
         for (int i = 0; i < batch.size(); i++) {
             touched.add(batch.sourcePartition(i));
         }
+        Map<Integer, String> cursors = new HashMap<>();
         for (int partition : touched) {
-            store.cursorToCommit(partition, batch).ifPresent(cursor -> committedCursors.put(partition, cursor));
+            store.cursorToCommit(partition, batch).ifPresent(cursor -> cursors.put(partition, cursor));
         }
+        return cursors;
     }
 }
