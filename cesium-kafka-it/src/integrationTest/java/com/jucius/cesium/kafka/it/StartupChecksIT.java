@@ -20,6 +20,7 @@ import java.util.Map;
 import org.apache.kafka.clients.admin.AlterConfigOp;
 import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.ConfigEntry;
+import org.apache.kafka.clients.admin.RecordsToDelete;
 import org.apache.kafka.clients.admin.RemoveMembersFromConsumerGroupOptions;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Producer;
@@ -35,8 +36,9 @@ import org.junit.jupiter.api.Test;
  * bootstrap writing the §2.1 tracker configs, DLQ existence when a policy routes to it, the §7.6
  * retention floor in FAIL mode, the R13 size-based-retention acknowledgment gate, the R-10
  * source-recreation topic-ID fail-fast, and the I-9 {@code auto.offset.reset=none} fail-fast
- * after the group's committed offsets disappear. Two runtime re-validation cases (D23) close it:
- * the D14 committed-cursor age and a source recreated under a running engine.
+ * after the group's committed offsets disappear. Three runtime re-validation cases (D23) close it:
+ * the R-11 earliest retained record under acknowledged eviction, the D14 committed-cursor age, and
+ * a source recreated under a running engine.
  */
 class StartupChecksIT extends KafkaIT {
 
@@ -193,6 +195,52 @@ class StartupChecksIT extends KafkaIT {
                 acknowledged.report().warnings().stream()
                         .anyMatch(f -> f.path().equals("startup-checks.size-based-retention")),
                 "the named acceptance is surfaced as a warning, never silent (risk 19)");
+    }
+
+    @Test
+    void revalidationFlagsAcknowledgedEvictionInsideTheDelayWindow() {
+        String source = createTopic("src", 1, Map.of("retention.bytes", "1073741824"));
+        String destination = createTopic("dst", 1);
+        String dlq = createTopic("dlq", 1);
+        harness = EngineHarness.builder()
+                .source(source)
+                .destination(destination)
+                .dlq(dlq)
+                .acknowledgeSizeBasedRetention()
+                .build();
+        StartupValidationResult startup = harness.validate();
+        assertFalse(startup.report().hasErrors(), () -> startup.report().render());
+        IdentityBlob identity = startup.identity().orElseThrow();
+        Uuid trackerId = topicId(harness.trackerTopic());
+
+        // Offsets 0 and 1 are older than delay.max + margin (P1D + 1h); offset 2 is fresh.
+        long now = System.currentTimeMillis();
+        long old = now - Duration.ofDays(2).toMillis();
+        try (Producer<byte[], byte[]> producer = newProducer()) {
+            produce(producer, source, 0, old, "k", "v0");
+            produce(producer, source, 0, old, "k", "v1");
+            produce(producer, source, 0, now, "k", "v2");
+        }
+        TopicPartition partition = new TopicPartition(source, 0);
+
+        // Eviction (deleteRecords stands in for size eviction) that leaves an old record retained:
+        // the margin is still positive.
+        get(ADMIN.deleteRecords(Map.of(partition, RecordsToDelete.beforeOffset(1)))
+                .all());
+        StartupValidator.Revalidation clean = harness.revalidate(identity, trackerId, Clock.systemUTC());
+        assertFalse(clean.report().hasErrors(), () -> clean.report().render());
+
+        // Eviction past every record older than the window: the margin is negative.
+        get(ADMIN.deleteRecords(Map.of(partition, RecordsToDelete.beforeOffset(2)))
+                .all());
+        StartupValidator.Revalidation flagged = harness.revalidate(identity, trackerId, Clock.systemUTC());
+        assertTrue(flagged.identityChange().isEmpty());
+        assertTrue(
+                flagged.report().errors().stream()
+                        .anyMatch(f -> f.path().equals("startup-checks.size-based-retention")
+                                && f.message().contains("partition(s) [0]")
+                                && f.message().contains("R-11")),
+                () -> flagged.report().render());
     }
 
     @Test
