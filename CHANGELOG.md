@@ -12,6 +12,17 @@ api, testkit, config keys, metrics or log shape. Every break is listed under "Br
 Wire formats are unchanged, so a mixed 1.1.5/2.0.0 rolling restart is safe.
 HTTP bodies are the same JSON, though an escaped control character there would now use uppercase hex.
 
+### Upgrading from 1.x
+1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce` and
+   `store.properties.max-pending-per-partition`. Set `dispatch.workers` to 1 and add instances
+   instead. Replace any `store.type: class:...` value with the provider's `typeId`.
+2. Roll instances one at a time. The tracker wire format, committed-cursor offset metadata and
+   worker-0 `group.instance.id`s are unchanged, so 1.1.5 and 2.0.0 instances can run side by side.
+3. Expect runtime re-validation (every `startup-checks.revalidation-interval`, default PT5M) to set
+   `/health` degraded for conditions 1.x only checked at startup; see operations.md §14.5.
+4. Store implementers: replace `FakeStoreContext.MapConfigView` with `ConfigView.of(Map)`. External
+   stores must keep `cursorToCommit` free of side effects (the new I9 contract tests check this).
+
 ### Breaking changes
 - The release is 2.0.0, and `cesium-kafka-api`/`cesium-kafka-store-testkit` are semver-stable from
   2.0.0 (ADR-0019). `cesium-kafka-core` stays internal.
