@@ -48,9 +48,9 @@ engine failures, exit with code 1.
 
 Segments are matched case-insensitively (they are lowercased first). Because every `_` inside a
 map-key segment becomes `.`, a map key that contains `-` or `_` cannot be set from the environment:
-`CESIUM_STORE__PROPERTIES__MAX_PENDING_PER_PARTITION` sets `store.properties.max.pending.per.partition`,
+`CESIUM_STORE__PROPERTIES__CURSOR__SIDECAR_MAX_BYTES` sets `store.properties.cursor.sidecar.max.bytes`,
 which the `kafka-tracker` store rejects. Use YAML or a `-D` property for those keys
-(`-Dcesium.store.properties.max-pending-per-partition=100000`).
+(`-Dcesium.store.properties.cursor.sidecar-max-bytes=3072`).
 
 Unknown keys under the `CESIUM_` prefix are startup errors (exit 78), like unknown YAML keys, so a
 typo'd override fails fast instead of being ignored.
@@ -188,18 +188,13 @@ The `kafka-tracker` store reads these keys from `store.properties`:
 
 | `store.properties` key | Default | Meaning |
 |---|---|---|
-| `max-pending-per-partition` | `2000000` | The store's own per-partition worst-case footprint cap, used in `validate()` (`partitionCount × max-pending-per-partition × 64 B` checked against the heap budget). Size it down for small containers (the quickstart uses `100000`). |
 | `cursor.sidecar-max-bytes` | `dispatch.cursor.sidecar-max-bytes` (3072), clamped to the broker cap | Store-side sidecar budget. When unset, the engine fills it from `dispatch.cursor.sidecar-max-bytes`, clamped to broker `offset.metadata.max.bytes`. An explicit value wins and is not clamped (only warned about); accepted range 128 B–1 MiB. |
-| `heap-budget-bytes` | `0` | Heap budget for the footprint check above. `0` means 25% of max heap. |
+| `heap-budget-bytes` | `0` | Heap budget for the store's recovery resident-pending ceiling (H1): recovery fails fast once resident pending entries reach `heap-budget-bytes ÷ 64 B`. `0` means 25% of max heap. It does not feed a startup check; the footprint check is the engine's (`startup-checks.heap-budget`, using `dispatch.max-pending-per-partition`). |
 | `index.stale-rebuild-floor` | `65536` | Stale heap entries tolerated before a maintenance heap rebuild (§5.2). Must be positive. |
 | `index.completed-sweep-floor` | `65536` | Completed-held entries tolerated before a maintenance log sweep (§5.3). Must be positive. |
 
 Any other `store.properties` key is rejected by the store's `validate()` at engine startup (exit 1,
 not 78: the config schema leaves this map open).
-
-> The `kafka-tracker` store's `max-pending-per-partition` (footprint cap) and the engine's
-> `dispatch.max-pending-per-partition` (the ACTIVE-shard pause/resume threshold) are distinct knobs
-> that share a name. Keep them aligned unless you have a specific reason not to.
 
 ---
 

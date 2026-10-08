@@ -91,11 +91,7 @@ store:
   # The ServiceLoader-registered scheduler store. kafka-tracker (default) is the
   # in-memory index durably backed by the tracker topic.
   type: kafka-tracker
-  properties:
-    # Store-side per-partition pending cap. Sized small for the quickstart so the
-    # worst-case index footprint (partitions x cap x ~64 B) trivially fits a small
-    # container heap (design §5.3). Production routes raise this toward 2,000,000.
-    max-pending-per-partition: 100000
+  # properties: {}     # kafka-tracker keys: docs/configuration.md §7
 
 ingest:
   workers: 1        # ingest threads, each owning a source consumer + txn producer
@@ -118,9 +114,10 @@ dispatch:
       backoff: PT0.05S
       backoff-max: PT10S
   on-unfetchable-payload: DLQ  # DLQ (default) | DROP | FAIL
-  # Pause/resume backpressure high-water mark per ACTIVE shard. Quickstart-sized
-  # (see store.properties.max-pending-per-partition above); production default is
-  # 2,000,000.
+  # Pause/resume backpressure high-water mark per ACTIVE shard, and the input to
+  # the startup worst-case footprint check (partitions x cap x 64 B vs ~25% of
+  # Xmx, design §5.3). Quickstart-sized so it fits a small container heap;
+  # production default is 2,000,000.
   max-pending-per-partition: 100000
   # max-pending-total: 0       # 0 = AUTO (heap-derived, ~25% of Xmx / 64 B)
 

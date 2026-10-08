@@ -281,7 +281,8 @@ Add +30 % G1 / +20 % ZGC headroom; container memory = heap + ~1 GB native.
 **Backpressure and caps (design `§5.3`).** `dispatch.max-pending-per-partition` pauses the tracker
 consumer above high-water (ACTIVE shards only; a RECOVERING shard is never paused). The global cap
 `dispatch.max-pending-total` (default ≈ 25 % of `Xmx` ÷ 64 B) pauses ACTIVE shards above the
-total. `validate()` refuses startup (or warns) when `assigned-partitions × per-partition-max × 64 B`
+total. The engine's startup heap-budget check refuses startup (or warns, per
+`startup-checks.heap-budget`) when `assigned-partitions × dispatch.max-pending-per-partition × 64 B`
 exceeds the heap budget and prints the computed worst-case footprint. Pause state:
 `cesium_shard_paused{partition}`.
 

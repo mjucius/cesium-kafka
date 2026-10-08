@@ -611,23 +611,31 @@ class KafkaTrackerStoreTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> validateWith(Map.of(KafkaTrackerStore.SIDECAR_MAX_BYTES_KEY, "64")));
+        // The 1.x store-side footprint cap is gone; setting it is an unknown key (2.0.0).
+        IllegalArgumentException removed = assertThrows(
+                IllegalArgumentException.class, () -> validateWith(Map.of("max-pending-per-partition", "100000")));
+        assertTrue(removed.getMessage().contains("max-pending-per-partition"), removed.getMessage());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> validateWith(Map.of(KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY, "0")));
+                () -> validateWith(Map.of(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, "-1")));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> validateWith(Map.of(KafkaTrackerStore.STALE_REBUILD_FLOOR_KEY, "0")));
-
-        // Worst-case footprint vs heap budget (§4.4 item 7): 3 x 10^12 x 64 B >> 1 GiB.
-        IllegalArgumentException footprint = assertThrows(
-                IllegalArgumentException.class,
-                () -> validateWith(Map.of(KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY, "1000000000000")));
-        assertTrue(footprint.getMessage().contains("worst-case index footprint"), footprint.getMessage());
 
         // The tracker topic is required (requiresTrackerTopic = true).
         KafkaTrackerStore noTracker = new KafkaTrackerStore();
         noTracker.configure(FixedIdentityStoreContext.withoutTrackerTopicId(3));
         assertThrows(IllegalArgumentException.class, noTracker::validate);
+    }
+
+    @Test
+    void validateDoesNotRepeatTheEngineFootprintCheck() {
+        // The footprint check is the engine's alone (startup-checks.heap-budget, FAIL/WARN). A store
+        // that re-checked it would fail startup under WARN; 100k partitions on a 64 B budget passes.
+        KafkaTrackerStore store = new KafkaTrackerStore();
+        store.configure(new FixedIdentityStoreContext(100_000, Map.of(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, "64")));
+        store.validate();
+        store.close();
     }
 
     private static void validateWith(Map<String, String> properties) {

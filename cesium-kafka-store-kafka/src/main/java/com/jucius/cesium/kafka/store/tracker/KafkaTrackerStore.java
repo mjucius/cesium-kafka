@@ -73,13 +73,10 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     /** Largest accepted sidecar budget (1 MiB). */
     public static final int MAX_SIDECAR_MAX_BYTES = 1 << 20;
 
-    /** Per-partition pending cap used for the worst-case footprint check (§5.3). */
-    public static final String MAX_PENDING_PER_PARTITION_KEY = "max-pending-per-partition";
-
-    /** Default per-partition pending cap (§8 defaults table). */
-    public static final long DEFAULT_MAX_PENDING_PER_PARTITION = 2_000_000L;
-
-    /** Heap budget for the footprint check; {@code 0}/unset derives ~25% of {@code Xmx} (§5.3). */
+    /**
+     * Heap budget for the H1 recovery resident-pending ceiling; {@code 0}/unset derives ~25% of
+     * {@code Xmx} (§5.3, §5.4). The startup footprint check is the engine's, not the store's.
+     */
     public static final String HEAP_BUDGET_BYTES_KEY = "heap-budget-bytes";
 
     /** Stale-heap-entry floor before a maintenance heap rebuild (§5.2 item 2). */
@@ -109,12 +106,8 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      */
     public static final String REPLAY_REMAINING_METRIC = "cesium.replay.remaining.records";
 
-    private static final Set<String> KNOWN_CONFIG_KEYS = Set.of(
-            SIDECAR_MAX_BYTES_KEY,
-            MAX_PENDING_PER_PARTITION_KEY,
-            HEAP_BUDGET_BYTES_KEY,
-            STALE_REBUILD_FLOOR_KEY,
-            COMPLETED_SWEEP_FLOOR_KEY);
+    private static final Set<String> KNOWN_CONFIG_KEYS =
+            Set.of(SIDECAR_MAX_BYTES_KEY, HEAP_BUDGET_BYTES_KEY, STALE_REBUILD_FLOOR_KEY, COMPLETED_SWEEP_FLOOR_KEY);
 
     private static final StoreCapabilities CAPABILITIES = new StoreCapabilities(
             StoreCapabilities.TransactionAffinity.KAFKA_TRANSACTIONAL,
@@ -152,9 +145,11 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     /**
      * Store-declared preconditions, from configuration alone (design §4.4 item 7): unknown
      * {@code store.properties} keys, sidecar-budget sanity (bounds, and the identity header must
-     * fit the Base64 budget), index tuning floors, and the worst-case index footprint —
-     * {@code partitionCount × max-pending-per-partition × }{@value #WORST_CASE_BYTES_PER_ENTRY}
-     * {@code B} — against the heap budget (§5.3).
+     * fit the Base64 budget), index tuning floors, and the heap budget's sign.
+     *
+     * <p>The worst-case footprint check (§5.3, {@code startup-checks.heap-budget}) is the engine's
+     * alone: it runs before the store is built and honours FAIL/WARN. The store does not repeat it,
+     * so WARN really lets startup proceed.
      *
      * <p><strong>Validation split (deliberate).</strong> Broker-side checks are the
      * <em>engine's</em> {@code StartupValidator} job, performed with the engine's admin client —
@@ -163,10 +158,10 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      * 6), topic-id liveness/identity (R11/R17), and compaction settings. The store validates only
      * what configuration alone can prove.
      *
-     * <p><strong>Recovery ceiling (H1, design §5.3/§5.4).</strong> This worst-case footprint check
+     * <p><strong>Recovery ceiling (H1, design §5.3/§5.4).</strong> The engine's footprint check
      * sizes the <em>steady-state</em> ACTIVE backpressure caps against the heap budget; it does
-     * <em>not</em> by itself bound recovery, because a RECOVERING shard is never paused (it must
-     * replay to the barrier, I4). The same {@code effectiveHeapBudget} is therefore divided by
+     * <em>not</em> bound recovery, because a RECOVERING shard is never paused (it must replay to
+     * the barrier, I4). The store's {@code effectiveHeapBudget} is therefore divided by
      * {@value #WORST_CASE_BYTES_PER_ENTRY} B/entry into a runtime resident-pending ceiling
      * ({@code Wiring.maxResidentEntries}) that the seed/replay paths enforce — so a durable backlog
      * larger than the heap can hold fails fast and attributably ({@link
@@ -184,7 +179,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                     + " (supported: " + new TreeSet<>(KNOWN_CONFIG_KEYS) + ")");
         }
         int sidecarMaxBytes = config.getInt(SIDECAR_MAX_BYTES_KEY, DEFAULT_SIDECAR_MAX_BYTES);
-        long maxPendingPerPartition = config.getLong(MAX_PENDING_PER_PARTITION_KEY, DEFAULT_MAX_PENDING_PER_PARTITION);
         long heapBudgetBytes = config.getLong(HEAP_BUDGET_BYTES_KEY, 0L);
         int staleRebuildFloor = config.getInt(STALE_REBUILD_FLOOR_KEY, PartitionShard.DEFAULT_STALE_REBUILD_FLOOR);
         int completedSweepFloor =
@@ -203,10 +197,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         }
         // The identity header must fit the budget; the encoder enforces exactly the encode-time rule.
         SidecarCodec.encoder(route.clusterId(), route.sourceTopicId(), trackerTopicId, sidecarMaxBytes);
-        if (maxPendingPerPartition <= 0) {
-            throw new IllegalArgumentException(
-                    MAX_PENDING_PER_PARTITION_KEY + " must be positive, got " + maxPendingPerPartition);
-        }
         if (heapBudgetBytes < 0) {
             throw new IllegalArgumentException(HEAP_BUDGET_BYTES_KEY + " must be >= 0, got " + heapBudgetBytes);
         }
@@ -217,34 +207,15 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
 
         long effectiveHeapBudget =
                 heapBudgetBytes > 0 ? heapBudgetBytes : Runtime.getRuntime().maxMemory() / 4;
-        long worstCaseBytes;
-        try {
-            worstCaseBytes = Math.multiplyExact(
-                    Math.multiplyExact((long) route.partitionCount(), maxPendingPerPartition),
-                    WORST_CASE_BYTES_PER_ENTRY);
-        } catch (ArithmeticException e) {
-            worstCaseBytes = Long.MAX_VALUE;
-        }
-        if (worstCaseBytes > effectiveHeapBudget) {
-            throw new IllegalArgumentException("worst-case index footprint exceeds the heap budget: "
-                    + route.partitionCount() + " partitions x " + maxPendingPerPartition + " entries x "
-                    + WORST_CASE_BYTES_PER_ENTRY + " B = " + worstCaseBytes + " B > " + effectiveHeapBudget
-                    + " B (" + (heapBudgetBytes > 0 ? HEAP_BUDGET_BYTES_KEY : "auto: max heap / 4")
-                    + "); lower " + MAX_PENDING_PER_PARTITION_KEY + " or raise the heap (design §5.3, §4.4 item 7)");
-        }
         // Runtime recovery ceiling (H1): the most resident pending entries the heap budget can hold
         // at the worst-case per-entry footprint. The seed/replay paths refuse to allocate past it
-        // (controlled fail, not OOM); it agrees with the validator above (same effectiveHeapBudget)
-        // and with dispatch.max-pending-total AUTO (heap budget / 64 B). >= 1 so a budget below one
-        // entry still admits the trip rather than silently flooring to zero.
+        // (controlled fail, not OOM); it uses the same 64 B/entry as the engine's footprint check and
+        // dispatch.max-pending-total AUTO. >= 1 so a budget below one entry still admits the trip
+        // rather than silently flooring to zero.
         long maxResidentEntries = Math.max(1L, effectiveHeapBudget / WORST_CASE_BYTES_PER_ENTRY);
         log.info(
-                "kafka-tracker validated: worst-case index footprint {} partitions x {} entries x {} B = {} B"
-                        + " within heap budget {} B; sidecar budget {} B; recovery resident-pending ceiling {} entries",
-                route.partitionCount(),
-                maxPendingPerPartition,
-                WORST_CASE_BYTES_PER_ENTRY,
-                worstCaseBytes,
+                "kafka-tracker validated: heap budget {} B; sidecar budget {} B;"
+                        + " recovery resident-pending ceiling {} entries",
                 effectiveHeapBudget,
                 sidecarMaxBytes,
                 maxResidentEntries);

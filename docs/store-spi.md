@@ -272,8 +272,9 @@ the contract kit enforces them:
    when pending volume exceeds backpressure thresholds (pause never applies to recovery).
 6. Idempotent recovery: recovery may run repeatedly from the same cursor and must converge to the
    same pending set, including sidecar re-seeding.
-7. Startup validation hook (`validate()`): declare and enforce your own preconditions, including
-   memory-budget sizing (worst-case footprint vs configured caps). MUST fail fast.
+7. Startup validation hook (`validate()`): declare and enforce your own preconditions. MUST fail
+   fast. The worst-case index footprint vs the heap budget is the engine's check
+   (`startup-checks.heap-budget`), not a store duty.
 
 ---
 

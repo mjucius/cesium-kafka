@@ -33,14 +33,8 @@ class KafkaTrackerStoreRecoveryBudgetTest {
         long heapBudget = KafkaTrackerStore.WORST_CASE_BYTES_PER_ENTRY * ceilingEntries;
         return new FixedIdentityStoreContext(
                 1,
-                Map.of(
-                        // Tiny budget => tiny ceiling. The validator's worst-case footprint check
-                        // (partitions x max-pending-per-partition x 64 B) must still pass, so cap the
-                        // per-partition max at the ceiling: 1 x ceiling x 64 == heapBudget, not over.
-                        KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY,
-                        Long.toString(heapBudget),
-                        KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY,
-                        Long.toString(ceilingEntries)));
+                // Tiny budget => tiny ceiling.
+                Map.of(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, Long.toString(heapBudget)));
     }
 
     private static double overBudgetCount(FixedIdentityStoreContext ctx) {

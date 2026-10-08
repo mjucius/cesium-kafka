@@ -56,8 +56,8 @@ final class FixedIdentityStoreContext implements StoreContext {
                 "dlq",
                 partitionCount);
         Map<String, String> withDefaults = new HashMap<>(properties);
-        // Deterministic heap budget: the worst-case footprint check must not depend on the test
-        // JVM's -Xmx (1 GiB covers partitionCount x default max-pending x 64 B for small counts).
+        // Deterministic heap budget: the H1 recovery ceiling (heap budget / 64 B) must not depend on
+        // the test JVM's -Xmx.
         withDefaults.putIfAbsent(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, Long.toString(1L << 30));
         this.config = ConfigView.of(withDefaults);
     }

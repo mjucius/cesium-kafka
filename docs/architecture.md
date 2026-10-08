@@ -235,8 +235,10 @@ source-offset ordering and silently break the binary search.
 Backpressure applies to ACTIVE shards only. A per-shard `dispatch.max-pending-per-partition`
 high-water pauses the tracker consumer (the backlog accumulates durably in the tracker topic, so it
 cannot OOM the process), and a heap-derived global cap pauses ACTIVE shards when the total index
-exceeds it. A RECOVERING shard is never paused; `validate()` refuses startup if the worst-case
-footprint (`assigned-partitions × per-partition-max × planning-bytes`) would breach the heap budget.
+exceeds it. A RECOVERING shard is never paused. The engine's startup heap-budget check refuses
+startup (or warns, per `startup-checks.heap-budget`) if the worst-case footprint
+(`assigned-partitions × dispatch.max-pending-per-partition × planning-bytes`) would breach the heap
+budget; recovery is bounded separately by the store's resident-pending ceiling (H1).
 
 ### Memory
 

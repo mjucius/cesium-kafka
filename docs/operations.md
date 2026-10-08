@@ -677,7 +677,7 @@ The app prints the full aggregate report and exits 78. Causes and fixes:
 | Locked Kafka key set in passthrough | Remove it. The message explains why it is engine-owned ([configuration.md §3](configuration.md#locked-kafka-keys-rejected-with-an-explanation)). |
 | `${env:VAR}` references an undefined variable | Define the variable or fix the reference. |
 | DLQ policy active but no `route.dlq.topic` | Configure the DLQ topic, or change the policy off DLQ. |
-| Worst-case index footprint exceeds the heap budget (config load assumes 1 partition; the check re-runs at the real partition count after cluster validation and fails with exit 1 there) | Lower `dispatch.max-pending-per-partition` / `store.properties.max-pending-per-partition`, raise the heap, or set `startup-checks.heap-budget: WARN` to accept. |
+| Worst-case index footprint exceeds the heap budget (config load assumes 1 partition; the check re-runs at the real partition count after cluster validation and fails with exit 1 there) | Lower `dispatch.max-pending-per-partition`, raise the heap, or set `startup-checks.heap-budget: WARN` to accept. |
 
 ### 14.2 Startup validation against the cluster (exit 1)
 

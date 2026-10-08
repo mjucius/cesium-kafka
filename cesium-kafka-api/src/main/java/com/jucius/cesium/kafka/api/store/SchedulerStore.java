@@ -43,9 +43,10 @@ public sealed interface SchedulerStore extends AutoCloseable permits TrackerBack
 
     /**
      * Store-declared preconditions, checked at startup: partition parity, the tombstone-retention
-     * floor, broker {@code offset.metadata.max.bytes} vs the cursor sidecar budget, worst-case
-     * index footprint vs the heap budget, external schema presence, unknown config keys — whatever
-     * this store needs to be safe (design §4.4 item 7).
+     * floor, broker {@code offset.metadata.max.bytes} vs the cursor sidecar budget, external schema
+     * presence, unknown config keys — whatever this store needs to be safe (design §4.4 item 7).
+     * The worst-case index footprint vs the heap budget is the engine's check
+     * ({@code startup-checks.heap-budget}), not a store duty.
      *
      * <p>MUST fail fast by throwing; the engine refuses to start when validation fails. A store
      * that defers a checkable precondition to dispatch time is non-conforming.

@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
 import com.jucius.cesium.kafka.core.config.Role;
-import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
@@ -89,12 +88,10 @@ class DispatchThroughputPerfIT extends KafkaIT {
                 .destination(destination)
                 .dlq(dlq)
                 // Keep the whole backlog resident in the index for a clean dispatch-bound measurement:
-                // raise the §5.3 backpressure high-water AND the store hard cap above the per-partition
-                // load so intake never pauses (default 10k high-water would cap each of 4 shards below
-                // TOTAL/4 and stall staging).
+                // raise the §5.3 backpressure high-water above the per-partition load so intake never
+                // pauses (default 10k high-water would cap each of 4 shards below TOTAL/4 and stall
+                // staging).
                 .maxPendingPerPartition(STAGE_HIGH_WATER)
-                .storeProperty(
-                        KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY, Long.toString(STAGE_HIGH_WATER + 20_000))
                 .build();
         harness.start();
 

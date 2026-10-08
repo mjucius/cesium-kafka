@@ -578,13 +578,6 @@ final class EngineHarness implements AutoCloseable {
     /** Assembles the {@link CesiumConfig} records directly — the §8 defaults fill absent parts. */
     static final class Builder {
 
-        /**
-         * Default store-side pending cap: small enough that the worst-case footprint check
-         * ({@code partitions × cap × 64 B ≤ heap/4}, §5.3) passes in CI JVMs of any size, large
-         * enough that no IT load ever brushes it.
-         */
-        private static final String DEFAULT_STORE_MAX_PENDING = "100000";
-
         private String applicationId = KafkaIT.unique("app");
         private InstanceId instanceId = InstanceId.of("it-1");
         private KafkaConfig.GroupProtocol groupProtocol = KafkaConfig.GroupProtocol.CLASSIC;
@@ -796,7 +789,6 @@ final class EngineHarness implements AutoCloseable {
             Objects.requireNonNull(destinationTopic, "destination topic");
             Objects.requireNonNull(dlqTopic, "dlq topic (the default policies route to it)");
             Map<String, String> storeProps = new HashMap<>();
-            storeProps.put(KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY, DEFAULT_STORE_MAX_PENDING);
             storeProps.putAll(storeProperties);
             Map<String, String> commonKafkaProps = new HashMap<>(kafkaProperties);
             commonKafkaProps.put(
@@ -826,9 +818,9 @@ final class EngineHarness implements AutoCloseable {
                     null,
                     new StoreConfig(null, storeProps),
                     null,
-                    // Small per-partition pending cap keeps the heap-budget check trivially green
-                    // in CI JVMs of any size; IT loads never approach it (overridable for the §5.3
-                    // backpressure scenario via Builder.maxPendingPerPartition).
+                    // Small per-partition pending cap keeps the engine's heap-budget check trivially
+                    // green in CI JVMs of any size; IT loads never approach it (overridable for the
+                    // §5.3 backpressure scenario via Builder.maxPendingPerPartition).
                     new DispatchConfig(
                             null,
                             batchMaxBytes == null ? null : new DispatchConfig.Batch(null, batchMaxBytes),

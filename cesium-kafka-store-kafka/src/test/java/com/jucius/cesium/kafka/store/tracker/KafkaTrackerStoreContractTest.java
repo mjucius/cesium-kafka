@@ -25,8 +25,8 @@ class KafkaTrackerStoreContractTest extends TrackerBackedStoreContract {
 
     @Override
     protected Map<String, String> storeProperties() {
-        // Deterministic heap budget: the validate() worst-case footprint check must not depend on
-        // the test JVM's -Xmx (1 GiB covers partitionCount x default max-pending x 64 B).
+        // Deterministic heap budget: the H1 recovery ceiling (heap budget / 64 B) must not depend on
+        // the test JVM's -Xmx.
         return Map.of(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, Long.toString(1L << 30));
     }
 

@@ -26,6 +26,16 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - Testkit: `FakeStoreContext.MapConfigView` is removed; use `ConfigView.of(Map)`.
   `FakeStoreContext.config()` now parses the way the engine does: trimmed values, case-insensitive
   booleans, and no value echoed in errors.
+- `store.properties.max-pending-per-partition` (kafka-tracker) is removed and now fails startup as
+  an unknown store key (exit 1). `dispatch.max-pending-per-partition` is the only per-partition cap
+  and footprint input. `KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY` and
+  `DEFAULT_MAX_PENDING_PER_PARTITION` are removed, and the `SchedulerStore.validate` javadoc no
+  longer lists the footprint check as a store duty. The `kafka-tracker validated` INFO line loses
+  its footprint fields.
+- `startup-checks.heap-budget: WARN` now really lets startup proceed: `KafkaTrackerStore.validate()`
+  no longer repeats the footprint check. Under the default FAIL the engine check still exits 1.
+- `store.properties.heap-budget-bytes` keeps its name but now feeds only the store's H1 recovery
+  resident-pending ceiling. It no longer feeds a startup footprint check.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
@@ -68,10 +78,15 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - The perf ITs ignored their `-Dperf.*` knobs: Gradle set them only in its own JVM, not in the forked
   test JVM, so every run used the CI defaults. The `cesium-kafka-it` build now forwards every
   `-Dperf.*` and `-Dsoak.*` property to its test tasks as a configuration-cache input.
+- `startup-checks.heap-budget: WARN` did not let startup proceed: `KafkaTrackerStore.validate()`
+  repeated the footprint check with its own store-side cap and always failed. The engine check is now
+  the only one.
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).
 - Testkit `FakeStoreContext.MapConfigView`. Use `ConfigView.of(Map)` (see Breaking changes).
+- `store.properties.max-pending-per-partition` and the store's duplicate footprint check (see
+  Breaking changes).
 
 ### Changed
 - Internal simplification, about −470 lines net with the fixes included. Highlights:
