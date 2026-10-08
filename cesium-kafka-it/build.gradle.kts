@@ -23,7 +23,8 @@ testing {
                 implementation(libs.testcontainers.toxiproxy)
                 implementation(libs.awaitility)
                 implementation(libs.slf4j.api)
-                runtimeOnly(libs.logback.classic)
+                // implementation, not runtimeOnly: AppQuickstartIT attaches a logback ListAppender to check the MDC.
+                implementation(libs.logback.classic)
             }
             targets.all {
                 testTask.configure {

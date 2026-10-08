@@ -63,6 +63,7 @@ import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 /**
  * The production engine: the hardened, process-resident version of the integration-test
@@ -518,7 +519,12 @@ public final class CesiumEngine implements AutoCloseable {
                             identity,
                             registry,
                             clock);
-                    ingestHandles.add(spawn(spec, loop, loop::stop, loop::isDegraded));
+                    ingestHandles.add(spawn(
+                            spec,
+                            clients.ingestTransactionalId(spec.workerOrdinal()),
+                            loop,
+                            loop::stop,
+                            loop::isDegraded));
                 }
                 case DISPATCH -> {
                     DispatchLoop loop = new DispatchLoop(
@@ -537,7 +543,12 @@ public final class CesiumEngine implements AutoCloseable {
                             registry,
                             clock,
                             ownership);
-                    dispatchHandles.add(spawn(spec, loop, loop::stop, loop::isDegraded));
+                    dispatchHandles.add(spawn(
+                            spec,
+                            clients.dispatchTransactionalId(spec.workerOrdinal()),
+                            loop,
+                            loop::stop,
+                            loop::isDegraded));
                 }
             }
         }
@@ -575,10 +586,21 @@ public final class CesiumEngine implements AutoCloseable {
 
     // ------------------------------------------------------------------ loop threads & fatal path
 
-    private LoopHandle spawn(LoopSpec spec, Runnable body, Runnable stopper, BooleanSupplier degradedProbe) {
-        String name = "cesium-" + spec.role().name().toLowerCase(Locale.ROOT) + "-" + spec.workerOrdinal();
+    /**
+     * Starts one loop on a named non-daemon thread. The thread's MDC carries {@code applicationId},
+     * {@code loop} and {@code txn} (design §9), set once here so every log line from the loop, and the
+     * fatal log in the {@code finally}, is tagged without any per-record MDC work.
+     */
+    private LoopHandle spawn(
+            LoopSpec spec, String txn, Runnable body, Runnable stopper, BooleanSupplier degradedProbe) {
+        String loopName = spec.role().name().toLowerCase(Locale.ROOT);
+        String name = "cesium-" + loopName + "-" + spec.workerOrdinal();
+        String applicationId = config.applicationId();
         Thread thread = new Thread(
                 () -> {
+                    MDC.put("applicationId", applicationId);
+                    MDC.put("loop", loopName);
+                    MDC.put("txn", txn);
                     Throwable failure = null;
                     try {
                         body.run();

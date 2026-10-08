@@ -6,6 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
 import com.jucius.cesium.kafka.app.health.HealthAssessor;
 import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine;
@@ -14,6 +17,8 @@ import com.jucius.cesium.kafka.app.metrics.ObservabilityServer;
 import com.jucius.cesium.kafka.app.metrics.ServiceInfo;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.Role;
+import com.jucius.cesium.kafka.core.dispatch.DispatchLoop;
+import com.jucius.cesium.kafka.core.ingest.IngestLoop;
 import com.jucius.cesium.kafka.core.kafka.KafkaClientFactory;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -27,12 +32,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 /**
  * The end-to-end product proof <em>through the app</em> (design §9, §11.3, M7): the production
@@ -48,6 +55,7 @@ import org.junit.jupiter.api.Test;
  *       not the test;
  *   <li>{@code /metrics} serves the engine's {@code cesium_*} meters from the shared registry;
  *   <li>readiness carries the recovery/degraded decoupling detail (D21, §3.8) while staying ready;
+ *   <li>the loop threads' log lines carry the {@code applicationId}/{@code loop}/{@code txn} MDC (§9);
  *   <li>{@code engine.stop()} flips readiness {@code 503} (shutdown signalled before clients close),
  *       joins cleanly with no fatal loop death, and the consumed source offset is committed.
  * </ul>
@@ -68,6 +76,15 @@ class AppQuickstartIT extends KafkaIT {
 
     private final HttpClient http = HttpClient.newHttpClient();
 
+    /** Captures loop-thread events with their MDC snapshotted on the logging thread. */
+    private final ListAppender<ILoggingEvent> loopLog = new ListAppender<>() {
+        @Override
+        protected void append(ILoggingEvent event) {
+            event.prepareForDeferredProcessing();
+            super.append(event);
+        }
+    };
+
     private CesiumConfig config;
     private PrometheusMeterRegistry registry;
     private CesiumEngine engine;
@@ -75,6 +92,8 @@ class AppQuickstartIT extends KafkaIT {
 
     @AfterEach
     void tearDown() {
+        loopLogger(IngestLoop.class).detachAppender(loopLog);
+        loopLogger(DispatchLoop.class).detachAppender(loopLog);
         if (engine != null) {
             engine.close();
         }
@@ -124,6 +143,11 @@ class AppQuickstartIT extends KafkaIT {
         assertEquals(200, get("/health/live").statusCode());
         assertEquals(503, get("/health/ready").statusCode());
 
+        loopLog.list = new CopyOnWriteArrayList<>(); // appended from the loop threads
+        loopLog.start();
+        loopLogger(IngestLoop.class).addAppender(loopLog);
+        loopLogger(DispatchLoop.class).addAppender(loopLog);
+
         engine.start();
 
         // Produce one delayed record now so the ingest ADD wakes the dispatch poll promptly.
@@ -148,6 +172,11 @@ class AppQuickstartIT extends KafkaIT {
                 .atMost(WAIT)
                 .pollInSameThread()
                 .until(() -> get("/health/ready").statusCode() == 200);
+
+        // Each loop thread tags its lines with applicationId/loop/txn, set once when the thread starts.
+        KafkaClientFactory clients = new KafkaClientFactory(config);
+        assertLoopMdc("ingest loop started", "ingest", clients.ingestTransactionalId(0));
+        assertLoopMdc("dispatch loop started", "dispatch", clients.dispatchTransactionalId(0));
 
         HttpResponse<String> info = get("/info");
         assertEquals(200, info.statusCode());
@@ -218,6 +247,21 @@ class AppQuickstartIT extends KafkaIT {
             seed.put(new TopicPartition(source, p), new OffsetAndMetadata(0L));
         }
         get(ADMIN.alterConsumerGroupOffsets(ingestGroup, seed).all());
+    }
+
+    private void assertLoopMdc(String messagePrefix, String loop, String txn) {
+        ILoggingEvent event = loopLog.list.stream()
+                .filter(e -> e.getFormattedMessage().startsWith(messagePrefix))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no '" + messagePrefix + "' line was logged"));
+        Map<String, String> mdc = event.getMDCPropertyMap();
+        assertEquals(config.applicationId(), mdc.get("applicationId"), mdc::toString);
+        assertEquals(loop, mdc.get("loop"), mdc::toString);
+        assertEquals(txn, mdc.get("txn"), mdc::toString);
+    }
+
+    private static Logger loopLogger(Class<?> loopClass) {
+        return (Logger) LoggerFactory.getLogger(loopClass);
     }
 
     private ServiceInfo serviceInfo() {

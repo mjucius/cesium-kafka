@@ -22,8 +22,9 @@ import java.util.TreeMap;
  * (e.g. logstash-encoder) into the build; it streams through the Jackson core the app already ships.
  *
  * <p>Fields: {@code timestamp} (ISO-8601 UTC), {@code level}, {@code logger}, {@code thread},
- * {@code message}, the {@code mdc} object (the {@code applicationId}/{@code loop}/{@code partition}/
- * {@code txn} context keys, emitted in stable key order), and — only when present — an {@code
+ * {@code message}, the {@code mdc} object (the thread's context keys in stable key order:
+ * {@code applicationId}, {@code loop} and {@code txn} on loop threads, {@code applicationId} on the
+ * main and shutdown threads; omitted when the MDC is empty), and — only when present — an {@code
  * exception} string (its stack trace, with newlines JSON-escaped so the line stays single). The
  * encoder emits only the formatted message and these structural fields; it never reaches into record
  * keys or values, so it cannot leak payloads (design §9: never log payloads).

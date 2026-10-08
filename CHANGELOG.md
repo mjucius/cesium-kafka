@@ -46,6 +46,10 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `ExternalSchedulerStore.cursorToCommit` may not change reconciliation state, its cursor counts as
   committed only from `onBatchCommitted`, and `markDispatched` runs after `onBatchCommitted`. A store
   whose `cursorToCommit` advances state that later cursors build on fails the new tests.
+- Logs: JSON lines from the loop threads (`cesium-ingest-N`, `cesium-dispatch-N`) now carry an
+  `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main and `cesium-shutdown`
+  threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
+  shape, and `txn` is the loop's transactional id, which includes the instance id.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
@@ -105,6 +109,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   recovery reconciled them as delivered: silent loss. The high-water now advances only in
   `onBatchCommitted`, and `ExternalSchedulerStoreContract` covers in-doubt commits (ADR-0014 said it
   did; it had no such test).
+- The documented log MDC keys (`applicationId`, `loop`, `txn`) were never set, so JSON lines had no
+  `mdc` object and plain lines no context. The engine now sets them once per loop thread, and
+  `applicationId` on the main and shutdown threads.
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).
@@ -123,6 +130,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
     cause-chain walker.
   - The two loop-fatal exception types are merged.
   - Dead fetch summaries and test-only tracker-index surface are removed.
+- Plain log lines now end with the thread's MDC (`%X`), for example
+  `applicationId=orders-delay, loop=ingest, txn=cesium.orders-delay.ingest.cesium-0.0`.
 
 ## [1.1.5] - 2026-10-06
 

@@ -27,6 +27,7 @@ import java.util.Properties;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 /**
  * Entry point for the cesium-kafka service (design §6, §9, §10). {@link #main(String[])} is a thin
@@ -77,6 +78,9 @@ public final class CesiumApp {
      */
     static final Duration LIVENESS_STALE_AFTER = Duration.ofSeconds(90);
 
+    /** The MDC key tagging main- and shutdown-thread log lines with the application id (design §9). */
+    private static final String APPLICATION_ID_MDC = "applicationId";
+
     private CesiumApp() {}
 
     public static void main(String[] args) {
@@ -105,9 +109,17 @@ public final class CesiumApp {
             log.error("invalid command line: {}", e.getMessage());
             return CesiumConfigLoader.EX_CONFIG;
         }
-        printFindings(loaded.report());
         CesiumConfig config = loaded.config();
+        // Main-thread lines from here on carry applicationId (design §9). The scope wraps the whole
+        // engine run, including its catch blocks, so "engine refused to start" is tagged too.
+        try (MDC.MDCCloseable ignored = MDC.putCloseable(APPLICATION_ID_MDC, config.applicationId())) {
+            printFindings(loaded.report());
+            return runEngine(config, clock);
+        }
+    }
 
+    /** Builds, starts and awaits the engine; returns the exit code. Runs inside the applicationId MDC scope. */
+    private static int runEngine(CesiumConfig config, Clock clock) {
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         CesiumEngine engine = new CesiumEngine(config, registry, clock, SHUTDOWN_TIMEOUT);
         ObservabilityServer observability = new ObservabilityServer(
@@ -119,7 +131,14 @@ public final class CesiumApp {
                 serviceInfoSupplier(config, engine));
         try {
             startObservability(observability, config.observability().port());
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> engine.stop(SHUTDOWN_TIMEOUT), "cesium-shutdown"));
+            String applicationId = config.applicationId();
+            Runtime.getRuntime()
+                    .addShutdownHook(new Thread(
+                            () -> {
+                                MDC.put(APPLICATION_ID_MDC, applicationId);
+                                engine.stop(SHUTDOWN_TIMEOUT);
+                            },
+                            "cesium-shutdown"));
             engine.start();
             boolean clean = engine.awaitDone();
             if (!clean) {
