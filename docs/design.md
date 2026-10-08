@@ -1,4 +1,4 @@
-# cesium-kafka implementation design (v1)
+# cesium-kafka implementation design
 
 A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exactly-once via Kafka transactions (KIP-447/KIP-890 era), pointer-only payload re-seek, and one production scheduler store (an in-memory index durably backed by a Kafka tracker topic) behind a pluggable SPI. This document is the implementation specification.
 
@@ -123,7 +123,7 @@ cesium-kafka consumes a SOURCE topic, inspects `cesium-delay-ms` / `cesium-deliv
 
 Goals: millions of pending entries in modest heap; zero per-entry allocation in the steady-state hot path; no busy-polling; bounded replay on restart/rebalance; rebalance callbacks never do heavy work; key/value/headers/timestamps preserved on relay; an explicit policy for every failure mode the PoC handled silently or not at all; no silent terminal states, meaning every fault path ends in retry, park-and-degrade with an alert, or fail-fast with a runbook entry.
 
-Non-goals (v1): multiple routes per app process (the core library is multi-engine for embedders; the app runs one route), DB-backed store implementation (SPI ships, impl is future), per-record cancellation API (wire format reserves it), sub-100 ms scheduling-precision guarantees (precision is measured and documented, not contractual).
+Non-goals: multiple routes per app process (the core library is multi-engine for embedders; the app runs one route), DB-backed store implementation (SPI ships, impl is future), per-record cancellation API (wire format reserves it), sub-100 ms scheduling-precision guarantees (precision is measured and documented, not contractual).
 
 ### 1.2 Topology
 
@@ -513,7 +513,7 @@ public sealed interface SchedulerStore extends AutoCloseable
   @Override void close();
 }
 
-/** Archetype 1 — tracker-backed (EOS; v1 production impl: KafkaTrackerStore). */
+/** Archetype 1 — tracker-backed (EOS; production impl: KafkaTrackerStore). */
 public non-sealed interface TrackerBackedStore extends SchedulerStore {
 
   /* Ingest side (ingest thread). The store OWNS the tracker wire format; the engine
@@ -574,7 +574,7 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
    *  implies (a high-water later cursors build on) advances only in onBatchCommitted. */
   default Optional<String> cursorToCommit(int partition, DueBatch inFlight) { return Optional.empty(); }
 
-  /** How dispatch ownership of partitions is decided. v1 engine implements
+  /** How dispatch ownership of partitions is decided. The engine implements
       FOLLOW_INGEST_GROUP; STORE_MANAGED (DB leases) is a later release. */
   default PartitionCoordination coordination() { return PartitionCoordination.FOLLOW_INGEST_GROUP; }
   enum PartitionCoordination { FOLLOW_INGEST_GROUP, STORE_MANAGED }
@@ -603,7 +603,7 @@ DispatchLoop loop = switch (store) {
 };
 ```
 
-> **As shipped (1.1.x): design intent, not current code.** No external-archetype dispatch loop
+> **As shipped: design intent, not current code.** No external-archetype dispatch loop
 > exists yet, so neither does the switch: `TrackerDispatchLoop`/`ExternalDispatchLoop` are not types
 > in this repo, and there is exactly one `DispatchLoop`
 > (`cesium-kafka-core/.../core/dispatch/DispatchLoop.java`). The app build resolves the provider and
@@ -775,7 +775,7 @@ The PoC did one `seek` + one 10 ms `poll` per entry and silently dropped the mes
 4. **Unfetchable policy** `dispatch.on-unfetchable-payload: DLQ | DROP | FAIL` (default `DLQ`): DLQ loss-notice per §2.4, produced inside the same dispatch transaction as the COMPLETE tombstone and offsets, so the entry is resolved exactly once even when its payload is gone (D-9). `DROP` writes the COMPLETE only (+ metric). In all non-FAIL modes the COMPLETE is always written; otherwise the entry would replay forever (poison loop).
 5. Keep fetch sessions warm: assign the union of partitions seen in recent passes rather than churning assignment.
 6. **Startup + periodic retention validation (size- and tier-aware):** source `retention.ms` vs `delay.max + margin` (`startup-checks.retention: FAIL | WARN | SKIP`, default FAIL). `retention.ms=-1` alone is not a pass: when `retention.bytes != -1` or remote/tiered storage is enabled on the source, time-based validation cannot bound payload lifetime, so startup fails unless the operator sets `startup-checks.size-based-retention: ACKNOWLEDGED` (an explicit, named acceptance). At runtime, re-validation repeats these checks every `startup-checks.revalidation-interval` and, for an acknowledged size- or tier-evicting source, degrades when a partition that has evicted records retains nothing older than `delay.max + margin` (revision 4, D23). That boolean check replaces the earliest-age probe and `cesium_retention_margin_seconds`; a partition idle for longer than `delay.max` reads the same way. Compacted source topics fail/warn (pointer-only storage cannot survive source compaction).
-7. Ops note: dispatch-time fetches hit cold (non-page-cache) segments for long delays; per-partition forward scans are the mitigation; broker disk IOPS must be budgeted (ops guide). A small partition-affine seek-consumer pool (2–4) feeding the dispatch thread via a bounded queue remains a reserved v1.1 extension (`dispatch.fetch.parallelism` namespace reserved); the penalty box above is the v1 isolation mechanism.
+7. Ops note: dispatch-time fetches hit cold (non-page-cache) segments for long delays; per-partition forward scans are the mitigation; broker disk IOPS must be budgeted (ops guide). A small partition-affine seek-consumer pool (2–4) feeding the dispatch thread via a bounded queue remains a reserved future extension (`dispatch.fetch.parallelism` namespace reserved); the penalty box above is the isolation mechanism.
 
 ---
 
@@ -956,7 +956,7 @@ JUnit 5 abstract classes; implementers subclass with a factory. `TrackerBackedSt
 11. KIP-848 lane: scenarios 2/3/4/5/6 with `group.protocol=consumer` (non-blocking nightly job, promotion ADR-tracked).
 12. Crash-loop soak (nightly): randomized SIGKILL/crash-point loop (separate JVMs) under sustained load with an invariant checker (every delayed input exactly once, never before its requested time minus skew tolerance).
 
-### 11.4 Performance (benchmarks module + nightly macro job; JMH archived per run; >10% regression gate aspirational/non-blocking in v1; see the measured note)
+### 11.4 Performance (benchmarks module + nightly macro job; JMH archived per run; >10% regression gate aspirational/non-blocking; see the measured note)
 
 | JMH benchmark | Target (single thread) | Measured (Apple M3 dev box, JDK 21, 2026-06-06) |
 |---|---|---|
@@ -1054,8 +1054,8 @@ Dependency notes: M2/M3 can proceed in parallel with M4 after M1; M5 depends on 
 2. **HW-barrier and offset-fetch API dependencies.** The barrier requires `Admin.listOffsets` with `READ_UNCOMMITTED` (`ListOffsetsOptions`), and I8 depends on `consumer.committed()/position()` blocking through `UNSTABLE_OFFSET_COMMIT` under read_committed; both must be verified against the exact client at M5 (fallback: dedicated read_uncommitted metadata consumer's `endOffsets`; explicit retry loop on the offset fetch). Getting either wrong silently reintroduces a duplicate window, so the §11.3-4 and §11.3-5 integration tests are non-negotiable.
 3. **In-doubt commit handling relies on client retry semantics.** The I9 procedure assumes `commitTransaction` is retriable after timeout and that `initTransactions()` deterministically resolves a dangling transaction (without reporting the outcome). Both are verified by fault-injection tests; the fallback (drop + replay) is sound regardless, at the cost of one recovery cycle.
 4. **Tombstone retention is required for correctness.** An operator overriding `delete.retention.ms` below the D14 floor (or a broker compaction bug) can cause a replay duplicate in overflow mode. *Mitigation:* startup FAIL + re-validation of the committed-cursor age, which degrades and alerts (closes the lowered-`delay.max` trap, D23); pre-existing misconfigured topics with checks skipped remain an operator risk.
-5. **Sidecar overflow residual.** Routes whose steady state exceeds ~200–300 pinned long-delay entries per partition fall back to min-pending cursors, and replay cost reverts to `completion_rate × pin age`. *Mitigation:* `cesium_pinned_entries` saturation alert + replay-ETA projection alert + the formula in the capacity worksheet; tuning lever: raise `dispatch.cursor.sidecar-max-bytes` with broker `offset.metadata.max.bytes` (clamped to it at startup). Snapshotting remains the v2 escape hatch.
-6. **Sidecar depends on a broker config.** `offset.metadata.max.bytes` (default 4096) caps the sidecar; clusters that lowered it shrink N_max. *Mitigation:* startup validation reads the broker value, warns, and clamps the sidecar budget to it (warn-only, so a 1.x upgrade never gains a new startup failure).
+5. **Sidecar overflow residual.** Routes whose steady state exceeds ~200–300 pinned long-delay entries per partition fall back to min-pending cursors, and replay cost reverts to `completion_rate × pin age`. *Mitigation:* `cesium_pinned_entries` saturation alert + replay-ETA projection alert + the formula in the capacity worksheet; tuning lever: raise `dispatch.cursor.sidecar-max-bytes` with broker `offset.metadata.max.bytes` (clamped to it at startup). Snapshotting remains a future escape hatch.
+6. **Sidecar depends on a broker config.** `offset.metadata.max.bytes` (default 4096) caps the sidecar; clusters that lowered it shrink N_max. *Mitigation:* startup validation reads the broker value, warns, and clamps the sidecar budget to it (warn-only, so an upgrade never gains a new startup failure).
 7. **LSO stalls.** A crashed producer with a non-stable transactional.id holds the LSO down up to `transaction.timeout.ms`, delaying replay-to-barrier and read_committed consumers. *Mitigation:* required stable instance-ids, 30 s default timeout; raising the timeout proportionally lengthens failover gating (documented).
 8. **Seek-fetch I/O amplification.** Long delays hit cold segments; sparse due-sets across many partitions degrade toward random reads; tiered-storage remote fetches are inherently slow. *Mitigation:* per-partition forward-scan batching, warm fetch sessions, penalty box for degraded partitions, fetch duration/bytes metrics, broker IOPS planning in ops guide; v1.1 fetch pool reserved.
 9. **Throughput ceilings.** Transaction-commit latency bounds batches/s/worker; one dispatch thread per shard set caps per-instance dispatch (~50–100 k/s incl. fetch); parallelism scales by tracker partitions/instances. The perf suite must establish measured numbers before claiming scale; targets are projections until measured.

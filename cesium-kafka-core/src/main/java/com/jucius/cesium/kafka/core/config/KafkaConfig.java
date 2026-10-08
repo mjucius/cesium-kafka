@@ -41,7 +41,7 @@ public record KafkaConfig(
     public enum GroupProtocol {
         /** Classic group protocol (default). */
         CLASSIC,
-        /** KIP-848 {@code group.protocol=consumer} — continuously tested, non-default in v1. */
+        /** KIP-848 {@code group.protocol=consumer} — continuously tested, not the default. */
         CONSUMER
     }
 

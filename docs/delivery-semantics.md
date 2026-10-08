@@ -299,7 +299,7 @@ lateness:
   late, not lost.
 
 Scheduling precision is measured and documented but not contractual (sub-100 ms precision is a
-non-goal for v1). See [`performance.md`](performance.md) for the measured `dispatch_lag` distribution.
+non-goal). See [`performance.md`](performance.md) for the measured `dispatch_lag` distribution.
 
 ---
 

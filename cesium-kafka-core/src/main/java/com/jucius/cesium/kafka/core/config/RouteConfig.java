@@ -4,8 +4,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * The single route this process serves (design §8; {@code route:} → {@code routes:} is the
- * reserved v2 schema evolution).
+ * The single route this process serves (design §8; {@code route:} → {@code routes:} is a
+ * reserved future schema evolution).
  *
  * @param source the user-owned topic records are consumed from (required)
  * @param destination the user-owned topic records are relayed to (required)

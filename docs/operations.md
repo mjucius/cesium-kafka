@@ -276,9 +276,9 @@ version-skewed tracker writes as `cesium_tracker_invalid_records_total` (logged 
 rate flags a malformed/version-skew foreign writer ([§13](#13-metrics-and-alerting)). It does not
 detect well-formed forgeries: a wire-format-aware adversary with tracker write access can craft an ADD
 or tombstone that decodes cleanly and is applied as legitimate state, and this counter never moves
-(L2). The write-restricting ACL is the v1 control. Detecting competent tampering requires broker
+(L2). The write-restricting ACL is the control. Detecting competent tampering requires broker
 authorizer audit logging (who wrote the tracker) or the reserved, deferred `store.kafka.hmac.*`
-record-level HMAC (config namespace reserved, not implemented in v1; it only helps in hostile
+record-level HMAC (config namespace reserved, not implemented; it only helps in hostile
 clusters where cesium's own credentials are already suspect).
 
 ### Untrusted-producer ingress: avoid the `FAIL` delay policies (L5)
@@ -429,7 +429,7 @@ spec:
       terminationGracePeriodSeconds: 60     # >= shutdown drain time
       containers:
         - name: cesium
-          image: cesium-kafka:1.0.0
+          image: cesium-kafka:2.0.0
           ports:
             - { name: observability, containerPort: 8081 }
           env:
@@ -602,7 +602,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | `cesium_loop_last_iteration_timestamp_seconds` | gauge | `loop` | epoch-seconds of the last loop iteration; feeds liveness |
 | `cesium_revalidation_errors` | gauge | | errors found by the last re-validation round (`startup-checks.revalidation-interval`, default 5 min); `0` when clean. Each error is logged at ERROR on `cesium-admin` and sets the readiness degraded flag |
 | `cesium_tracker_invalid_records_total` | counter | | tracker wire-format violations (malformed / version-skew); foreign-writer canary. Does NOT detect well-formed forgeries ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L2) |
-| `cesium_tracker_cancel_records_total` | counter | | reserved CANCEL records seen (no-ops in v1) |
+| `cesium_tracker_cancel_records_total` | counter | | reserved CANCEL records seen (counted no-ops) |
 | `cesium_tracker_unknown_reason_records_total` | counter | | tombstones with an unrecognized completion reason (applied) |
 | `cesium_cursor_guard_violations_total` | counter | | I5 / monotonic cursor-guard trips (a surfaced bug; the last safe cursor is returned) |
 | `cesium_store_index_anomalies_total` | counter | | duplicate ADDs / out-of-order drops (R1) |

@@ -31,7 +31,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The flagship v1 scheduler store (design §5, D13): the fastutil-backed in-memory
+ * The flagship scheduler store (design §5, D13): the fastutil-backed in-memory
  * {@link TrackerIndex} durably backed by the Kafka tracker topic, speaking the
  * {@link TrackerWireFormat} and committing the §3.5 cursor-v2 ({@link SidecarCodec} sidecar)
  * through the engine's transactions.
@@ -438,7 +438,7 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                 w.index.applyComplete(partition, TrackerWireFormat.decodeKey(key));
             }
             case TrackerDecodeResult.Cancel ignored -> {
-                // Reserved type 0x02 (D15): no v1 cancellation support — counted no-op, not
+                // Reserved type 0x02 (D15): no cancellation support — counted no-op, not
                 // corruption (supportsCancellation=false).
                 w.cancelRecords.increment();
             }
@@ -920,7 +920,7 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                     .description("tracker wire-format violations, counted and skipped (design §2.2, R12 canary)")
                     .register(registry);
             this.cancelRecords = Counter.builder("cesium.tracker.cancel.records")
-                    .description("reserved CANCEL records seen; unsupported in v1 — counted no-ops (D15)")
+                    .description("reserved CANCEL records seen; unsupported — counted no-ops (D15)")
                     .register(registry);
             this.unknownReasonRecords = Counter.builder("cesium.tracker.unknown.reason.records")
                     .description("tombstones with an unrecognized completion reason — applied (the M4 decision:"

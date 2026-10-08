@@ -135,14 +135,14 @@ Each topic has one writer and one set of readers; restrict each accordingly:
   operators who enforce the restriction out of band. Ideally restrict `READ` as well, since the topic
   is internal state and has no user-facing role.
 
-### 4. Tracker integrity: the ACL is the v1 control; the invalid-records counter is not a forgery detector
+### 4. Tracker integrity: the ACL is the control; the invalid-records counter is not a forgery detector
 
-The write-restricting tracker ACL (above) is the v1 integrity control. cesium verifies it on every
+The write-restricting tracker ACL (above) is the integrity control. cesium verifies it on every
 startup and every `startup-checks.revalidation-interval`, and reports a missing/foreign/unset grant
 (at runtime, under `FAIL` it degrades readiness rather than exiting); set `startup-checks.tracker-acl: FAIL` (default
 `WARN`) to have a deployment missing the normative grant fail closed at startup instead of running
 with an unauthenticated tracker channel. **cesium provides no in-band cryptographic integrity on
-tracker records in v1.**
+tracker records.**
 
 `cesium_tracker_invalid_records_total` is often useful, but it will not catch a capable adversary. It
 increments only on structurally malformed or version-skewed writes (bad `0xC5` magic, unknown
@@ -155,11 +155,11 @@ loss, and the counter never moves (finding L2).
 Detecting competent tampering therefore requires controls outside cesium's wire format:
 
 - Broker authorizer audit logging, which records who actually wrote the tracker topic, is the
-  practical v1 detector once the ACL is in place.
+  practical detector once the ACL is in place.
 - Record-level HMAC tamper-evidence is reserved for a future release: the config namespace
-  `store.kafka.hmac.*` is reserved but not implemented in v1. When delivered, it makes a forged record
+  `store.kafka.hmac.*` is reserved but not implemented. When delivered, it makes a forged record
   fail wire-format validation so it lands on the existing count-and-skip path. It only helps in
-  hostile clusters where cesium's own credentials are already suspect (design R12). In v1 the
+  hostile clusters where cesium's own credentials are already suspect (design R12). Until then the
   write-restricting ACL is the control.
 
 ### 5. No per-tenant rate limiting (L4)

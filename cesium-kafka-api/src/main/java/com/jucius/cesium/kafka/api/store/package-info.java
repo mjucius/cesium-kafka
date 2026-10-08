@@ -16,7 +16,7 @@
  * com.jucius.cesium.kafka.api.store.ExternalSchedulerStore} performs ordered out-of-band writes under
  * explicit ordering contracts. Hot-path types are primitive-accessor views ({@link
  * com.jucius.cesium.kafka.api.store.DueBatch}) so the steady state allocates nothing per entry, and
- * the thread-confinement contract is explicit so the v1 store needs no locking.
+ * the thread-confinement contract is explicit so the shipped store needs no locking.
  *
  * <p>Discovery is via {@link java.util.ServiceLoader} registration of {@link
  * com.jucius.cesium.kafka.api.store.SchedulerStoreProvider}; selection is always explicit

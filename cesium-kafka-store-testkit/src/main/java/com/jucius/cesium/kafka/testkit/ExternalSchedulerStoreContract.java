@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
  * enforcing the relevant items of the §4.4 correctness checklist). Subclass with a factory and run:
  * every test here must pass for a conforming external store.
  *
- * <p>No production {@code ExternalSchedulerStore} ships in v1 — the SPI is fixed now so the contract
+ * <p>No production {@code ExternalSchedulerStore} ships yet — the SPI is fixed now so the contract
  * cannot drift, and this class is the executable spec future DB-backed stores are written against.
  * The testkit's own {@code InMemoryExternalSchedulerStore} (test scope) passes it, proving the SPI
  * is implementable in both the at-least-once and effectively-once modes.
@@ -47,7 +47,7 @@ import org.junit.jupiter.api.Test;
  * {@link ExternalSchedulerStore#cursorToCommit cursor reconciliation} closes that window: the engine
  * commits the cursor in the offset-metadata channel atomically with the dispatch transaction, and on
  * recovery hands it back so rows at or below the cursor are reconciled as delivered rather than
- * trusted as pending. Because the v1 SPI has no dedicated method for the engine to deliver the
+ * trusted as pending. Because the SPI has no dedicated method for the engine to deliver the
  * committed cursor back to the store at recovery, the contract routes it through
  * {@link #deliverReconciliationCursor} — override that (and {@link #supportsCursorReconciliation()})
  * to unlock the two reconciliation tests; the at-least-once default skips them via an assumption.
@@ -59,7 +59,7 @@ import org.junit.jupiter.api.Test;
  * cursor computed for a transaction that then aborted must not leak into a later one.
  *
  * <p>The contract models a co-located {@code FOLLOW_INGEST_GROUP} instance (the only coordination
- * mode the v1 engine implements): upserts land on a partition the same instance dispatches.
+ * mode the engine implements): upserts land on a partition the same instance dispatches.
  */
 public abstract class ExternalSchedulerStoreContract {
 
@@ -136,7 +136,7 @@ public abstract class ExternalSchedulerStoreContract {
         ExternalSchedulerStore.PartitionCoordination coordination =
                 createStore(contextBuilder().build()).coordination();
         assertNotNull(coordination, "coordination() must declare how dispatch ownership is decided (design §4.5)");
-        // The v1 engine implements only FOLLOW_INGEST_GROUP; STORE_MANAGED is a reserved, declared
+        // The engine implements only FOLLOW_INGEST_GROUP; STORE_MANAGED is a reserved, declared
         // intent that a later engine release will honor. Either is a valid declaration.
     }
 

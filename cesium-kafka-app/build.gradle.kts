@@ -35,7 +35,7 @@ val generateBuildInfo by tasks.registering {
     // Declare the version as a task INPUT so up-to-date checks (and the Gradle build cache that CI's
     // setup-gradle restores) re-run this when -PcesiumVersion changes. Without it the task stays
     // "up-to-date" across a version change and the stale build-info — e.g. ...-SNAPSHOT during a
-    // tagged 1.0.0 release — gets packaged, so /info would report the wrong version.
+    // tagged release — gets packaged, so /info would report the wrong version.
     inputs.property("version", projectVersion)
     outputs.dir(outputDir)
     doLast {

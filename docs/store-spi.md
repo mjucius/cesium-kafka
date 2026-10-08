@@ -30,7 +30,7 @@ Two design forces shape the API:
    orchestrate correctly. Hence the root interface is `sealed` with two `non-sealed` archetypes,
    wired by an exhaustive Java 21 `switch`. You implement exactly one archetype.
 2. Hot-path types must not box. Batches are primitive-accessor views (`DueBatch`); the thread
-   contract is explicit so the v1 store needs no locking.
+   contract is explicit so the shipped store needs no locking.
 
 ---
 
@@ -44,7 +44,7 @@ flowchart TD
     EX --> Q2{Implement cursorToCommit<br/>reconciliation?}
     Q2 -->|No| AL[AT_LEAST_ONCE<br/>commit→markDispatched window]
     Q2 -->|Yes| EO[Effectively-once<br/>cursor closes the window]
-    TB --> KT[v1 flagship:<br/>KafkaTrackerStore store.type=kafka-tracker]
+    TB --> KT[flagship:<br/>KafkaTrackerStore store.type=kafka-tracker]
 ```
 
 - `TrackerBackedStore`: your durable mutations are encoded as bytes that the engine produces
@@ -54,8 +54,8 @@ flowchart TD
   implement this archetype.
 - `ExternalSchedulerStore`: your durable writes go to an external system (e.g. a relational
   database) outside Kafka's transactions. Correctness rests on ordering contracts ⇒
-  at-least-once baseline, upgradeable to effectively-once via `cursorToCommit`. v1 ships the
-  SPI fixed but no external implementation; `coordination()` must be `FOLLOW_INGEST_GROUP`
+  at-least-once baseline, upgradeable to effectively-once via `cursorToCommit`. The SPI is
+  fixed but no external implementation; `coordination()` must be `FOLLOW_INGEST_GROUP`
   (`STORE_MANAGED` DB-lease ownership is reserved for a later release and rejected at startup).
 
 The engine reads your declared archetype + `capabilities()` and wires the matching dispatch loop:
@@ -67,7 +67,7 @@ DispatchLoop loop = switch (store) {
 };
 ```
 
-> As shipped (2.0), the external branch has no loop behind it yet: the app build accepts a
+> As shipped, the external branch has no loop behind it yet: the app build accepts a
 > `TrackerBackedStore` and rejects any other archetype at startup (`CesiumEngine.resolveStore`).
 > A store you write today must therefore implement `TrackerBackedStore` to be runnable by the
 > shipped app; `ExternalSchedulerStore` is a stable, contract-tested surface you can build against,
@@ -327,9 +327,9 @@ The kit also ships fixtures you can use directly: `FakeStoreContext` (builder wi
 ### External stores: the `ExternalSchedulerStoreContract`
 
 The external archetype's `ExternalSchedulerStore` interface and its companion
-`ExternalSchedulerStoreContract` are both part of the stable, published SPI surface in 1.0. The
+`ExternalSchedulerStoreContract` are both part of the stable, published SPI surface (semver from 2.0.0, ADR-0019). The
 contract ships in `cesium-kafka-store-testkit` today (design [§11.2](design.md#112-store-spi-contract-kit-cesium-kafka-store-testkit-published)),
-even though v1 ships no production external store implementation (a documented non-goal). The SPI
+even though no production external store ships yet implementation (a documented non-goal). The SPI
 is fixed now so the contract cannot drift, and the contract is the executable spec you write a
 DB-backed store against. The testkit's own `InMemoryExternalSchedulerStore` reference impl (in
 the testkit's test sources, not the published jar) passes it in both modes.

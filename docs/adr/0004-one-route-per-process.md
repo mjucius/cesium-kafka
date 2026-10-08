@@ -7,7 +7,7 @@
 ## Context
 
 A "route" is one `(source → destination)` relay with its own tracker topic, consumer groups,
-transactional ids, and durable scheduler state. The runnable app is the supported v1 product
+transactional ids, and durable scheduler state. The runnable app is the supported product
 surface ([ADR-0017](0017-kafka-4-floor-and-repo-only-publishing.md)), and almost everything that
 defines an instance's identity and blast radius keys off a single `applicationId`: group ids
 (`cesium.<applicationId>.ingest` / `.dispatch`), transactional ids, default topic names, metrics

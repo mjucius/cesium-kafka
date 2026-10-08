@@ -328,8 +328,8 @@ in-doubt commit → never restore the batch (I9); retry exhaustion → park-and-
 
 | Module | Contents | Surface |
 |---|---|---|
-| `cesium-kafka-api` | The store SPI (§ [store-spi](store-spi.md)), header constants, `ScheduledRef`/`DueBatch`/`TrackerCursor`/`ConfigView` | Published, semver-stable from 2.0 |
-| `cesium-kafka-core` | The engine: ingest & dispatch loops, transaction manager + error taxonomy, cursor/barrier orchestration, policies, header codec, penalty box, admin validation, shard state machine | Internal-until-1.x (programmatic API) |
+| `cesium-kafka-api` | The store SPI (§ [store-spi](store-spi.md)), header constants, `ScheduledRef`/`DueBatch`/`TrackerCursor`/`ConfigView` | Published, semver-stable from 2.0.0 |
+| `cesium-kafka-core` | The engine: ingest & dispatch loops, transaction manager + error taxonomy, cursor/barrier orchestration, policies, header codec, penalty box, admin validation, shard state machine | Internal, no compatibility promise (ADR-0019) |
 | `cesium-kafka-store-kafka` | `KafkaTrackerStore`: tracker wire format, sidecar codec, the fastutil packed index (§6) | Published store impl |
 | `cesium-kafka-store-testkit` | The SPI contract kit + fixtures (`TrackerBackedStoreContract`, `FakeStoreContext`, `MutableClock`, `TrackerEventScript`) | Published for store implementers |
 | `cesium-kafka-app` | `main()`, YAML config, lifecycle, health/metrics HTTP, distribution archives, Dockerfile | The supported product surface |

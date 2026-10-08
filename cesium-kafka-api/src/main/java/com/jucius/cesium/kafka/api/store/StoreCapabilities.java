@@ -16,8 +16,8 @@ package com.jucius.cesium.kafka.api.store;
  *     observed by {@code read_committed} consumers of the destination topic
  * @param requiresTrackerTopic whether the store needs the cesium-owned tracker topic to exist
  *     (creation/validation is then part of startup bootstrap, design §2.1)
- * @param supportsCancellation whether the store can honor a per-record cancellation API; v1 ships
- *     no cancellation API, but the tracker wire format reserves the record type ({@code 0x02
+ * @param supportsCancellation whether the store can honor a per-record cancellation API; the engine
+ *     has no cancellation API, but the tracker wire format reserves the record type ({@code 0x02
  *     CANCEL}, design D15)
  */
 public record StoreCapabilities(

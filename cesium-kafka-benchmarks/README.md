@@ -48,7 +48,7 @@ Per design §15 risk #9, the §11.4 targets are projections until measured. Meas
 complete, miss their projections and are re-baselined in §11.4; the cause analysis is in
 §2 of [`docs/performance.md`](../docs/performance.md). The nightly
 `benchmarks` job is non-gating. `results/compare.py` compares a run against `results/baseline.json`
-and flags regressions >10 %. It is report-only in v1, because a flaky perf gate is worse than none.
+and flags regressions >10 %. It is report-only, because a flaky perf gate is worse than none.
 
 ## Build wiring
 

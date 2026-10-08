@@ -58,7 +58,7 @@ class DegradationIT extends KafkaIT {
     // itself (R15 — gauge raise/clear, membership-preserving, no crash-loop) is covered deterministically
     // by DispatchLoopTest.parkAndDegradeRaisesGaugeAtThresholdAndClearsOnSuccess (with the
     // no-park-on-deterministic-rejection case beside it). A real-broker park test would need a
-    // producer-fault-injection harness hook — a future enhancement, not a v1 coverage gap.
+    // producer-fault-injection harness hook — a future enhancement, not a coverage gap.
 
     @Test
     void penaltyBoxIsolatesADegradedSourcePartitionFromHealthyOnes() {

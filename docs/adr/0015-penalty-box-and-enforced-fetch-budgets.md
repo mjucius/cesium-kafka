@@ -48,8 +48,8 @@ Dispatch batch default is 10,000 entries.
 - Payload eviction is resolved exactly once and never silently lost, closing the PoC's silent-drop
   bug.
 - Cold-segment fetches for long delays cost broker disk IOPS (ops guide budgets it). A
-  partition-affine seek-consumer pool is a reserved v1.1 extension; the penalty box is the v1
+  partition-affine seek-consumer pool is a reserved future extension; the penalty box is the
   isolation mechanism.
 
-> **As shipped (1.2):** the partition-affine seek-consumer pool has not shipped; each dispatch
+> **As shipped:** the partition-affine seek-consumer pool has not shipped; each dispatch
 > worker still owns one seek consumer, and the penalty box remains the isolation mechanism.

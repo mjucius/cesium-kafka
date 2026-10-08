@@ -193,7 +193,7 @@ final class InMemoryExternalSchedulerStore implements ExternalSchedulerStore {
      * Applies a committed reconciliation cursor at recovery (the engine read it from the
      * offset-metadata channel it was committed to): durable rows whose {@code (dispatchAtMs,
      * sourceOffset)} is at or below the cursor are reconciled as delivered, so the subsequent
-     * {@code scanPending} excludes them. Not part of the SPI — the v1 SPI has no standard channel for
+     * {@code scanPending} excludes them. Not part of the SPI — the SPI has no standard channel for
      * the engine to hand a committed cursor back to an external store, so the contract routes it here.
      */
     void reconcileFrom(int partition, String cursor) {

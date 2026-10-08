@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Design §3.4 point 4 / §3.9 row D-5: <strong>cooperative (incremental) revocation</strong> of a
- * dispatch shard. Group B runs the {@code CooperativeStickyAssignor} (the v1 classic-protocol
+ * dispatch shard. Group B runs the {@code CooperativeStickyAssignor} (the default classic-protocol
  * default), so when a third instance joins a 2-member group over a 3-partition tracker, exactly ONE
  * tracker partition is revoked from its owner and handed to the newcomer — the other two shards are
  * never revoked and keep dispatching.

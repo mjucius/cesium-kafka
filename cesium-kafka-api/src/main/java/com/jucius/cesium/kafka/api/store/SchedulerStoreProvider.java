@@ -12,7 +12,7 @@ package com.jucius.cesium.kafka.api.store;
 public interface SchedulerStoreProvider {
 
     /**
-     * Stable, unique identifier operators put in {@code store.type} (the v1 production store is
+     * Stable, unique identifier operators put in {@code store.type} (the production store is
      * {@code kafka-tracker}). Lowercase-kebab by convention; must never change once released.
      */
     String typeId();

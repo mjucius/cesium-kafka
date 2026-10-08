@@ -31,7 +31,7 @@ instance-id: cesium-0
 roles: [ingest, dispatch]
 
 kafka:
-  # classic (default) or consumer (KIP-848). classic is the v1 default.
+  # classic (default) or consumer (KIP-848). classic is the default.
   group-protocol: classic
   # Common client passthrough applied to every cesium client. Correctness-
   # critical keys (group.id, transactional.id, isolation.level, auto.offset.reset,

@@ -47,7 +47,7 @@ the recommended production shape is to run cesium-kafka as its own process or se
 it with YAML, environment variables, and system properties.
 
 The engine code is Java and is structured internally as reusable modules, but its programmatic API is
-not a stable public embedding contract in v1. The stable extension point is the scheduler store SPI,
+not a stable public embedding contract. The stable extension point is the scheduler store SPI,
 used when implementing an alternative store. For application teams, the normal integration point is
 Kafka itself: produce to the source topic with a delay header, then consume from the destination
 topic.

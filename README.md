@@ -18,17 +18,17 @@ non-`cesium-*` headers are preserved byte-for-byte.
 
 ## Status
 
-**v1** (latest release 1.1.5; 1.2.0 in development), a ground-up rewrite of an earlier
+**2.x** (2.0.0 in development), a ground-up rewrite of an earlier
 proof-of-concept. See the
 [CHANGELOG](CHANGELOG.md) for the release notes and [docs/design.md](docs/design.md) for the complete
 design (architecture, exactly-once transaction/fencing analysis, failure matrix, store SPI).
 
-What is supported, and how stable, in v1:
+What is supported, and how stable:
 
 - The runnable application is the supported product. Releases are repo-only: each tagged release
   publishes the distribution archives (`distTar`/`distZip`) on its
   [GitHub Release](https://github.com/mjucius/cesium-kafka/releases). There is no Maven Central
-  artifact or published container image in v1; build the image from the included `Dockerfile`. See
+  artifact or published container image; build the image from the included `Dockerfile`. See
   [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md).
 - The store SPI (`cesium-kafka-api`) and its contract test kit (`cesium-kafka-store-testkit`) are
   stable and semver-governed from 2.0.0 for store implementers. Start at [docs/store-spi.md](docs/store-spi.md).

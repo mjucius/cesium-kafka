@@ -3,7 +3,7 @@
 
 Compares a current JMH results.json against a committed baseline.json and prints a per-benchmark
 delta, flagging anything past the ±10% threshold. This is the *aspirational* >10% regression gate:
-it is intentionally advisory (exit 0 always) in v1 because JMH numbers are noisy on shared CI
+it is intentionally advisory (exit 0 always) because JMH numbers are noisy on shared CI
 hardware and a flaky perf gate is worse than none (risk #9 "targets are PROJECTIONS until
 measured", risk #20 CI flakiness). Flip `--strict` on once a dedicated low-variance runner exists.
 

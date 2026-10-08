@@ -86,7 +86,7 @@ java -jar cesium-kafka-benchmarks/build/libs/cesium-kafka-benchmarks-*-jmh.jar D
 
 The JMH task is not wired into `build`/`check`; benchmarks run manually or nightly.
 
-## Regression gate (aspirational, non-blocking in v1)
+## Regression gate (aspirational, non-blocking)
 
 `nightly.yml`'s `benchmarks` job runs `:cesium-kafka-benchmarks:jmh` (`continue-on-error: true`) and
 archives `results.json`. `results/compare.py` diffs a run against the committed
@@ -97,7 +97,7 @@ archives `results.json`. `results/compare.py` diffs a run against the committed
 python3 results/compare.py results/baseline.json build/results/jmh/results.json
 ```
 
-It is report-only in v1 (`--strict` flips it to a hard gate). A JMH number is too noisy on
+It is report-only (`--strict` flips it to a hard gate). A JMH number is too noisy on
 shared CI hardware to block a release on (design §15 risk #9 / #20); the gate becomes hard once a
 dedicated low-variance runner exists. To promote a new baseline, commit a fresh `results.json` as
 `results/baseline.json` in the PR that justifies the change.

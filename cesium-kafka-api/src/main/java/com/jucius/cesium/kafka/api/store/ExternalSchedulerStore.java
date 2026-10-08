@@ -5,8 +5,8 @@ import java.util.Optional;
 import java.util.function.Consumer;
 
 /**
- * Archetype 2 — external scheduler store (e.g. JDBC; design §4.2). No implementation ships in v1,
- * but the SPI is fixed now so the contract cannot drift.
+ * Archetype 2 — external scheduler store (e.g. JDBC; design §4.2). No production implementation ships
+ * yet, but the SPI is fixed now so the contract cannot drift.
  *
  * <p>External stores cannot enlist their writes in the engine's Kafka transactions, so correctness
  * rests on the <em>ordering contracts</em> documented per method: idempotent upserts strictly
@@ -81,10 +81,10 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
     }
 
     /**
-     * How dispatch ownership of partitions is decided for this store. The v1 engine implements
+     * How dispatch ownership of partitions is decided for this store. The engine implements
      * only {@link PartitionCoordination#FOLLOW_INGEST_GROUP};
      * {@link PartitionCoordination#STORE_MANAGED} (e.g. database leases) is reserved for a later
-     * release and is rejected at startup by the v1 engine.
+     * release and is rejected at startup by the engine.
      */
     default PartitionCoordination coordination() {
         return PartitionCoordination.FOLLOW_INGEST_GROUP;
@@ -94,13 +94,13 @@ public non-sealed interface ExternalSchedulerStore extends SchedulerStore {
     enum PartitionCoordination {
         /**
          * Dispatch ownership mirrors the engine's Kafka consumer-group membership: the member
-         * that ingests a source partition dispatches its entries. The only mode the v1 engine
+         * that ingests a source partition dispatches its entries. The only mode the engine
          * implements.
          */
         FOLLOW_INGEST_GROUP,
         /**
          * The store arbitrates ownership itself (e.g. DB leases). Reserved; not implemented by
-         * the v1 engine.
+         * the engine.
          */
         STORE_MANAGED
     }

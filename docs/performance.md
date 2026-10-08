@@ -85,7 +85,7 @@ Neither miss is fixed by tuning the code to the benchmark (design `§15`). Both 
 re-measurement, because random access into multi-MB structures is where Apple unified LPDDR5 and a
 server x86 with a large L3 diverge most.
 
-### Regression gate (aspirational, non-blocking in v1)
+### Regression gate (aspirational, non-blocking)
 
 `nightly.yml`'s `benchmarks` job runs the JMH suite (`continue-on-error: true`), archives
 `results.json`, and runs `results/compare.py` against the committed `baseline.json` in report-only
@@ -305,7 +305,7 @@ so footprint and pause regressions are caught from production flight data. The c
 backing avoids G1 humongous allocations (a flat 100 M-entry `long[]` would be 800 MB); growth is
 O(1) and copy-free.
 
-*Documented future compression (not v1):* uint32 seconds-from-base dispatch time (−4 B), delta-encoded
+*Documented future compression (not implemented):* uint32 seconds-from-base dispatch time (−4 B), delta-encoded
 tracker offsets (−4 B) → floor ≈ 24 B/entry.
 
 ---
@@ -342,7 +342,7 @@ broker cost), `cesium_fetch_bytes_total` (decompressed volume, for the budget),
 
 A small partition-affine seek-consumer pool (2–4) is a possible future extension, not implemented
 (`dispatch.fetch.parallelism` is not an accepted key today; unknown keys fail startup). The penalty
-box is the v1 isolation mechanism.
+box is the isolation mechanism.
 
 ---
 

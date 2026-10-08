@@ -5,7 +5,7 @@ import org.apache.kafka.common.header.Headers;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Archetype 1 — tracker-backed, exactly-once (design §4.2; v1 production implementation:
+ * Archetype 1 — tracker-backed, exactly-once (design §4.2; production implementation:
  * {@code KafkaTrackerStore}).
  *
  * <p>The store owns the tracker-topic wire format; the <em>engine</em> owns the Kafka clients and

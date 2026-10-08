@@ -16,7 +16,7 @@ they are protocol-agnostic: classic and `consumer` share one code path.
 
 ## Decision
 
-v1 defaults to `group.protocol=classic` with `CooperativeStickyAssignor` (stickiness minimizes
+cesium defaults to `group.protocol=classic` with `CooperativeStickyAssignor` (stickiness minimizes
 replay churn) and static membership on by default
 ([ADR-0013](0013-readiness-decoupled-from-recovery-and-static-membership.md)). The `consumer`
 protocol is tested but non-blocking. A dedicated CI lane runs the EOS-critical scenario set
@@ -32,7 +32,7 @@ EOS-relevant divergence from the classic lane.
 ## Consequences
 
 - Classic is the supported, recommended default; `consumer` is exercised continuously but never
-  blocks a v1 release.
+  blocks a release.
 - With one protocol-agnostic shard state machine, promotion needs a configuration change and enough
   evidence, with no rewrite.
 - Promotion goes through review as a new ADR, so the stated EOS guarantee does not get ahead of the
