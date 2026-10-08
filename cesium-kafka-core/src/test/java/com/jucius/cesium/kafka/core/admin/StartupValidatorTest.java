@@ -338,6 +338,13 @@ class StartupValidatorTest {
 
             assertNoErrors(result);
             assertWarningContains(result, "startup-checks.size-based-retention", "ACKNOWLEDGED");
+            // The warning cites the metric that really exists, not the never-emitted margin gauge.
+            assertWarningContains(result, "startup-checks.size-based-retention", "cesium_fetch_unfetchable_total");
+            assertWarningContains(result, "startup-checks.size-based-retention", "dispatch.on-unfetchable-payload");
+            assertFalse(
+                    findingsAt(result.report().warnings(), "startup-checks.size-based-retention")
+                            .contains("cesium_retention_margin_seconds"),
+                    () -> result.report().render());
         }
     }
 

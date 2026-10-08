@@ -329,9 +329,9 @@ public final class StartupValidator {
                         "startup-checks.size-based-retention",
                         "ACKNOWLEDGED: source topic '" + topic + "' has " + detected
                                 + " — time-based validation cannot bound payload lifetime (§7.6, R13). This named"
-                                + " acceptance is logged and surfaced; the runtime earliest-available-age probe feeds"
-                                + " cesium_retention_margin_seconds, and expired payloads resolve via the"
-                                + " unfetchable-payload policy."));
+                                + " acceptance is logged and surfaced. Payloads evicted before dispatch count in"
+                                + " cesium_fetch_unfetchable_total and resolve per dispatch.on-unfetchable-payload;"
+                                + " monitor the source's earliest-record age on the broker side."));
             } else {
                 findings.add(Finding.error(
                         "startup-checks.size-based-retention",

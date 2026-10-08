@@ -112,6 +112,10 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - The documented log MDC keys (`applicationId`, `loop`, `txn`) were never set, so JSON lines had no
   `mdc` object and plain lines no context. The engine now sets them once per loop thread, and
   `applicationId` on the main and shutdown threads.
+- The `startup-checks.size-based-retention: ACKNOWLEDGED` warning pointed operators at
+  `cesium_retention_margin_seconds`, a metric that was never emitted. It now cites
+  `cesium_fetch_unfetchable_total`, `dispatch.on-unfetchable-payload` and broker-side monitoring of
+  the source's earliest-record age.
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).
