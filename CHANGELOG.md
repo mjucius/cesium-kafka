@@ -20,6 +20,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   a second worker raced the first. Scale dispatch by running more instances.
 - Ingest and dispatch workers with ordinal 1 or higher join as `<group>.<instance>.<n>` (see Fixed).
   Worker 0 keeps its 1.x `group.instance.id`.
+- Testkit: `FakeStoreContext.MapConfigView` is removed; use `ConfigView.of(Map)`.
+  `FakeStoreContext.config()` now parses the way the engine does: trimmed values, case-insensitive
+  booleans, and no value echoed in errors.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
@@ -55,8 +58,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   existing id, so single-worker deployments rejoin as the same static member on upgrade.
 - Docs claimed a `past_due` relay reason that was never emitted anywhere; reworded.
 
-### Deprecated
-- Testkit `FakeStoreContext.MapConfigView`: use `ConfigView.of`. Its behaviour is unchanged.
+### Removed
+- Testkit `FakeStoreContext.MapConfigView`. Use `ConfigView.of(Map)` (see Breaking changes).
 
 ### Changed
 - Internal simplification, about −470 lines net with the fixes included. Highlights:

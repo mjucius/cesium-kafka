@@ -1,15 +1,14 @@
 package com.jucius.cesium.kafka.testkit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.api.store.ConfigView;
-import java.time.Duration;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import org.junit.jupiter.api.Test;
 
 class FakeStoreContextTest {
@@ -48,30 +47,15 @@ class FakeStoreContextTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation") // pins the deprecated view's unchanged 1.x behaviour
-    void configViewFollowsEngineParsingConventions() {
-        ConfigView config = new FakeStoreContext.MapConfigView(Map.of(
-                "an.int", "42",
-                "a.long", "9000000000",
-                "a.bool", "true",
-                "a.duration", "PT30S",
-                "bad.int", "forty-two",
-                "bad.bool", "yes"));
-        assertEquals(42, config.getInt("an.int"));
-        assertEquals(42, config.getInt("an.int", 7));
-        assertEquals(7, config.getInt("absent", 7));
-        assertEquals(9_000_000_000L, config.getLong("a.long"));
-        assertTrue(config.getBoolean("a.bool"));
-        assertEquals(Duration.ofSeconds(30), config.getDuration("a.duration"));
-        assertEquals(Duration.ofDays(1), config.getDuration("absent", Duration.ofDays(1)));
-        assertEquals("fallback", config.getString("absent", "fallback"));
-        assertEquals(6, config.keys().size());
-
-        assertThrows(NoSuchElementException.class, () -> config.getString("absent"));
-        assertThrows(NoSuchElementException.class, () -> config.getInt("absent"));
-        assertThrows(IllegalArgumentException.class, () -> config.getInt("bad.int"));
-        assertThrows(IllegalArgumentException.class, () -> config.getBoolean("bad.bool"));
-        assertThrows(IllegalArgumentException.class, () -> config.getDuration("bad.int"));
+    void configParsesLikeTheEngine() {
+        ConfigView config = FakeStoreContext.builder()
+                .property("flag", " TRUE ")
+                .property("bad", "secret-x")
+                .build()
+                .config();
+        assertTrue(config.getBoolean("flag"), "trimmed, case-insensitive boolean");
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> config.getInt("bad"));
+        assertFalse(e.getMessage().contains("secret-x"), "a parse error never echoes the value");
     }
 
     @Test

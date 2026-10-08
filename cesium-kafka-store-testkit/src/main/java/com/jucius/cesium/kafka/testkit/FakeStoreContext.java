@@ -7,19 +7,16 @@ import com.jucius.cesium.kafka.api.store.StoreContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Set;
 import org.apache.kafka.common.Uuid;
 import org.jspecify.annotations.Nullable;
 
 /**
  * Deterministic {@link StoreContext} for contract tests: a {@link RouteDescriptor} with random
  * topic ids (each {@link Builder#build()} mints a fresh identity unless an explicit
- * {@linkplain Builder#route(RouteDescriptor) route} is supplied), a map-backed {@link ConfigView}
- * following the engine's parsing conventions, a {@link SimpleMeterRegistry}, and a
+ * {@linkplain Builder#route(RouteDescriptor) route} is supplied), a {@link ConfigView#of(Map)}
+ * view that parses exactly as the engine does, a {@link SimpleMeterRegistry}, and a
  * {@link MutableClock}.
  *
  * <p>Random ids per build are deliberate: identity material (cluster id + topic ids) must be
@@ -31,11 +28,11 @@ import org.jspecify.annotations.Nullable;
 public final class FakeStoreContext implements StoreContext {
 
     private final RouteDescriptor route;
-    private final MapConfigView config;
+    private final ConfigView config;
     private final MutableClock clock;
     private final MeterRegistry registry;
 
-    private FakeStoreContext(RouteDescriptor route, MapConfigView config, MutableClock clock, MeterRegistry registry) {
+    private FakeStoreContext(RouteDescriptor route, ConfigView config, MutableClock clock, MeterRegistry registry) {
         this.route = route;
         this.config = config;
         this.clock = clock;
@@ -156,122 +153,7 @@ public final class FakeStoreContext implements StoreContext {
                             Uuid.randomUuid(),
                             "dlq",
                             partitions);
-            return new FakeStoreContext(resolved, new MapConfigView(properties), clock, registry);
-        }
-    }
-
-    /**
-     * Map-backed {@link ConfigView} for contract tests (design §8).
-     *
-     * @deprecated since 1.2.0; use {@link ConfigView#of(Map)}, which parses values exactly as the
-     *     engine does (trimmed values, case-insensitive booleans, errors that never echo the value).
-     *     This class keeps its 1.x behaviour and stays for the rest of the 1.x line.
-     */
-    @Deprecated(since = "1.2.0")
-    public static final class MapConfigView implements ConfigView {
-
-        private final Map<String, String> values;
-
-        /** Wraps a defensive copy of {@code values} as a {@link ConfigView}. */
-        public MapConfigView(Map<String, String> values) {
-            this.values = Map.copyOf(values);
-        }
-
-        @Override
-        public String getString(String key, String defaultValue) {
-            return values.getOrDefault(key, defaultValue);
-        }
-
-        @Override
-        public String getString(String key) {
-            String value = values.get(key);
-            if (value == null) {
-                throw new NoSuchElementException("missing store.properties key: " + key);
-            }
-            return value;
-        }
-
-        @Override
-        public int getInt(String key, int defaultValue) {
-            String value = values.get(key);
-            return value == null ? defaultValue : parseInt(key, value);
-        }
-
-        @Override
-        public int getInt(String key) {
-            return parseInt(key, getString(key));
-        }
-
-        @Override
-        public long getLong(String key, long defaultValue) {
-            String value = values.get(key);
-            return value == null ? defaultValue : parseLong(key, value);
-        }
-
-        @Override
-        public long getLong(String key) {
-            return parseLong(key, getString(key));
-        }
-
-        @Override
-        public Duration getDuration(String key, Duration defaultValue) {
-            String value = values.get(key);
-            return value == null ? defaultValue : parseDuration(key, value);
-        }
-
-        @Override
-        public Duration getDuration(String key) {
-            return parseDuration(key, getString(key));
-        }
-
-        @Override
-        public boolean getBoolean(String key, boolean defaultValue) {
-            String value = values.get(key);
-            return value == null ? defaultValue : parseBoolean(key, value);
-        }
-
-        @Override
-        public boolean getBoolean(String key) {
-            return parseBoolean(key, getString(key));
-        }
-
-        @Override
-        public Set<String> keys() {
-            return values.keySet();
-        }
-
-        private static int parseInt(String key, String value) {
-            try {
-                return Integer.parseInt(value);
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException("store.properties key " + key + " is not an int: " + value, e);
-            }
-        }
-
-        private static long parseLong(String key, String value) {
-            try {
-                return Long.parseLong(value);
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException("store.properties key " + key + " is not a long: " + value, e);
-            }
-        }
-
-        private static Duration parseDuration(String key, String value) {
-            try {
-                return Duration.parse(value);
-            } catch (RuntimeException e) {
-                throw new IllegalArgumentException("store.properties key " + key + " is not a duration: " + value, e);
-            }
-        }
-
-        private static boolean parseBoolean(String key, String value) {
-            if ("true".equals(value)) {
-                return true;
-            }
-            if ("false".equals(value)) {
-                return false;
-            }
-            throw new IllegalArgumentException("store.properties key " + key + " is not a boolean: " + value);
+            return new FakeStoreContext(resolved, ConfigView.of(properties), clock, registry);
         }
     }
 }
