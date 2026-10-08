@@ -40,6 +40,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   cap ÷ `dispatch.workers` (minimum 1); with `dispatch.workers` fixed at 1 that is the whole cap.
 - `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now
   includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
+- `store.type: class:<FQCN>` is removed from the `SchedulerStoreProvider` contract. It was never
+  implemented, and such a value still fails startup as an unknown typeId.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
@@ -97,6 +99,7 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - Testkit `FakeStoreContext.MapConfigView`. Use `ConfigView.of(Map)` (see Breaking changes).
 - `store.properties.max-pending-per-partition` and the store's duplicate footprint check (see
   Breaking changes).
+- The documented but unimplemented `store.type: class:<FQCN>` store selection (see Breaking changes).
 
 ### Changed
 - Internal simplification, about −470 lines net with the fixes included. Highlights:

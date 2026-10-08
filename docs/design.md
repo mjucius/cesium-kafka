@@ -43,6 +43,8 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 >    worker enforced the whole cap, so the effective cap grew with `dispatch.workers`.
 >    `cesium_dlq_records_total` now counts the dispatch loop's committed DLQ writes too
 >    (`payload-expired`, and dispatch-side `unrelayable`); in 1.x it counted only ingest.
+>    `store.type: class:<FQCN>` selection is dropped from the SPI contract: it was documented but never
+>    implemented, and selection is by typeId only.
 
 ## Design revisions
 
@@ -82,7 +84,7 @@ Design review produced the findings below (R1–R21). Every critical and major f
 | D4 | Tracker cleanup policy | `cleanup.policy=compact` only, never time-based delete | `compact,delete` reintroduces silent loss: a pending ADD older than retention would be deleted. With compaction only, a lone pending ADD can never expire. |
 | D5 | Replay barrier | High watermark via `Admin.listOffsets(latest, READ_UNCOMMITTED)`, snapshotted after the committed-cursor fetch resolves (I8) | An ingest transaction open since before a committed dispatch transaction can hold the LSO below a committed COMPLETE; an LSO-bounded replay would miss it and re-dispatch (duplicate). §3.6 proof. |
 | D6 | Completion lookup | Ring binary search, no hash map | The arrival ring is sorted by tracker offset and by source offset at the same time; binary search is O(log n) with zero per-entry map overhead (~32 B/entry nominal). |
-| D7 | SPI shape | Sealed root with two `non-sealed` archetypes + ServiceLoader registry with mandatory explicit selection | The engine must know the transaction-participation model to orchestrate correctly (exhaustive Java 21 switch); `capabilities()` makes degraded guarantees explicit. |
+| D7 | SPI shape | Sealed root with two `non-sealed` archetypes + ServiceLoader registry with mandatory explicit selection by `typeId` | The engine must know the transaction-participation model to orchestrate correctly (exhaustive Java 21 switch); `capabilities()` makes degraded guarantees explicit. |
 | D8 | Dispatch batch default | 10,000 entries + a bytes bound enforced during the fetch pass (truncate-and-carry-over) | Amortization: at ~5–20 ms commit overhead, 10k-entry transactions sustain ≥10⁵ dispatches/s/thread. The bytes bound only means something where record sizes are known, which is inside the fetch. |
 | D9 | `transaction.timeout.ms` | 30 s default, configurable | Bounds the LSO-stall / barrier-gating window after crashes. |
 | D10 | `instance-id` | Required stable deployment-slot id; explicit `random` opt-in | Stable transactional.ids make `initTransactions()` fence a predecessor's dangling transaction immediately; also seeds the default `group.instance.id` (static membership, D21). |
@@ -618,11 +620,7 @@ DispatchLoop loop = switch (store) {
 
 ### 4.5 Discovery, configuration, stability
 
-`SchedulerStoreProvider` registered via `META-INF/services`; ServiceLoader populates a registry; selection is always explicit: `store.type: kafka-tracker` (typeId) or `store.type: class:com.example.FooStore` (FQCN fallback). There is no auto-selection; duplicate typeIds fail startup listing the offending jars (the model Kafka Connect uses). `cesium-kafka-api` is semver-stable from 2.0; additive evolution via default methods; wire-format versioning belongs to stores, not the SPI. The contract-test kit (§11.2) is the executable specification.
-
-> **As shipped:** the app resolves `store.type` by typeId only (`CesiumEngine.resolveStore`). The
-> `class:<fqcn>` fallback is not implemented, and a duplicate typeId fails startup with a message
-> naming the typeId, not the offending jars.
+`SchedulerStoreProvider` registered via `META-INF/services` and loaded with ServiceLoader; selection is always explicit, by typeId (`store.type: kafka-tracker`). There is no auto-selection; an unknown or duplicate typeId fails startup with a message naming the typeId. `cesium-kafka-api` is semver-stable from 2.0; additive evolution via default methods; wire-format versioning belongs to stores, not the SPI. The contract-test kit (§11.2) is the executable specification.
 
 ---
 

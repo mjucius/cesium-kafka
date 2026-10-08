@@ -181,7 +181,7 @@ the violation is visible and the pipeline stays alive (D3). DLQ policies require
 
 | Key | Default | Meaning |
 |---|---|---|
-| `store.type` | `kafka-tracker` | The ServiceLoader-registered store. Selection is always explicit. `kafka-tracker` is the flagship in-memory index durably backed by the tracker topic. Selection is by `typeId` only; an unknown or duplicate `typeId` fails startup. (`class:<FQCN>` selection is not implemented.) |
+| `store.type` | `kafka-tracker` | The ServiceLoader-registered store. Selection is always explicit. `kafka-tracker` is the flagship in-memory index durably backed by the tracker topic. Selection is by `typeId` only; an unknown or duplicate `typeId` fails startup. |
 | `store.properties` | `{}` | The store's private namespace, opaque to the engine (exposed to the store via `ConfigView`). The `kafka-tracker` keys are below. |
 
 The `kafka-tracker` store reads these keys from `store.properties`:

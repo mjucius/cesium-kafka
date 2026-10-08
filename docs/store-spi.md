@@ -399,8 +399,8 @@ public final class MyTrackerStoreProvider implements SchedulerStoreProvider {
 }
 ```
 
-`ServiceLoader` populates a registry keyed by `typeId()`. Selection is always explicit; the
-engine never auto-selects:
+The engine loads providers with `ServiceLoader` and picks the one whose `typeId()` matches
+`store.type`. Selection is always explicit; the engine never auto-selects:
 
 ```yaml
 store:
@@ -410,7 +410,7 @@ store:
 ```
 
 Duplicate `typeId`s on the classpath fail startup (naming the `store.type`), as does an unknown
-`typeId`; there is no FQCN fallback. The flagship store registers `typeId = "kafka-tracker"` and is selected
+`typeId`. The flagship store registers `typeId = "kafka-tracker"` and is selected
 with `store.type: kafka-tracker`.
 
 ---
