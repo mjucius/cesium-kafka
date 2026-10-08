@@ -380,7 +380,14 @@ run on the PR lane.
     --tests "com.jucius.cesium.kafka.it.HeterogeneousReplayPerfIT"
 ```
 
-Scale-up knobs for a dedicated host (defaults are CI-sized):
+Scale-up knobs for a dedicated host (defaults are CI-sized). Pass them on the Gradle command line;
+the build forwards every `-Dperf.*` and `-Dsoak.*` property to the forked test JVM:
+
+```bash
+./gradlew :cesium-kafka-it:integrationTest -PincludeNightly=true \
+    --tests "com.jucius.cesium.kafka.it.IngestThroughputPerfIT" -Dperf.ingest.total=500000
+```
+
 
 | Test | Knob (default) |
 |---|---|
@@ -417,8 +424,9 @@ JAVA_TOOL_OPTIONS="-XX:+UseZGC -XX:+ZGenerational \
     -Dsoak.total=100000000 -Dsoak.windowMs=86400000 -Dsoak.partitions=64 -Dsoak.timeoutMin=1560
 ```
 
-`soakPerf` scale-up knobs (defaults are the CI-scaled run; all are read through `providers.systemProperty`
-so they are proper configuration-cache inputs):
+`soakPerf` scale-up knobs (defaults are the CI-scaled run). Every `-Dsoak.*` property is forwarded to
+the forked test JVM and is a configuration-cache input, so changing one is never served from a stale
+cache entry. `soak.maxHeap` and `soak.minHeap` also size the worker heap:
 
 | Knob (default) | Effect |
 |---|---|

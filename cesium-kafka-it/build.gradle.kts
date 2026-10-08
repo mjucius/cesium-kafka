@@ -27,12 +27,6 @@ testing {
             }
             targets.all {
                 testTask.configure {
-                    // Testcontainers 1.21.3 pins docker-java to Docker API v1.32 when no
-                    // api.version is configured (DockerClientProviderStrategy), and Docker
-                    // Engine 29+ removed API versions < 1.43 (HTTP 400 on /v1.32/*). Declaring
-                    // a modern version skips the legacy pin; 1.44 = Engine 25+ (Jan 2024 floor).
-                    // Overridable via -Dapi.version for older daemons.
-                    systemProperty("api.version", System.getProperty("api.version") ?: "1.44")
                     // The M6 fencing/rebalance scenarios (zombie fencing, cooperative revocation,
                     // onPartitionsLost) stand up several in-JVM engine instances at once inside one
                     // test worker — each owning a transactional producer with a 64 MiB buffer.memory
@@ -56,6 +50,21 @@ testing {
     }
 }
 
+// Settings every test task here shares: integrationTest, soakPerf, and test.
+tasks.withType<Test>().configureEach {
+    // Testcontainers 1.21.3 pins docker-java to Docker API v1.32 when no api.version is configured
+    // (DockerClientProviderStrategy), and Docker Engine 29+ removed API versions < 1.43 (HTTP 400 on
+    // /v1.32/*). Declaring a modern version skips the legacy pin; 1.44 = Engine 25+ (Jan 2024 floor).
+    // Overridable via -Dapi.version for older daemons.
+    systemProperty("api.version", providers.systemProperty("api.version").getOrElse("1.44"))
+    // Forward the perf/soak scale-up knobs (-Dperf.ingest.total=..., -Dsoak.total=..., see
+    // performance.md) into the forked test JVM, which reads them with Integer.getInteger. A -D on the
+    // Gradle command line sets them only in the Gradle JVM. Read through providers so each value is a
+    // configuration-cache input: changing one invalidates the cache entry instead of reusing a stale one.
+    systemProperties(providers.systemPropertiesPrefixedBy("perf.").get())
+    systemProperties(providers.systemPropertiesPrefixedBy("soak.").get())
+}
+
 // The macro/soak performance lane (design §11.4). The @Tag("nightly") perf ITs (ingest/dispatch/
 // burst/large-payload/heterogeneous-replay) run on the ordinary `integrationTest` task with
 // -PincludeNightly=true (nightly.yml's perf batch). The @Tag("soak") SoakPerfIT is NEVER on that
@@ -68,9 +77,8 @@ tasks.register<Test>("soakPerf") {
     val integrationTest = sourceSets["integrationTest"]
     testClassesDirs = integrationTest.output.classesDirs
     classpath = integrationTest.runtimeClasspath
-    // Same Docker-API and heap settings the integrationTest task uses (the suite block above only
-    // configures its own task, not this standalone one).
-    systemProperty("api.version", providers.systemProperty("api.version").getOrElse("1.44"))
+    // Same heap settings the integrationTest task uses (the suite block above only configures its
+    // own task, not this standalone one).
     // Heap is set HERE (Gradle emits -Xmx/-Xms on the forked test-worker command line), and a
     // command-line -Xmx/-Xms WINS over anything in JAVA_TOOL_OPTIONS. So the dedicated-host command
     // must size the worker through these knobs, NOT through `JAVA_TOOL_OPTIONS=-Xmx12g` (which the
@@ -82,17 +90,6 @@ tasks.register<Test>("soakPerf") {
     maxHeapSize = providers.systemProperty("soak.maxHeap").getOrElse("1536m")
     providers.systemProperty("soak.minHeap").orNull?.let { minHeapSize = it }
     jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
-    // Forward the documented soak.* sizing knobs (SoakPerfIT reads them via Integer.getInteger /
-    // System.getProperty) into the forked test JVM, so the dedicated-host command can scale the run
-    // up: `-Dsoak.total=100000000 -Dsoak.windowMs=86400000 ...`. Read through `providers.systemProperty`
-    // so each is a proper configuration-cache input (a raw System.getProperty read would be cached and
-    // ignore the override).
-    for (knob in listOf("soak.total", "soak.windowMs", "soak.partitions", "soak.timeoutMin")) {
-        val value = providers.systemProperty(knob).orNull
-        if (value != null) {
-            systemProperty(knob, value)
-        }
-    }
     // Same never-cache rule as the integrationTest task above: a broker-backed run has unmodelled
     // inputs (Docker, the container, wall-clock), so a cache hit would silently skip the soak.
     outputs.upToDateWhen { false }
