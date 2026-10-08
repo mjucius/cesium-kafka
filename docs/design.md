@@ -32,6 +32,9 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 > 4. 2.0.0 (ADR-0019). The cleanup ships as 2.0.0 and may break the api, testkit, config keys,
 >    metrics and log shape where that gives the clean fix; wire formats are unchanged. The api and
 >    testkit are semver-stable from 2.0.0, and the engine's programmatic API stays internal.
+>    `dispatch.workers` must be 1: every dispatch loop in a process shares one single-threaded
+>    store, and `drainDue` does not filter by owned partition. In-process dispatch parallelism is
+>    deferred; scale dispatch by instances.
 
 ## Design revisions
 
@@ -785,7 +788,7 @@ Key defaults (durations ISO-8601):
 | `delay.max` | `P1D` | Lowered from P7D: drives the tombstone-retention floor and tracker disk (§12 worksheet); raising it is an explicit, worksheet-reviewed decision |
 | `delay.on-malformed-header` / `on-over-max` | `DLQ` / `DLQ` | D3 |
 | `dispatch.on-unfetchable-payload` | `DLQ` | §7 |
-| `ingest.workers` / `dispatch.workers` | 1 / 1 | |
+| `ingest.workers` / `dispatch.workers` | 1 / 1 | `dispatch.workers` must be 1 (revision 4): dispatch loops in one process would share the single-threaded store. Scale dispatch by instances. |
 | `ingest.max-batch` | 2000 | = `max.poll.records` |
 | `dispatch.batch.max-entries` / `max-bytes` | 10000 / 32 MiB | bytes enforced in the fetch pass with truncate-and-carry-over (D8) |
 | `dispatch.drain.max-slice` | `PT1M`, capped at `max.poll.interval.ms / 3` | time-sliced drain (§6) |

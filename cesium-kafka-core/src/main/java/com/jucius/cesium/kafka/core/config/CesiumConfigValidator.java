@@ -113,6 +113,15 @@ public final class CesiumConfigValidator {
         atLeast(findings, "ingest.workers", config.ingest().workers(), 1);
         atLeast(findings, "ingest.max-batch", config.ingest().maxBatch(), 1);
         atLeast(findings, "dispatch.workers", config.dispatch().workers(), 1);
+        // Every dispatch loop in a process shares one single-threaded store, and drainDue does not
+        // filter by owned partition, so a second worker would race the first. Scale by instances.
+        if (config.dispatch().workers() > 1) {
+            findings.add(Finding.error(
+                    "dispatch.workers",
+                    "must be 1, got " + config.dispatch().workers()
+                            + ": dispatch workers in one process share a single-threaded store."
+                            + " Scale dispatch by running more instances."));
+        }
         atLeast(
                 findings,
                 "dispatch.batch.max-entries",

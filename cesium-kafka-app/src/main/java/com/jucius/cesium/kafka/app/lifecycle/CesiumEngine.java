@@ -79,7 +79,7 @@ import org.slf4j.LoggerFactory;
  *   <li>resolves the {@link SchedulerStore} through the published {@link SchedulerStoreProvider}
  *       ServiceLoader hook by {@code store.type} and drives {@code configure → validate → start};
  *   <li>per {@linkplain Role role}, spawns {@code ingest.workers} {@link IngestLoop}s and
- *       {@code dispatch.workers} {@link DispatchLoop}s — each owning its own Kafka clients (distinct
+ *       {@code dispatch.workers} (validated to 1) {@link DispatchLoop}s — each owning its own Kafka clients (distinct
  *       transactional-id worker ordinals), the shared store, registry, {@link RelayRecordFactory},
  *       and (for dispatch) a {@link KafkaSeekFetcher} — on named non-daemon threads.
  * </ol>

@@ -216,7 +216,7 @@ not 78: the config schema leaves this map open).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `dispatch.workers` | `1` | Dispatch threads, each owning a tracker consumer + dispatch producer + seek consumer and disjoint shards. Useful up to the tracker partition count fleet-wide. Each worker after the first gets its own `group.instance.id` (`.<ordinal>` suffix). |
+| `dispatch.workers` | `1` | Must be `1`: the dispatch thread owns the tracker consumer, dispatch producer, seek consumer and the in-memory index, which is single-threaded. Any other value fails validation (exit 78). Scale dispatch by running more instances, up to the tracker partition count fleet-wide. |
 | `dispatch.batch.max-entries` | `10000` | Maximum entries per dispatch transaction (D8). |
 | `dispatch.batch.max-bytes` | `33554432` (32 MiB) | Decompressed payload byte budget per dispatch transaction, enforced in the fetch pass with truncate-and-carry-over (R8). |
 | `dispatch.drain.max-slice` | `PT1M` | Maximum back-to-back transaction time before the loop returns to a real `poll()`. Always validated `≤ max.poll.interval.ms / 3`, using the tracker consumer's effective `max.poll.interval.ms` (overlay, then `kafka.properties`, else the client default 300000 ms), so membership survives due-storms (§6). |
@@ -229,7 +229,7 @@ not 78: the config schema leaves this map open).
 | `dispatch.fetch.penalty.backoff-max` | `PT10S` | Penalty-box backoff ceiling under consecutive failures. |
 | `dispatch.on-unfetchable-payload` | `DLQ` | Policy for provably-expired payloads: `DLQ` (loss notice + COMPLETE, atomic), `DROP` (COMPLETE only + metric), or `FAIL`. In all non-FAIL modes the COMPLETE is always written, so a poison entry never replays forever. |
 | `dispatch.max-pending-per-partition` | `2000000` | Backpressure high-water mark per ACTIVE shard; pauses the tracker consumer above it, resumes below half. A RECOVERING shard is never paused. Backlog accumulates durably in the tracker topic. |
-| `dispatch.max-pending-total` | `0` (AUTO) | Pending cap, enforced per dispatch worker (with `dispatch.workers > 1` the process-wide total is workers × cap). `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap is checked at load (`cap × 64 B` against the heap budget, strictness from `startup-checks.heap-budget`). |
+| `dispatch.max-pending-total` | `0` (AUTO) | Process-wide pending cap (there is one dispatch worker per process). `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap is checked at load (`cap × 64 B` against the heap budget, strictness from `startup-checks.heap-budget`). |
 
 ---
 

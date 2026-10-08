@@ -360,10 +360,11 @@ independently on separate fleets:
 - **Dispatch fleet** (`roles: [dispatch]`): scales with dispatch + re-fetch throughput and owns the
   in-memory index shards. Parallelism is useful up to the tracker partition count fleet-wide.
 
-Per-instance parallelism is `ingest.workers` / `dispatch.workers` (default 1 each). Throughput is
+Per-instance ingest parallelism is `ingest.workers` (default 1). Dispatch runs one worker per
+process (`dispatch.workers` must be 1), so scale dispatch by adding instances. Throughput is
 ultimately bounded by transaction-commit latency per worker and, for dispatch, by seek-fetch I/O
 ([§12](#12-broker-iops-budgeting-for-seek-fetch)). Prefer scaling out with more instances (more partition
-owners) over raising workers.
+owners) over raising `ingest.workers`.
 
 > **Do not autoscale the dispatch fleet on CPU.** See the HPA warning in [§10](#10-kubernetes-rollout-recipe).
 

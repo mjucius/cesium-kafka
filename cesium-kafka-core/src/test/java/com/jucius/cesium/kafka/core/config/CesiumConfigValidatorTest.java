@@ -83,6 +83,29 @@ class CesiumConfigValidatorTest {
     }
 
     @Test
+    void moreThanOneDispatchWorkerIsRejected() {
+        DispatchConfig dispatch = new DispatchConfig(2, null, null, null, null, null, null, null, null, null);
+        CesiumConfig config = new CesiumConfig(
+                "app",
+                new InstanceId("slot-0"),
+                null,
+                null,
+                TestConfigs.route(),
+                null,
+                null,
+                null,
+                null,
+                dispatch,
+                null,
+                null);
+        Finding finding = validate(config).errors().stream()
+                .filter(f -> f.path().equals("dispatch.workers"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(finding.message().contains("more instances"), finding.message());
+    }
+
+    @Test
     void instanceIdErrorMentionsTheRandomOptIn() {
         CesiumConfig broken = new CesiumConfig(
                 "app", new InstanceId(""), null, null, TestConfigs.route(), null, null, null, null, null, null, null);

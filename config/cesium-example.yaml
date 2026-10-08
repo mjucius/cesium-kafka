@@ -102,7 +102,7 @@ ingest:
   max-batch: 2000   # = source consumer max.poll.records
 
 dispatch:
-  workers: 1        # dispatch threads, each owning tracker consumer + producer + seek consumer
+  workers: 1        # must be 1 (scale dispatch by instances); owns tracker consumer + producer + seek consumer
   batch:
     max-entries: 10000
     max-bytes: 33554432        # 32 MiB decompressed payload budget per dispatch txn

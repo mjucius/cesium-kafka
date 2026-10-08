@@ -15,6 +15,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 ### Breaking changes
 - The release is 2.0.0, and `cesium-kafka-api`/`cesium-kafka-store-testkit` are semver-stable from
   2.0.0 (ADR-0019). `cesium-kafka-core` stays internal.
+- `dispatch.workers` must be 1; any other value fails validation (exit 78). Every dispatch loop in
+  a process shared one single-threaded store, and `drainDue` did not filter by owned partition, so
+  a second worker raced the first. Scale dispatch by running more instances.
 - Ingest and dispatch workers with ordinal 1 or higher join as `<group>.<instance>.<n>` (see Fixed).
   Worker 0 keeps its 1.x `group.instance.id`.
 
