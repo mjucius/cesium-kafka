@@ -108,7 +108,6 @@ dispatch:
     max-bytes: 33554432        # 32 MiB decompressed payload budget per dispatch txn
   drain:
     max-slice: PT1M            # time-sliced drain; capped at max.poll.interval.ms / 3 (design §6)
-  coalesce: PT0S               # off: never early, never deliberately late
   idle-cursor-interval: PT30S  # cursor advancement cadence for quiet partitions (§3.5)
   cursor:
     sidecar-max-bytes: 3072    # clamped (with a warning) to broker offset.metadata.max.bytes at startup

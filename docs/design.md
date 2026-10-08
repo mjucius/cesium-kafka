@@ -34,7 +34,8 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 >    testkit are semver-stable from 2.0.0, and the engine's programmatic API stays internal.
 >    `dispatch.workers` must be 1: every dispatch loop in a process shares one single-threaded
 >    store, and `drainDue` does not filter by owned partition. In-process dispatch parallelism is
->    deferred; scale dispatch by instances.
+>    deferred; scale dispatch by instances. `dispatch.coalesce` is removed: it was validated but the
+>    dispatch loop never read it, and setting it is now an unknown-key error.
 
 ## Design revisions
 
@@ -792,7 +793,6 @@ Key defaults (durations ISO-8601):
 | `ingest.max-batch` | 2000 | = `max.poll.records` |
 | `dispatch.batch.max-entries` / `max-bytes` | 10000 / 32 MiB | bytes enforced in the fetch pass with truncate-and-carry-over (D8) |
 | `dispatch.drain.max-slice` | `PT1M`, capped at `max.poll.interval.ms / 3` | time-sliced drain (§6) |
-| `dispatch.coalesce` | `PT0S` | Off: never early, never intentionally late |
 | `dispatch.idle-cursor-interval` | `PT30S` | §3.5 |
 | `dispatch.cursor.sidecar-max-bytes` | 3072 | clamped (with a warning) to broker `offset.metadata.max.bytes` at startup |
 | `dispatch.fetch.timeout` / `partition-time-floor` | `PT30S` / `PT2S` | §7 budgets |

@@ -833,7 +833,6 @@ final class EngineHarness implements AutoCloseable {
                             null,
                             batchMaxBytes == null ? null : new DispatchConfig.Batch(null, batchMaxBytes),
                             drainMaxSlice == null ? null : new DispatchConfig.Drain(drainMaxSlice),
-                            null,
                             idleCursorInterval,
                             null,
                             null,

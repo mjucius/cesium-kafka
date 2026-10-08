@@ -143,7 +143,6 @@ public final class CesiumConfigValidator {
         positiveDuration(findings, "delay.max", config.delay().max());
         positiveDuration(
                 findings, "dispatch.drain.max-slice", config.dispatch().drain().maxSlice());
-        nonNegativeDuration(findings, "dispatch.coalesce", config.dispatch().coalesce());
         positiveDuration(
                 findings, "dispatch.idle-cursor-interval", config.dispatch().idleCursorInterval());
         positiveDuration(
@@ -200,12 +199,6 @@ public final class CesiumConfigValidator {
     private static void positiveDuration(List<Finding> findings, String path, Duration value) {
         if (value.isZero() || value.isNegative()) {
             findings.add(Finding.error(path, "must be a positive duration, got " + value + "."));
-        }
-    }
-
-    private static void nonNegativeDuration(List<Finding> findings, String path, Duration value) {
-        if (value.isNegative()) {
-            findings.add(Finding.error(path, "must not be negative, got " + value + "."));
         }
     }
 

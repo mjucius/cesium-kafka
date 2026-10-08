@@ -70,8 +70,7 @@ class HeapBudgetValidationTest {
     @Test
     void explicitGlobalCapIsCrossCheckedAgainstTheBudget() {
         // 10,000,000 entries x 64 B = 640 MB > 256 MiB budget.
-        DispatchConfig dispatch =
-                new DispatchConfig(null, null, null, null, null, null, null, null, 1_000_000L, 10_000_000L);
+        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, 1_000_000L, 10_000_000L);
         CesiumConfig config = TestConfigs.withDispatch(dispatch);
         ValidationReport report = validator.validate(config, new ValidationContext(ONE_GIB, 1));
         assertTrue(
@@ -81,7 +80,7 @@ class HeapBudgetValidationTest {
     @Test
     void autoGlobalCapNeverBreachesTheBudget() {
         // AUTO derives the cap from the same budget, so it cannot breach it.
-        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, null, 1_000_000L, null);
+        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, 1_000_000L, null);
         CesiumConfig config = TestConfigs.withDispatch(dispatch);
         ValidationReport report = validator.validate(config, new ValidationContext(ONE_GIB, 1));
         assertFalse(report.hasErrors(), report::render);
@@ -90,7 +89,7 @@ class HeapBudgetValidationTest {
     @Test
     void absurdConfigsSaturateInsteadOfOverflowing() {
         DispatchConfig dispatch =
-                new DispatchConfig(null, null, null, null, null, null, null, null, Long.MAX_VALUE / 2, null);
+                new DispatchConfig(null, null, null, null, null, null, null, Long.MAX_VALUE / 2, null);
         CesiumConfig config = TestConfigs.withDispatch(dispatch);
         ValidationReport report = validator.validate(config, new ValidationContext(ONE_GIB, 1000));
         assertTrue(report.hasErrors(), report::render);

@@ -220,7 +220,6 @@ not 78: the config schema leaves this map open).
 | `dispatch.batch.max-entries` | `10000` | Maximum entries per dispatch transaction (D8). |
 | `dispatch.batch.max-bytes` | `33554432` (32 MiB) | Decompressed payload byte budget per dispatch transaction, enforced in the fetch pass with truncate-and-carry-over (R8). |
 | `dispatch.drain.max-slice` | `PT1M` | Maximum back-to-back transaction time before the loop returns to a real `poll()`. Always validated `≤ max.poll.interval.ms / 3`, using the tracker consumer's effective `max.poll.interval.ms` (overlay, then `kafka.properties`, else the client default 300000 ms), so membership survives due-storms (§6). |
-| `dispatch.coalesce` | `PT0S` | Dispatch coalescing window. Validated but currently has no effect: the dispatch loop does not read it. |
 | `dispatch.idle-cursor-interval` | `PT30S` | How long a partition may go untouched before its cursor advances in a records-free transaction (§3.5). |
 | `dispatch.cursor.sidecar-max-bytes` | `3072` | Pinned-entry sidecar budget in the offset metadata (§3.5). Checked against broker `offset.metadata.max.bytes` at startup: a larger budget logs a warning and is clamped to the broker cap (never a startup failure). ~200–300 pinned entries. |
 | `dispatch.fetch.timeout` | `PT30S` | Overall seek-fetch deadline per batch (§7). |

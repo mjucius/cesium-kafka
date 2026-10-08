@@ -964,8 +964,8 @@ class StartupValidatorTest {
             admin.topics.remove(DLQ);
             ConfigBuilder builder = new ConfigBuilder();
             builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
-            builder.dispatch = new DispatchConfig(
-                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.dispatch =
+                    new DispatchConfig(null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
             // route.relay.on-unrelayable defaults to DLQ, which IS a DLQ-routing policy (M2), so the
             // "no policy routes to DLQ" premise also requires it to be a non-DLQ disposition.
             builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DROP);
@@ -985,8 +985,8 @@ class StartupValidatorTest {
             admin.topics.remove(DLQ);
             ConfigBuilder builder = new ConfigBuilder();
             builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
-            builder.dispatch = new DispatchConfig(
-                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.dispatch =
+                    new DispatchConfig(null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
             builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DLQ);
 
             StartupValidationResult result = validator.validate(builder.build());
@@ -1002,8 +1002,8 @@ class StartupValidatorTest {
             admin.addTopic(DLQ, 1, Map.of("retention.ms", "-1", "retention.bytes", "-1"));
             ConfigBuilder builder = new ConfigBuilder();
             builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
-            builder.dispatch = new DispatchConfig(
-                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.dispatch =
+                    new DispatchConfig(null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
             builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DLQ);
 
             StartupValidationResult result = validator.validate(builder.build());
@@ -1152,7 +1152,7 @@ class StartupValidatorTest {
         private CesiumConfig withSidecarBudget(int bytes) {
             ConfigBuilder builder = new ConfigBuilder();
             builder.dispatch = new DispatchConfig(
-                    null, null, null, null, null, new DispatchConfig.Cursor(bytes), null, null, null, null);
+                    null, null, null, null, new DispatchConfig.Cursor(bytes), null, null, null, null);
             return builder.build();
         }
 

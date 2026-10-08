@@ -20,6 +20,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   a second worker raced the first. Scale dispatch by running more instances.
 - Ingest and dispatch workers with ordinal 1 or higher join as `<group>.<instance>.<n>` (see Fixed).
   Worker 0 keeps its 1.x `group.instance.id`.
+- `dispatch.coalesce` is removed (YAML, `CESIUM_DISPATCH__COALESCE`, `-Dcesium.dispatch.coalesce`).
+  Setting it is now an unknown-key error (exit 78). It never had any effect. Internally,
+  `DispatchConfig` loses its `coalesce` component (10 to 9 components).
 - Testkit: `FakeStoreContext.MapConfigView` is removed; use `ConfigView.of(Map)`.
   `FakeStoreContext.config()` now parses the way the engine does: trimmed values, case-insensitive
   booleans, and no value echoed in errors.
@@ -67,6 +70,7 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `-Dperf.*` and `-Dsoak.*` property to its test tasks as a configuration-cache input.
 
 ### Removed
+- `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).
 - Testkit `FakeStoreContext.MapConfigView`. Use `ConfigView.of(Map)` (see Breaking changes).
 
 ### Changed

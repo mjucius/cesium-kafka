@@ -173,7 +173,6 @@ class YamlBindingTest {
         // Untouched keys keep their §8 defaults.
         assertEquals(Duration.ofSeconds(2), dispatch.fetch().partitionTimeFloor());
         assertEquals(Duration.ofSeconds(10), dispatch.fetch().penalty().backoffMax());
-        assertEquals(Duration.ZERO, dispatch.coalesce());
         assertFalse(config.headers().acceptBinaryLongValues());
     }
 

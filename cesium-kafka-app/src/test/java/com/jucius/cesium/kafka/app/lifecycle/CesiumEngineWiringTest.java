@@ -275,16 +275,7 @@ class CesiumEngineWiringTest {
                     new StoreConfig(storeType, storeProperties),
                     null,
                     new DispatchConfig(
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            new DispatchConfig.Cursor(dispatchBudget),
-                            null,
-                            null,
-                            null,
-                            null),
+                            null, null, null, null, new DispatchConfig.Cursor(dispatchBudget), null, null, null, null),
                     null,
                     null);
         }
@@ -341,7 +332,7 @@ class CesiumEngineWiringTest {
                 null,
                 null,
                 new IngestConfig(ingestWorkers, null),
-                new DispatchConfig(dispatchWorkers, null, null, null, null, null, null, null, null, null),
+                new DispatchConfig(dispatchWorkers, null, null, null, null, null, null, null, null),
                 null,
                 null);
     }

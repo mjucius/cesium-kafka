@@ -114,7 +114,6 @@ class ConfigDefaultsTest {
         assertEquals(10_000, dispatch.batch().maxEntries()); // D8
         assertEquals(32L * 1024 * 1024, dispatch.batch().maxBytes()); // 32 MiB
         assertEquals(Duration.parse("PT1M"), dispatch.drain().maxSlice());
-        assertEquals(Duration.ZERO, dispatch.coalesce()); // never early, never deliberately late
         assertEquals(Duration.parse("PT30S"), dispatch.idleCursorInterval());
         assertEquals(3072, dispatch.cursor().sidecarMaxBytes());
         assertEquals(Duration.parse("PT30S"), dispatch.fetch().timeout());
@@ -136,7 +135,7 @@ class ConfigDefaultsTest {
 
     @Test
     void explicitMaxPendingTotalIsReturnedVerbatim() {
-        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, null, null, 123_456L);
+        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, null, 123_456L);
         assertEquals(123_456L, dispatch.resolveMaxPendingTotal(4L * 1024 * 1024 * 1024));
     }
 

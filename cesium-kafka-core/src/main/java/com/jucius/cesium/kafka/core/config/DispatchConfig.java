@@ -15,8 +15,6 @@ import java.util.Objects;
  *     seek consumer, and disjoint shards (§6); default 1, useful N ≤ tracker partitions fleet-wide
  * @param batch per-transaction batch bounds (D8)
  * @param drain time-sliced drain settings (§6, R2)
- * @param coalesce intentional dispatch coalescing window; default {@code PT0S} — never early,
- *     never deliberately late
  * @param idleCursorInterval how long a partition may go untouched before its cursor advances in a
  *     records-free transaction (§3.5); default {@code PT30S}
  * @param cursor committed-cursor v2 settings (§3.5)
@@ -32,7 +30,6 @@ public record DispatchConfig(
         Integer workers,
         Batch batch,
         Drain drain,
-        Duration coalesce,
         Duration idleCursorInterval,
         Cursor cursor,
         Fetch fetch,
@@ -63,7 +60,6 @@ public record DispatchConfig(
         workers = Objects.requireNonNullElse(workers, DEFAULT_WORKERS);
         batch = Objects.requireNonNullElse(batch, Batch.defaults());
         drain = Objects.requireNonNullElse(drain, Drain.defaults());
-        coalesce = Objects.requireNonNullElse(coalesce, Duration.ZERO);
         idleCursorInterval = Objects.requireNonNullElse(idleCursorInterval, Duration.ofSeconds(30));
         cursor = Objects.requireNonNullElse(cursor, Cursor.defaults());
         fetch = Objects.requireNonNullElse(fetch, Fetch.defaults());
@@ -78,7 +74,6 @@ public record DispatchConfig(
                 DEFAULT_WORKERS,
                 Batch.defaults(),
                 Drain.defaults(),
-                Duration.ZERO,
                 Duration.ofSeconds(30),
                 Cursor.defaults(),
                 Fetch.defaults(),
