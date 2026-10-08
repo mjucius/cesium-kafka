@@ -39,8 +39,8 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The production {@link ClusterAdmin}: a thin synchronous adapter over a real
- * {@link Admin} client with a per-call timeout. Owns no client lifecycle — the caller (the
- * {@code cesium-admin} thread, §6) creates and closes the {@code Admin}.
+ * {@link Admin} client with a per-call timeout. Owns no client lifecycle: CesiumEngine creates the
+ * {@code Admin} in start() and closes it at shutdown.
  */
 public final class KafkaClusterAdmin implements ClusterAdmin {
 

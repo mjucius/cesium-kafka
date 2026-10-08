@@ -176,7 +176,7 @@ Verified Kafka 4.x API facts: the only offsets-in-transaction API is `sendOffset
 | `source` | user | Any serialization; cesium treats key/value as `byte[]`. Must not be compacted (offsets must remain fetchable); startup check. Topic ID is bound at first run and re-validated (§3.6). |
 | `destination` | user | Consumers MUST use `read_committed` to observe exactly-once (documented prominently; `read_uncommitted` consumers may see aborted duplicates). |
 | `tracker` | cesium | Internal, default name `cesium.<applicationId>.tracker`. Partition count MUST equal source's (validated at startup, re-validated periodically; mismatch = fail-fast). Config below. Tracker record for source partition *p* always lands on tracker partition *p*. **Write access restricted to the cesium principal is a normative deployment requirement** (R12): a forged ADD can inject duplicates at will and a forged tombstone loses data. `CREATE` bootstrap applies the ACL when `route.tracker.acl-principal` is configured and the cluster supports it; wire-format violations increment `cesium_tracker_invalid_records_total` + WARN. HMAC tamper-evidence config namespace (`store.kafka.hmac.*`) is reserved, not implemented in v1. |
-| `dlq` | cesium/user | Default-on. Receives malformed-header, over-max, and payload-expired loss notices. Existence validated when any policy routes to it. |
+| `dlq` | cesium/user | Default-on. Receives malformed-header, over-max, unrelayable, and payload-expired records. Existence validated when any policy routes to it. |
 
 Tracker topic config (written by `CREATE` bootstrap mode, validated in `FAIL` mode):
 - `cleanup.policy=compact` (compaction only, never `compact,delete`; D4).
@@ -893,7 +893,7 @@ cesium-kafka/
 │   │                                  # Dockerfile (eclipse-temurin:21-jre; the dist start script needs a shell)
 │   └── com.jucius.cesium.kafka.app.{config,lifecycle,health,metrics,logging}
 ├── cesium-kafka-benchmarks/           # JMH + JOL footprint tests (not CI-gating; nightly)
-├── cesium-kafka-it/                   # Testcontainers integration (separate-JVM process model for kill tests),
+├── cesium-kafka-it/                   # Testcontainers integration (instances in-JVM; kill = EngineHarness.kill()),
 │                                      # EOS/fencing/LSO/barrier-ordering scenarios, soak, macro perf
 ├── config/cesium-example.yaml, config/docker-compose.yaml   # README quickstart (apache/kafka 4.x KRaft + cesium)
 ├── docs/                              # §12
@@ -923,6 +923,8 @@ Why multi-module: the SPI must be consumable without the engine; the testkit mus
 JUnit 5 abstract classes; implementers subclass with a factory. `TrackerBackedStoreContract` (~30 tests/properties): encode/decode round-trip via `onTrackerRecord`; schedule→pollDue ordering and dueness; replay idempotence (same records twice ⇒ pending unchanged); complete-before-add tolerance; cursor invariant (every pending entry ≥ cursor offset or in sidecar; monotone under random interleavings vs reference model; sidecar round-trips through `beginRecovery` seeding); overflow-fallback equivalence; recovery barrier (pollDue empty while recovering); recovery completes when pending exceeds the backpressure threshold (R7); stage→abort→recover ⇒ unchanged; stage→commit→recover ⇒ converged; in-doubt path (drop + re-recover converges, no restore); revoke clears, lost ≠ flush; epoch-fencing rejection for stale contexts; pre-compacted-log scripts; `@Tag("soak")` 1 M-entry memory-ceiling + O(log n) checks. `ExternalSchedulerStoreContract`: upsert idempotence; markDispatched excludes from scanPending; crash-sim (upsert without markDispatched reappears); cursor-reconciliation semantics when implemented; coordination declared. `KafkaTrackerStore`'s own tests are these contracts plus impl-specific cases, so the flagship store proves the kit first.
 
 ### 11.3 Integration (Testcontainers `org.testcontainers.kafka.KafkaContainer`, `apache/kafka:4.x` KRaft; `apache/kafka-native` for fast smoke; Toxiproxy for deterministic network faults). **Process model: cesium instances run as separate JVMs** (so SIGKILL/crash-point tests are real). **PR runs one representative lane** (classic protocol, 2 instances, split roles); the full matrix (× `group.protocol=consumer`, × 1 instance, × combined roles) runs nightly (R21).
+
+> **As shipped:** cesium instances run in-JVM. A kill is `EngineHarness.kill()` (interrupt the loop threads, drop the in-memory store), not an OS SIGKILL. The fencing scenarios rest on broker-side mechanisms (transactional and static-member fencing, session eviction), so this is sound for them. Scenario 12, which needs a real SIGKILL, is not built ([failure-matrix-coverage.md](failure-matrix-coverage.md#gaps-and-concerns), gap 1).
 
 1. Happy path: immediate + `cesium-delay-ms` + `cesium-deliver-at` + precedence; key/value/headers preserved (control stripped), provenance stamped, timestamp policy honored; past deliver-at relays immediately.
 2. Restart-recovery with crash-point injection (test-only `CrashPoints` seam) at I-2/I-3/I-4/D-1/D-2/D-3: after restart, a `read_committed` verifier sees each input exactly once; a `read_uncommitted` consumer counts the aborted batches (proves the aborts happened rather than nothing happened).

@@ -189,7 +189,7 @@ all original headers, including the offending control headers, plus:
 
 | Header | Value |
 |---|---|
-| `cesium-error-reason` | `malformed-header` or `over-max-delay` |
+| `cesium-error-reason` | `malformed-header` or `over-max-delay` (`unrelayable` for the records below) |
 | `cesium-error-detail` | UTF-8 human-readable detail (e.g. the offending value) |
 | provenance headers | `cesium-relayed-at`, `cesium-source-topic`, `cesium-source-partition`, `cesium-source-offset`, and `cesium-source-timestamp` when the source record had one; always stamped on DLQ records regardless of `headers.stamp-provenance`. `cesium-scheduled-for` and `cesium-clamped` are not stamped. |
 

@@ -10,8 +10,8 @@ import java.util.Optional;
  * @param source the user-owned topic records are consumed from (required)
  * @param destination the user-owned topic records are relayed to (required)
  * @param tracker tracker-topic settings
- * @param dlq the dead-letter topic receiving malformed-header, over-max, and payload-expired loss
- *     notices; must be configured whenever any policy routes to DLQ (validated, §2.3)
+ * @param dlq the dead-letter topic receiving malformed-header, over-max, unrelayable, and
+ *     payload-expired records; must be configured whenever any policy routes to DLQ (validated, §2.3)
  * @param relay relay fidelity settings (§2.4)
  */
 public record RouteConfig(

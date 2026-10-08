@@ -7,8 +7,8 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 
 /**
- * The narrow admin-plane boundary {@link StartupValidator} talks through (design §2.1, §6's
- * {@code cesium-admin} thread). An interface rather than a direct {@code Admin} dependency so unit
+ * The narrow admin-plane boundary {@link StartupValidator} talks through (design §2.1, the §6 admin
+ * plane). An interface rather than a direct {@code Admin} dependency so unit
  * tests inject a deterministic fake; production wires {@link KafkaClusterAdmin} around the real
  * client.
  *

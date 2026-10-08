@@ -99,8 +99,11 @@ public final class CesiumHeaders {
     /**
      * DLQ: machine-readable reason the record was dead-lettered. Values:
      * {@code malformed-header}, {@code over-max-delay} (header-error records, produced inside the
-     * ingest transaction), {@code payload-expired} (loss notices, produced inside the dispatch
-     * transaction).
+     * ingest transaction), {@code unrelayable} (records the destination permanently rejected,
+     * produced inside the ingest or dispatch transaction that was relaying them),
+     * {@code payload-expired} (loss notices, produced inside the dispatch transaction).
+     *
+     * @see "docs/header-protocol.md"
      */
     public static final String ERROR_REASON = "cesium-error-reason";
 

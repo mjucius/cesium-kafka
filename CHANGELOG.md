@@ -57,6 +57,11 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   fenced all but one. Worker `n > 0` now joins as `<group>.<instance>.<n>`; worker 0 keeps its
   existing id, so single-worker deployments rejoin as the same static member on upgrade.
 - Docs claimed a `past_due` relay reason that was never emitted anywhere; reworded.
+- Docs and javadoc described a `cesium-admin` thread that does not exist (admin calls run on the
+  thread that calls `start()`), and claimed the integration suite runs cesium instances as separate
+  JVMs (they run in-JVM; the SIGKILL crash-loop soak is not built). The DLQ reason lists in
+  `CesiumHeaders.ERROR_REASON`, `RouteConfig`, design §2.1 and the header-protocol §5.1 table now
+  include `unrelayable`.
 - The perf ITs ignored their `-Dperf.*` knobs: Gradle set them only in its own JVM, not in the forked
   test JVM, so every run used the CI defaults. The `cesium-kafka-it` build now forwards every
   `-Dperf.*` and `-Dsoak.*` property to its test tasks as a configuration-cache input.

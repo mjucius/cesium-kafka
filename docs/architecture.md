@@ -331,7 +331,7 @@ in-doubt commit → never restore the batch (I9); retry exhaustion → park-and-
 | `cesium-kafka-store-kafka` | `KafkaTrackerStore`: tracker wire format, sidecar codec, the fastutil packed index (§6) | Published store impl |
 | `cesium-kafka-store-testkit` | The SPI contract kit + fixtures (`TrackerBackedStoreContract`, `FakeStoreContext`, `MutableClock`, `TrackerEventScript`) | Published for store implementers |
 | `cesium-kafka-app` | `main()`, YAML config, lifecycle, health/metrics HTTP, distribution archives, Dockerfile | The supported product surface |
-| `cesium-kafka-it` | Testcontainers integration suite (separate-JVM kill tests, EOS/fencing/LSO/barrier-ordering scenarios, soak, macro perf) | Tests |
+| `cesium-kafka-it` | Testcontainers integration suite (in-JVM multi-instance kill and fencing tests, EOS/LSO/barrier-ordering scenarios, soak, macro perf) | Tests |
 | `cesium-kafka-benchmarks` | JMH micro-benchmarks (the JOL footprint test, `ShardFootprintTest`, lives in `cesium-kafka-store-kafka`) | Tests |
 
 `KafkaTrackerStore` lives in its own module and is tested through the same published contract kit a

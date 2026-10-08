@@ -2,7 +2,7 @@ plugins {
     id("cesium.java-conventions")
 }
 
-description = "Integration tests against real Kafka 4.x (Testcontainers, KRaft); cesium instances run as separate JVMs for crash tests"
+description = "Integration tests against real Kafka 4.x (Testcontainers, KRaft); cesium instances run in-JVM"
 
 testing {
     suites {
