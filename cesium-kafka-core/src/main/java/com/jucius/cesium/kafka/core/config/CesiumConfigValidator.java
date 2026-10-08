@@ -438,7 +438,7 @@ public final class CesiumConfigValidator {
                 findings.add(new Finding(
                         breachSeverity,
                         "dispatch.max-pending-total",
-                        "the configured global cap admits " + capFootprint + " bytes of index ("
+                        "the configured process-wide cap admits " + capFootprint + " bytes of index ("
                                 + maxPendingTotal + " entries x " + DispatchConfig.INDEX_BYTES_PER_ENTRY
                                 + " B/entry), exceeding the heap budget " + budget + " bytes (25% of max heap "
                                 + context.maxHeapBytes() + " bytes); lower the cap or raise -Xmx (design §5.3,"
