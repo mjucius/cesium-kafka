@@ -61,7 +61,9 @@ an optional DLQ.
 > The tracker topic's **partition count MUST equal the source's**: every tracker record for source
 > partition *p* lands on tracker partition *p*. This is validated at startup (a mismatch is a
 > fail-fast). At runtime, ingest fails fast on the first record from a source partition that has no
-> tracker partition (I-7). There is no periodic parity validator in this release (§9, §14).
+> tracker partition (I-7). Re-validation also re-checks parity every
+> `startup-checks.revalidation-interval`; a mismatch found there degrades readiness and alerts
+> (`cesium_revalidation_errors`) instead of exiting (§9, §13, ADR-0020).
 
 The DLQ topic's existence is validated whenever a policy routes to it. Create it with a partition
 count that suits your DLQ-drain tooling (it need not match the source).
@@ -157,12 +159,14 @@ cadence.
 
 ## 3. Tracker settings that correctness depends on
 
-cesium validates these at startup. Getting them wrong can cause a duplicate or silent loss.
+cesium validates these at startup and re-validates them every `startup-checks.revalidation-interval`,
+where a violation degrades readiness and alerts instead of exiting ([§13](#13-metrics-and-alerting)).
+Getting them wrong can cause a duplicate or silent loss.
 
 | Setting | Required value | Why it matters |
 |---|---|---|
 | `cleanup.policy` | `compact` (never `compact,delete`) | `compact,delete` would delete a still-pending ADD older than retention → silent loss (D4). Compaction-only means a lone pending ADD can never expire. |
-| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. As shipped, the observed-age terms are not checked: design D14/§3.7 specifies a periodic re-validation, but this release does not implement it, so keeping retention above them is on you ([§4](#4-lowering-delaymax-runbook)). |
+| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. On dispatch instances, re-validation checks the committed-cursor age against `delete.retention.ms / 2 + 1h` and degrades + alerts on a breach; the oldest-pending term is covered by it, since a replay starts at the cursor (ADR-0020, [§4](#4-lowering-delaymax-runbook)). |
 | `min.compaction.lag.ms` | `≥ max(2 × transaction.timeout.ms, 1 h)` | Keeps the cleaner away from the active tail / LSO region. Below the floor is a startup FAIL. |
 | `segment.ms` | `≈ 1 h` | So cleaning happens. Larger is a WARN (delays tombstone collection, grows disk). |
 | `message.timestamp.type` | `LogAppendTime` | So tracker record timestamps reflect append order. Otherwise a WARN. |
@@ -184,9 +188,8 @@ The startup failure when it is too low (from `StartupValidator`):
 
 Lowering `delay.max` and shrinking `delete.retention.ms` together can strand pending entries that
 were scheduled under the old, larger maximum: their tombstones could be cleaned before a replay
-reads them (R20). You have to drain before you can shrink retention. As shipped, nothing checks
-observed oldest-pending age at runtime (the periodic re-validation in design D14 is not implemented),
-so the drain below is the only control.
+reads them (R20). You have to drain before you can shrink retention. Re-validation watches the
+committed-cursor age (ADR-0020), but the drain below is what keeps you out of that state.
 
 1. **Lower `delay.max` in config and restart.** New records are now capped at the lower ceiling.
    Older pending entries (scheduled under the previous maximum) remain valid and are still honored.
@@ -197,8 +200,10 @@ so the drain below is the only control.
 4. **Only then lower `delete.retention.ms`** to the floor for the new `delay.max`
    (`2 × new delay.max`), and restart so startup re-validates.
 
-If you skip the drain, cesium does not detect it: startup re-validates only against `2 × delay.max`,
-so an early shrink passes and a later overflow-mode replay can deliver a duplicate.
+If you skip the drain, startup passes (it checks only `2 × delay.max`). Re-validation then degrades
+once a committed cursor is older than `delete.retention.ms / 2 + 1h`, which is the overflow-mode state
+in which a replay can deliver a duplicate. Raise `delete.retention.ms` again if that happens; it
+applies live.
 
 ---
 
@@ -231,7 +236,7 @@ Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the
 | Seek consumer (group-less) | `Topic` *source* | READ (**no `Group` ACL**) |
 | Ingest txn producer | `TransactionalId` `cesium.<app>.ingest.*` (prefixed); `Topic` *tracker* / *destination* / *DLQ*; `Group` `cesium.<app>.ingest` | WRITE; WRITE; READ |
 | Dispatch txn producer | `TransactionalId` `cesium.<app>.dispatch.*` (prefixed); `Topic` *destination* / *tracker* / *DLQ*; `Group` `cesium.<app>.dispatch` | WRITE; WRITE; READ |
-| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: startup identity check, first-run probe); **`CREATE` bootstrap only:** `Cluster` CREATE + ALTER | per cell |
+| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: identity check, first-run probe, the dispatch group's cursor-age read); **`CREATE` bootstrap only:** `Cluster` CREATE + ALTER. The checks run at startup and every `startup-checks.revalidation-interval`; re-validation needs no extra grant (`listOffsets` by timestamp needs only Topic DESCRIBE) | per cell |
 
 > **The `TransactionalId` and `Group` ACLs are required (M3).** cesium's transactional ids
 > (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
@@ -385,8 +390,9 @@ to land its ADD on.
 
 In this order, producers never reach a new source partition before its tracker
 partition exists. The startup check fails fast on a mismatch, and at runtime ingest fails fast on
-the first record from a source partition with no tracker partition (I-7, R-7). There is no periodic
-parity validator or drift alert in this release, so watch partition counts with your own tooling. Adding partitions changes key→partition hashing for new
+the first record from a source partition with no tracker partition (I-7, R-7). Between steps 1 and 2
+the counts differ, and re-validation reports that as an R-7 error: readiness shows degraded and
+`cesium_revalidation_errors` is non-zero until the source catches up. It never exits on drift. Adding partitions changes key→partition hashing for new
 records; existing pending entries keep their original partition.
 
 ---
@@ -594,6 +600,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | `cesium_replay_remaining_records` | gauge | `partition` | barrier − position while RECOVERING; `0` when ASSIGNED or ACTIVE |
 | `cesium_degraded` | gauge | `loop` | park-and-degrade state (§3.8); cause is logged |
 | `cesium_loop_last_iteration_timestamp_seconds` | gauge | `loop` | epoch-seconds of the last loop iteration; feeds liveness |
+| `cesium_revalidation_errors` | gauge | | errors found by the last re-validation round (`startup-checks.revalidation-interval`, default 5 min); `0` when clean. Each error is logged at ERROR on `cesium-admin` and sets the readiness degraded flag |
 | `cesium_tracker_invalid_records_total` | counter | | tracker wire-format violations (malformed / version-skew); foreign-writer canary. Does NOT detect well-formed forgeries ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L2) |
 | `cesium_tracker_cancel_records_total` | counter | | reserved CANCEL records seen (no-ops in v1) |
 | `cesium_tracker_unknown_reason_records_total` | counter | | tombstones with an unrecognized completion reason (applied) |
@@ -606,8 +613,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 > **Not yet emitted (specified in design `§9`, deferred).** Do not write alerts against these; the
 > series do not exist in this release: `cesium_lso_lag`,
 > `cesium_store_recovery_duration_seconds`,
-> `cesium_store_replay_records_total`, `cesium_retention_margin_seconds`,
-> `cesium_tracker_cursor_lag` / `cesium_tracker_cursor_age_seconds`,
+> `cesium_store_replay_records_total`,
 > `cesium_pending_oldest_deadline_seconds`, `cesium_index_bytes_estimate`. Use the proxies noted
 > below until they land. (`cesium_lso_lag` is deferred in the dispatch loop because it needs a
 > per-partition read_uncommitted/read_committed offset diff from the admin plane.)
@@ -620,7 +626,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
   Recovery state is not part of readiness, so a replaying instance is ready. The
   detail payload lists each non-ACTIVE shard (`partition`, `state`, `recordsRemaining`,
   `etaMillis`; `-1` until two 1 s samples show the backlog shrinking); a `degraded` flag (with cause) surfaces
-  park-and-degrade without failing the probe.
+  park-and-degrade and re-validation errors without failing the probe.
 - **`/info`**: by default only `version`, `gitCommit`, and `store.type`. With
   `observability.detailed-info: true` it adds `applicationId`, `roles`, store `capabilities`, and any
   acknowledged escape hatches (`acknowledgments`).
@@ -630,6 +636,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | Condition | Expression (sketch) | Meaning / action |
 |---|---|---|
 | Loop degraded | `cesium_degraded > 0` | Park-and-degrade (§3.8): broker degradation outlasting retries. Page; check the logged cause (e.g. destination ISR shortage). Self-recovers when the dependency returns. |
+| Re-validation error | `cesium_revalidation_errors > 0` | The environment broke under a running engine: a tracker setting below the §3 floors, a committed cursor older than `delete.retention.ms / 2 + 1h`, partition drift, a missing topic, a retention change, or a round that could not complete. The ERROR log on `cesium-admin` names it. Fix it live; the next clean round clears the flag ([§14.5](#145-re-validation-errors-not-an-exit)). |
 | Loop stalled | `time() − cesium_loop_last_iteration_timestamp_seconds > N` | A loop stopped iterating. Page; check thread/JVM health. |
 | Dispatch precision SLO | `histogram_quantile(0.99, cesium_dispatch_lag_seconds_bucket) > SLO` | Lateness over budget. Investigate commit/IO/GC tails ([performance.md](performance.md)). |
 | Poll-gap approaching eviction | `cesium_dispatch_poll_gap_seconds > 0.5 × max.poll.interval.ms/1000` | Risk of group eviction under a due-storm. Lower `dispatch.drain.max-slice` or `dispatch.batch.max-entries`. |
@@ -648,18 +655,19 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | DLQ drain | `rate(cesium_dlq_records_total[10m]) > 0` | Inspect and drain the DLQ; correlate `reason` (`payload-expired` means a loss notice: the payload was gone at dispatch time). |
 | Header misuse | `rate(cesium_header_errors_total[10m]) > 0` | Producers sending malformed/over-max/conflicting headers. Fix the producer. |
 
-**Proxies for the not-yet-emitted metrics:** monitor tracker-topic disk/partition size and group-B
-consumer lag with your broker tooling (the v2 cursor tracks position, so lag reads approximately
-correctly except in sidecar-overflow mode) in place of `cesium_tracker_cursor_age_seconds`; monitor
-source-partition earliest-record age externally in place of `cesium_retention_margin_seconds`;
-use `cesium_pinned_entries` + `cesium_cursor_sidecar_bytes` for overflow detection.
+**Broker-side monitoring cesium does not replace:** tracker-topic disk and partition size against
+the [§2](#2-the-tracker-sizing-worksheet) worksheet, group-B consumer lag (the v2 cursor tracks
+position, so lag reads approximately correctly except in sidecar-overflow mode), and the source's
+earliest-record age. Use `cesium_pinned_entries` + `cesium_cursor_sidecar_bytes` for overflow
+detection.
 
 ---
 
 ## 14. Fail-fast runbook (every exit)
 
 cesium never ends in a silent terminal state: every fault path is a retry, a park-and-degrade (with
-`cesium_degraded` + alert, self-healing), or a fail-fast with a runbook entry. The fail-fast
+`cesium_degraded` + alert, self-healing), a re-validation degrade (with `cesium_revalidation_errors`
++ alert, cleared by the next clean round), or a fail-fast with a runbook entry. The fail-fast
 exits:
 
 - **Exit 78** (`EX_CONFIG`): a configuration error, caught before the engine builds.
@@ -711,8 +719,9 @@ Discovered after config binds, against the live cluster:
 | **Dispatch: no committed cursor on a non-first run** | Same class as above for group B: committed cursors expired or were removed. The dispatch group seeks to beginning only on a provable first run; otherwise it fails fast. Treat as a tracker/offset integrity event ([§6](#6-tracker-disaster-recovery-runbook)). |
 | **Dispatch: tracker offset out of range**: *the tracker topic was truncated or recreated under the same name (§3.6 integrity, R-9). Never auto-reset — follow the tracker DR runbook* | The tracker was truncated/recreated. Follow [§6](#6-tracker-disaster-recovery-runbook). cesium will not auto-reset into an empty log. |
 | **Committed-offset identity mismatch** (source recreated) at a runtime offset fetch | Same as the startup identity mismatch ([§14.2](#142-startup-validation-against-the-cluster-exit-1)). |
+| **Topic identity change found by re-validation**: *fatal engine failure (re-validation)*, with *re-validation found the route identity changed since startup* or *the tracker topic '…' id changed* | The source or tracker was recreated under the same name while the engine ran (R17). The engine exits within one `startup-checks.revalidation-interval`. For the source, follow the startup identity mismatch row; for the tracker, follow [§6](#6-tracker-disaster-recovery-runbook). |
 | **Fatal producer error** (`ProducerFencedException`, `OutOfOrderSequenceException`, unrecoverable auth/config) | The clients close, the worker fails, the process exits non-zero (the durable log is authoritative for the successor). Restart the instance; if it recurs, check fencing (duplicate `instance-id`?), ACLs, and broker health. |
-| **Partition-count drift**: *source partition … has no tracker partition: tracker topic '…' has … partition(s) — the source partition count grew past the tracker (I-7, R-7)* | Raised by ingest on the first record from the new source partition (no periodic check). Grow the tracker first ([§9](#9-growing-partitions-runbook)). |
+| **Partition-count drift**: *source partition … has no tracker partition: tracker topic '…' has … partition(s) — the source partition count grew past the tracker (I-7, R-7)* | Raised by ingest on the first record from the new source partition; re-validation reports the drift earlier as a degrading error. Grow the tracker first ([§9](#9-growing-partitions-runbook)). |
 | **Recovery over heap budget**: *RECOVERY OVER HEAP BUDGET — refusing to … another pending entry for tracker partition …* (`cesium_recovery_over_budget_total`) | The durable backlog exceeds what the heap can hold. Nothing was committed. Raise `-Xmx` (or `store.properties.heap-budget-bytes`) and/or shrink the backlog, then restart. |
 | **Ingest: `delay.on-*` policy FAIL fired** | A record violated the delay protocol under a `FAIL` policy; restart re-fails on the same record. Switch the policy to `DLQ`/`RELAY_IMMEDIATE` or move past the record explicitly ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L5). |
 
@@ -724,6 +733,18 @@ keeps polling (membership stays alive), raises `cesium_degraded{loop}` + an aler
 the broker degradation without a crash-loop or replay storm. It self-recovers on the first successful
 commit. Action: investigate and fix the failing dependency (destination ISR, broker health); cesium
 resumes automatically.
+
+### 14.5 Re-validation errors (NOT an exit)
+
+Every `startup-checks.revalidation-interval` (default `PT5M`) the `cesium-admin` thread re-runs the
+§14.2 checks against the live cluster, without creating topics or applying ACLs, plus three runtime
+checks: the source and tracker topic ids (a change is the exit in §14.3), the dispatch group's
+committed-cursor age against `delete.retention.ms / 2 + 1h` (dispatch instances only), and, for an
+acknowledged size- or tier-evicting source, whether eviction reached records inside
+`delay.max + 1h`. Every other error is logged at ERROR as *re-validation finding route.tracker: …*,
+sets `cesium_revalidation_errors` and the `/health/ready` degraded flag with a short cause, and
+dispatch keeps running (ADR-0020). Fix the cause with the §14.2 runbook for the same finding; the
+next clean round clears the flag. A warning is logged once, when it first appears.
 
 ---
 

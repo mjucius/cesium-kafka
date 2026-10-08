@@ -261,11 +261,12 @@ tombstone-paired or fully compacted), but it is logged prominently and may be sl
 
 The tombstone-retention floor ([§6](#6-the-committed-cursor-and-i5)) must hold, or an overflow-mode
 replay could miss a needed tombstone (duplicate). Startup validates the `delay.max` term
-(`delete.retention.ms ≥ 2 × delay.max`, FAIL). The observed-age terms (oldest-pending age,
-committed-cursor age) are not re-validated at runtime in this release, so when lowering `delay.max`
+(`delete.retention.ms ≥ 2 × delay.max`, FAIL). Every `startup-checks.revalidation-interval`,
+re-validation compares the dispatch group's committed-cursor age with `delete.retention.ms / 2 + 1h`
+and degrades and alerts on a breach while dispatch continues (ADR-0020); when lowering `delay.max`
 follow the [lowering-delay.max runbook](operations.md#4-lowering-delaymax-runbook). Source and tracker topic identity
-(topic id + cluster id) is bound into every committed metadata blob and re-validated: a recreated or
-truncated topic fails fast and never causes a silent wrong-payload delivery or a replay into an
+(topic id + cluster id) is bound into every committed metadata blob and re-validated, at startup and
+every `revalidation-interval`: a recreated or truncated topic fails fast and never causes a silent wrong-payload delivery or a replay into an
 empty log. An intentional same-id offset reset (e.g. a cluster restore from backup) cannot be
 detected; this is a documented limitation.
 

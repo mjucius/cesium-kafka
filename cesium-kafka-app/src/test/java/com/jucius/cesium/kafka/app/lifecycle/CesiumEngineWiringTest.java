@@ -3,6 +3,8 @@ package com.jucius.cesium.kafka.app.lifecycle;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,6 +13,7 @@ import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.health.ShardRecovery;
 import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine.LoopSpec;
 import com.jucius.cesium.kafka.core.admin.IdentityBlob;
+import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.config.IngestConfig;
@@ -24,12 +27,20 @@ import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.common.Uuid;
 import org.jspecify.annotations.Nullable;
@@ -247,9 +258,104 @@ class CesiumEngineWiringTest {
         // describeOrFail's three-line orElseThrow.
     }
 
-    // ------------------------------------------------------------------ helper
+    // ------------------------------------------------------------------ re-validation (D23)
 
-    /** A structurally valid config (route + DLQ + defaults) with the given roles and worker counts. */
+    @Nested
+    class Revalidation {
+
+        private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        private final CesiumEngine engine = new CesiumEngine(
+                config(Set.of(Role.DISPATCH), 1, 1), registry, Clock.systemUTC(), Duration.ofSeconds(1));
+
+        private StartupValidator.Revalidation errors(String... paths) {
+            List<ValidationReport.Finding> findings = new ArrayList<>();
+            for (String path : paths) {
+                findings.add(ValidationReport.Finding.error(path, "broken"));
+            }
+            return new StartupValidator.Revalidation(Optional.empty(), new ValidationReport(findings));
+        }
+
+        private double errorsGauge() {
+            return registry.get(CesiumEngine.REVALIDATION_ERRORS_GAUGE).gauge().value();
+        }
+
+        @Test
+        void degradedCauseCombinesLoopsAndRevalidation() {
+            assertNull(CesiumEngine.degradedCause(Set.of(), null));
+            assertEquals("parked-and-degraded loop(s): dispatch", CesiumEngine.degradedCause(Set.of("dispatch"), null));
+            assertEquals("re-validation: x", CesiumEngine.degradedCause(Set.of(), "re-validation: x"));
+            assertEquals(
+                    "parked-and-degraded loop(s): ingest; re-validation: x",
+                    CesiumEngine.degradedCause(Set.of("ingest"), "re-validation: x"));
+        }
+
+        @Test
+        void anIdentityChangeIsFatal() {
+            engine.onRevalidation(new StartupValidator.Revalidation(
+                    Optional.of("re-validation found the route identity changed since startup"),
+                    new ValidationReport(List.of())));
+
+            Throwable cause = engine.fatalCause().orElseThrow();
+            assertTrue(cause.getMessage().contains("identity changed"), cause::getMessage);
+        }
+
+        @Test
+        void errorsDegradeAndACleanRoundClears() {
+            engine.onRevalidation(errors("route.tracker", "route.tracker", "route.dlq.topic"));
+
+            assertTrue(engine.fatalCause().isEmpty(), "errors degrade; they never stop the engine (D1)");
+            assertEquals(3.0, errorsGauge());
+            assertEquals("re-validation: 3 error(s) at route.tracker, route.dlq.topic", engine.revalidationCause());
+
+            engine.onRevalidation(errors());
+
+            assertEquals(0.0, errorsGauge());
+            assertNull(engine.revalidationCause());
+        }
+
+        @Test
+        void everythingIsIgnoredOnceStopping() {
+            engine.stop(Duration.ofSeconds(1));
+
+            engine.onRevalidation(errors("route.tracker"));
+            engine.onRevalidation(new StartupValidator.Revalidation(
+                    Optional.of("identity changed"), new ValidationReport(List.of())));
+
+            assertTrue(engine.fatalCause().isEmpty());
+            assertEquals(0.0, errorsGauge());
+            assertNull(engine.revalidationCause());
+        }
+
+        @Test
+        void aThrowingRoundIsReportedAndTheNextRoundStillRuns() throws Exception {
+            AtomicInteger calls = new AtomicInteger();
+            BlockingQueue<StartupValidator.Revalidation> results = new LinkedBlockingQueue<>();
+            ScheduledExecutorService executor = CesiumEngine.scheduleRevalidation(
+                    Duration.ofMillis(10),
+                    "orders",
+                    () -> {
+                        if (calls.incrementAndGet() == 1) {
+                            throw new IllegalStateException("admin exploded");
+                        }
+                        return errors();
+                    },
+                    results::add);
+            try {
+                StartupValidator.Revalidation first = results.poll(10, TimeUnit.SECONDS);
+                StartupValidator.Revalidation second = results.poll(10, TimeUnit.SECONDS);
+
+                assertNotNull(first);
+                assertTrue(
+                        first.report().errors().getFirst().message().contains("round could not complete"),
+                        first.report()::render);
+                assertNotNull(second, "a throwing round must not cancel the schedule");
+                assertFalse(second.report().hasErrors());
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ sidecar budget (§3.5)
 
     @Nested
@@ -321,6 +427,7 @@ class CesiumEngineWiringTest {
         }
     }
 
+    /** A structurally valid config (route + DLQ + defaults) with the given roles and worker counts. */
     private static CesiumConfig config(Set<Role> roles, int ingestWorkers, int dispatchWorkers) {
         return new CesiumConfig(
                 "orders",

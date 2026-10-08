@@ -54,8 +54,9 @@ public interface EngineHealth {
 
     /**
      * Whether any loop is parked-and-degraded (§3.8/R15): broker degradation outlasting retries, the
-     * loop holding membership and retrying. Surfaced as readiness <em>detail</em> with a {@link
-     * #degradedCause() cause} — it never fails a probe (the instance is alive and a member).
+     * loop holding membership and retrying; or the last runtime re-validation round found errors
+     * (D23, ADR-0020). Surfaced as readiness <em>detail</em> with a {@link #degradedCause() cause} —
+     * it never fails a probe (the instance is alive and a member).
      */
     boolean degraded();
 

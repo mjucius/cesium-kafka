@@ -47,8 +47,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   committed only from `onBatchCommitted`, and `markDispatched` runs after `onBatchCommitted`. A store
   whose `cursorToCommit` advances state that later cursors build on fails the new tests.
 - Logs: JSON lines from the loop threads (`cesium-ingest-N`, `cesium-dispatch-N`) now carry an
-  `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main and `cesium-shutdown`
-  threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
+  `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main, `cesium-shutdown`
+  and `cesium-admin` threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
   shape, and `txn` is the loop's transactional id, which includes the instance id.
 - Logs: the fatal log changes from `fatal {role} loop failure — initiating engine shutdown` to
   `fatal engine failure ({source}) — initiating engine shutdown` (for example `(ingest loop)`), and
@@ -57,8 +57,28 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - Core (internal): `ClusterAdmin` gains `offsetsAtOrAfter`, and `StartupValidator` gains
   `revalidate` and a `(ClusterAdmin, Clock)` constructor. Out-of-tree `ClusterAdmin` implementations
   must add the method.
+- A running engine now exits non-zero within `startup-checks.revalidation-interval` (default
+  `PT5M`) when the source or tracker topic id (or the cluster id) changes (R17, ADR-0020). The log is
+  `fatal engine failure (re-validation)`.
+- Other runtime re-validation errors set the `/health/ready` `degraded` flag with a short cause and
+  `cesium_revalidation_errors`; readiness status is unchanged (D21) and dispatch continues. That
+  covers the D14 floor and committed-cursor age, partition drift (including the grow-partitions
+  runbook's intermediate state), the tracker `cleanup.policy` and other §2.1 settings, source
+  retention and the tracker ACL under `FAIL`, a missing topic, and a round that cannot complete.
+  Partition drift at runtime no longer fails fast in the spec (R-7); ingest's I-7 fail-fast on a
+  source partition with no tracker partition is unchanged.
+- D14's runtime term is now the dispatch group's committed-cursor age against
+  `delete.retention.ms / 2 + 1h`, and a violation degrades and alerts instead of refusing
+  (ADR-0020). The oldest-pending term is dropped as subsumed.
+- Core (internal): `StartupChecks` gains `revalidationInterval` as a 7th component.
 
 ### Added
+- Runtime re-validation (D23, ADR-0020): a `cesium-admin` thread re-runs the environment checks every
+  `startup-checks.revalidation-interval` (new key, default `PT5M`, must be positive), plus the topic
+  identity, D14 committed-cursor age (dispatch instances only) and, under acknowledged size or tier
+  eviction, an R-11 earliest-retained-record check. It never creates topics or applies ACLs, and
+  needs no new ACL grants.
+- Metric `cesium_revalidation_errors`: errors found by the last re-validation round; `0` when clean.
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
   booleans, errors that never echo a possibly-secret value) is now available to store implementers.
 - Metrics `cesium_shard_state{partition}` (0 = ASSIGNED, 1 = RECOVERING, 2 = ACTIVE) and
@@ -130,6 +150,10 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `store.properties.max-pending-per-partition` and the store's duplicate footprint check (see
   Breaking changes).
 - The documented but unimplemented `store.type: class:<FQCN>` store selection (see Breaking changes).
+- From the spec (never emitted): `cesium_retention_margin_seconds` and its earliest-age probe, the
+  periodic tracker-size monitor, and `cesium_tracker_cursor_lag` /
+  `cesium_tracker_cursor_age_seconds`. Watch tracker size and source earliest-record age with
+  broker-side metrics (ADR-0020).
 
 ### Changed
 - Internal simplification, about −470 lines net with the fixes included. Highlights:
@@ -143,6 +167,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   - Dead fetch summaries and test-only tracker-index surface are removed.
 - Plain log lines now end with the thread's MDC (`%X`), for example
   `applicationId=orders-delay, loop=ingest, txn=cesium.orders-delay.ingest.cesium-0.0`.
+- The startup checks now also run on a schedule, so their ERROR findings appear in a running
+  engine's log as `re-validation finding <path>: …`. ADR-0002, ADR-0005 and ADR-0018 are amended by
+  ADR-0020.
 
 ## [1.1.5] - 2026-10-06
 

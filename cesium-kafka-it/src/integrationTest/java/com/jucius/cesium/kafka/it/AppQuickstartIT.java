@@ -3,6 +3,7 @@ package com.jucius.cesium.kafka.it;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,11 +33,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import org.apache.kafka.clients.admin.AlterConfigOp;
+import org.apache.kafka.clients.admin.ConfigEntry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.config.ConfigResource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -57,7 +64,9 @@ import org.slf4j.LoggerFactory;
  *   <li>readiness carries the recovery/degraded decoupling detail (D21, §3.8) while staying ready;
  *   <li>the loop threads' log lines carry the {@code applicationId}/{@code loop}/{@code txn} MDC (§9);
  *   <li>{@code engine.stop()} flips readiness {@code 503} (shutdown signalled before clients close),
- *       joins cleanly with no fatal engine failure, and the consumed source offset is committed.
+ *       joins cleanly with no fatal engine failure, and the consumed source offset is committed;
+ *   <li>runtime re-validation (D23) degrades readiness while the tracker breaks a §2.1 rule and clears
+ *       once it is restored, and a source recreated under the running engine ends it non-zero.
  * </ul>
  *
  * <p>The first-run group-A offset seed is the documented explicit-operator step (D18/§3.6): the
@@ -70,6 +79,9 @@ class AppQuickstartIT extends KafkaIT {
     private static final long LATENESS_BOUND_MS = 20_000;
 
     private static final Duration SHUTDOWN_BUDGET = Duration.ofSeconds(30);
+
+    /** Short enough that a degrade-then-clear round trip takes seconds, not two default 5-minute rounds. */
+    private static final Duration REVALIDATION_INTERVAL = Duration.ofSeconds(1);
 
     /** Comfortably above the dispatch poll ceiling so an idle loop is never a false-negative (§6). */
     private static final Duration LIVENESS_STALE_AFTER = Duration.ofSeconds(90);
@@ -94,6 +106,7 @@ class AppQuickstartIT extends KafkaIT {
     void tearDown() {
         loopLogger(IngestLoop.class).detachAppender(loopLog);
         loopLogger(DispatchLoop.class).detachAppender(loopLog);
+        loopLogger(CesiumEngine.class).detachAppender(loopLog);
         if (engine != null) {
             engine.close();
         }
@@ -119,6 +132,7 @@ class AppQuickstartIT extends KafkaIT {
                 .source(source)
                 .destination(destination)
                 .dlq(dlq)
+                .revalidationInterval(REVALIDATION_INTERVAL)
                 .build()) {
             config = configSource.config();
         }
@@ -230,6 +244,86 @@ class AppQuickstartIT extends KafkaIT {
         OffsetAndMetadata committed = committedOffsets(ingestGroup).get(new TopicPartition(source, 0));
         assertNotNull(committed, "ingest group has a committed offset for the consumed partition");
         assertTrue(committed.offset() >= 1, () -> "expected committed offset >= 1, got " + committed.offset());
+    }
+
+    @Test
+    void revalidationDegradesThenClearsAndASourceRecreationEndsTheEngine() throws Exception {
+        String source = createTopic("src", 1);
+        String destination = createTopic("dst", 1);
+        String dlq = createTopic("dlq", 1);
+        try (EngineHarness configSource = EngineHarness.builder()
+                .roles(Role.INGEST, Role.DISPATCH)
+                .source(source)
+                .destination(destination)
+                .dlq(dlq)
+                .revalidationInterval(REVALIDATION_INTERVAL)
+                .build()) {
+            config = configSource.config();
+        }
+        seedFirstRunOffsets(source, KafkaClientFactory.ingestGroupId(config.applicationId()));
+        registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        engine = new CesiumEngine(config, registry, Clock.systemUTC(), SHUTDOWN_BUDGET);
+
+        loopLog.list = new CopyOnWriteArrayList<>(); // appended from cesium-admin
+        loopLog.start();
+        loopLogger(CesiumEngine.class).addAppender(loopLog);
+
+        engine.start();
+        String tracker = config.route().tracker().resolvedTopic(config.applicationId());
+        await("a clean first round").atMost(WAIT).during(Duration.ofSeconds(3)).until(() -> !engine.health()
+                .degraded());
+
+        // Lowering delete.retention.ms below the D14 floor (2 x P1D) breaks a §2.1 rule on a running
+        // engine: degraded with a re-validation cause, counted, logged on cesium-admin, still running.
+        String floor = Long.toString(2 * config.delay().max().toMillis());
+        setTrackerDeleteRetention(tracker, Long.toString(config.delay().max().toMillis()));
+        await("re-validation degrades")
+                .atMost(WAIT)
+                .until(() -> engine.health().degraded()
+                        && String.valueOf(engine.health().degradedCause()).contains("re-validation"));
+        assertTrue(registry.scrape().contains("cesium_revalidation_errors 1.0"), registry::scrape);
+        ILoggingEvent finding = loopLog.list.stream()
+                .filter(e -> e.getFormattedMessage().startsWith("re-validation finding route.tracker"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no re-validation ERROR was logged"));
+        assertEquals("cesium-admin", finding.getThreadName());
+        assertEquals(config.applicationId(), finding.getMDCPropertyMap().get("applicationId"));
+        assertTrue(engine.fatalCause().isEmpty(), "a degrading finding never stops the engine (D1)");
+
+        setTrackerDeleteRetention(tracker, floor);
+        await("re-validation clears").atMost(WAIT).until(() -> !engine.health().degraded());
+        assertTrue(registry.scrape().contains("cesium_revalidation_errors 0.0"), registry::scrape);
+
+        // A source recreated under the running engine ends it non-zero. Which component notices first
+        // (re-validation's identity check or a loop) is a race, so only the outcome is asserted here;
+        // the identity cause is proven in CesiumEngineWiringTest and StartupChecksIT.
+        Uuid originalId = topicId(source);
+        get(ADMIN.deleteTopics(List.of(source)).all());
+        await("source deleted").atMost(WAIT).until(() -> !topicExists(source));
+        await("source recreated").atMost(WAIT).ignoreExceptions().until(() -> {
+            if (!topicExists(source)) {
+                createNamedTopic(source, 1, Map.of());
+            }
+            return !topicId(source).equals(originalId);
+        });
+        boolean clean = CompletableFuture.supplyAsync(engine::awaitDone)
+                .get(WAIT.plus(SHUTDOWN_BUDGET).toMillis(), TimeUnit.MILLISECONDS);
+        assertFalse(clean, "a recreated source must end the engine non-zero");
+    }
+
+    private static void setTrackerDeleteRetention(String tracker, String millis) {
+        ConfigResource resource = new ConfigResource(ConfigResource.Type.TOPIC, tracker);
+        get(ADMIN.incrementalAlterConfigs(Map.of(
+                        resource,
+                        List.of(new AlterConfigOp(
+                                new ConfigEntry("delete.retention.ms", millis), AlterConfigOp.OpType.SET))))
+                .all());
+    }
+
+    private static Uuid topicId(String topic) {
+        return get(ADMIN.describeTopics(List.of(topic)).allTopicNames())
+                .get(topic)
+                .topicId();
     }
 
     /**

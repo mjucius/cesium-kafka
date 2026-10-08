@@ -170,6 +170,8 @@ class ConfigDefaultsTest {
         // R12: the tracker write-ACL check defaults to WARN (does not block clusters without an authorizer); FAIL is
         // opt-in.
         assertEquals(CheckMode.WARN, checks.trackerAcl());
+        assertEquals(Duration.ofMinutes(5), checks.revalidationInterval()); // PT5M (D23)
+        assertEquals(StartupChecks.defaults(), checks);
     }
 
     @Test

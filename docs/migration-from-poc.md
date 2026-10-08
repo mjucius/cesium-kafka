@@ -81,9 +81,10 @@ Because payloads are pointer-only and re-fetched at dispatch time, a source whos
 shorter than the delay would lose payloads. The PoC did not check this. cesium-kafka validates
 source `retention.ms` against `delay.max + margin` at startup (`startup-checks.retention: FAIL` by
 default) and refuses to start on a misconfiguration; size-based / tiered eviction requires an
-explicit `startup-checks.size-based-retention: ACKNOWLEDGED`. Monitor source earliest-available-record
-age externally (the in-process `cesium_retention_margin_seconds` gauge is deferred; see
-[operations.md](operations.md) §13).
+explicit `startup-checks.size-based-retention: ACKNOWLEDGED`. A running engine re-checks retention
+every `startup-checks.revalidation-interval` and degrades (no exit) when a change breaks it, or when
+acknowledged eviction reaches records inside `delay.max + margin` (ADR-0020). Monitor the source's
+earliest-record age with broker-side metrics ([operations.md](operations.md) §13).
 
 ### 3.4 Topic identity is bound; recreation fails fast
 

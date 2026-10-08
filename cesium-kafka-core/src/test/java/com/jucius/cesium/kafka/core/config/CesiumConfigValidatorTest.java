@@ -25,6 +25,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Decision tables for the aggregate validator (design §8, §11.1). */
 class CesiumConfigValidatorTest {
@@ -506,11 +507,19 @@ class CesiumConfigValidatorTest {
     @ParameterizedTest
     @EnumSource(value = CheckMode.class, names = "SKIP")
     void heapBudgetAndOutageChecksRejectSkip(CheckMode skip) {
-        StartupChecks checks = new StartupChecks(null, null, null, skip, skip, null);
+        StartupChecks checks = new StartupChecks(null, null, null, skip, skip, null, null);
         CesiumConfig config = TestConfigs.withDispatch(DispatchConfig.defaults(), checks);
         List<String> paths = errorPaths(validate(config));
         assertTrue(paths.contains("startup-checks.outage-check"));
         assertTrue(paths.contains("startup-checks.heap-budget"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PT0S", "-PT1M"})
+    void revalidationIntervalMustBePositive(String interval) {
+        StartupChecks checks = new StartupChecks(null, null, null, null, null, null, Duration.parse(interval));
+        CesiumConfig config = TestConfigs.withDispatch(DispatchConfig.defaults(), checks);
+        assertTrue(errorPaths(validate(config)).contains("startup-checks.revalidation-interval"));
     }
 
     @Test

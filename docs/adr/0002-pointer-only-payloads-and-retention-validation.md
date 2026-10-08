@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-06
-- **Design reference:** [`../design.md`](../design.md) §1.1, §7, §7.6 (R5, R13)
+- **Design reference:** [`../design.md`](../design.md) §1.1, §7, §7.6 (R5, R13); amended by
+  [ADR-0020](0020-runtime-revalidation.md)
 
 ## Context
 
@@ -43,6 +44,8 @@ Guard payload availability explicitly:
   the PoC lost payloads silently.
 - Source-topic compaction is unsupported for routes that schedule delays.
 
-> **As shipped:** retention is validated at startup only; there is no periodic re-validation. The
-> runtime earliest-available-age probe and the `cesium_retention_margin_seconds` gauge are not built
-> yet, so monitor source-partition earliest-record age externally.
+> **Amended by [ADR-0020](0020-runtime-revalidation.md):** retention is validated at startup and
+> re-validated every `startup-checks.revalidation-interval`. The earliest-available-age probe and
+> `cesium_retention_margin_seconds` are dropped. Instead, under acknowledged size or tier eviction,
+> re-validation degrades when a partition retains nothing older than `delay.max + margin` although it
+> has evicted records. Monitor source-partition earliest-record age with broker-side metrics.

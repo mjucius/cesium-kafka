@@ -141,3 +141,4 @@ startup-checks:
   outage-check: FAIL               # FAIL | WARN
   heap-budget: FAIL                # worst-case index footprint vs heap budget: FAIL | WARN
   # tracker-acl: WARN              # R12 tracker write-ACL check: FAIL | WARN | SKIP (FAIL recommended in production)
+  # revalidation-interval: PT5M    # re-run the checks while running (D23): identity change exits, other errors degrade

@@ -603,6 +603,7 @@ final class EngineHarness implements AutoCloseable {
         private CheckMode retentionCheck;
         private StartupChecks.SizeBasedRetention sizeBasedRetention;
         private Duration idleCursorInterval;
+        private Duration revalidationInterval;
         private long dispatchMaxPendingPerPartition = 10_000L;
         private String bootstrapServers;
         private Duration transactionTimeout;
@@ -719,6 +720,12 @@ final class EngineHarness implements AutoCloseable {
 
         Builder trackerBootstrap(TrackerConfig.Bootstrap mode) {
             this.bootstrap = mode;
+            return this;
+        }
+
+        /** {@code startup-checks.revalidation-interval}; tests driving the production engine shorten it. */
+        Builder revalidationInterval(Duration interval) {
+            this.revalidationInterval = interval;
             return this;
         }
 
@@ -844,7 +851,14 @@ final class EngineHarness implements AutoCloseable {
                     null,
                     // The integration brokers run PLAINTEXT with no authorizer, so the R12 tracker-ACL
                     // check cannot be verified there; SKIP it (the fix's default is FAIL in production).
-                    new StartupChecks(retentionCheck, sizeBasedRetention, null, null, null, CheckMode.SKIP));
+                    new StartupChecks(
+                            retentionCheck,
+                            sizeBasedRetention,
+                            null,
+                            null,
+                            null,
+                            CheckMode.SKIP,
+                            revalidationInterval));
             EngineHarness harness = new EngineHarness(config);
             harness.seekFetcherDecorator = seekFetcherDecorator;
             return harness;

@@ -16,6 +16,7 @@ import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.admin.KafkaClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
+import com.jucius.cesium.kafka.core.admin.StartupValidator.Revalidation;
 import com.jucius.cesium.kafka.core.admin.TopicFacts;
 import com.jucius.cesium.kafka.core.admin.TopicVisibility;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
@@ -42,6 +43,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -49,6 +51,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -56,10 +59,15 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.common.Uuid;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -86,7 +94,8 @@ import org.slf4j.MDC;
  * </ol>
  *
  * <p><strong>Lifecycle.</strong> {@link #start()} is non-blocking; {@link #awaitDone()} blocks until
- * a fatal engine failure (today, a loop thread dying, §3.8) or {@link #stop(Duration)} completes; {@link #stop(Duration)} performs
+ * a fatal engine failure (a loop thread dying, §3.8, or a topic identity change found by
+ * re-validation, R17) or {@link #stop(Duration)} completes; {@link #stop(Duration)} performs
  * the §6 graceful shutdown — <em>readiness flips false first</em> (so a preStop hook / load balancer
  * drains), then every loop is signalled to stop at a transaction boundary and joined within the
  * budget, then the store and admin client close. A single worker parking-and-degrading (§3.8/R15)
@@ -98,6 +107,12 @@ import org.slf4j.MDC;
  * {@code cesium_loop_last_iteration_timestamp_seconds} gauge and {@code isDegraded()} — heartbeat
  * freshness, an assignment proxy, and the aggregate degraded flag (§6 "gauge sampling, heartbeat
  * freshness"; §9).
+ *
+ * <p><strong>Re-validation (D23, ADR-0020).</strong> Every {@code startup-checks.revalidation-interval}
+ * a dedicated {@code cesium-admin} thread re-runs the environment checks
+ * ({@link StartupValidator#revalidate}). A source or tracker topic identity change takes the fatal
+ * path; any other error is logged at ERROR, counted in {@code cesium_revalidation_errors}, and sets
+ * the readiness degraded flag with a short cause, while dispatch continues.
  */
 public final class CesiumEngine implements AutoCloseable {
 
@@ -111,6 +126,12 @@ public final class CesiumEngine implements AutoCloseable {
 
     /** Bound on the admin client close during shutdown (§6: bounded, then hard). */
     private static final Duration ADMIN_CLOSE_TIMEOUT = Duration.ofSeconds(10);
+
+    /** How long shutdown waits for an interrupted re-validation round before closing the admin client. */
+    private static final Duration REVALIDATION_STOP_TIMEOUT = Duration.ofSeconds(5);
+
+    /** The count of errors the last re-validation round found (§9: {@code cesium_revalidation_errors}). */
+    static final String REVALIDATION_ERRORS_GAUGE = "cesium.revalidation.errors";
 
     private final CesiumConfig config;
     private final MeterRegistry registry;
@@ -143,6 +164,12 @@ public final class CesiumEngine implements AutoCloseable {
     private final Map<Integer, OwnershipEpoch> ownership = new ConcurrentHashMap<>();
 
     private volatile @Nullable ScheduledExecutorService healthSampler;
+    private volatile @Nullable ScheduledExecutorService adminExecutor;
+    private final AtomicInteger revalidationErrors = new AtomicInteger();
+    /** The degraded cause from the last re-validation round, or null when it was clean. */
+    private volatile @Nullable String revalidationCause;
+    // cesium-admin thread only: the last round's warnings, so a standing warning is logged once.
+    private Set<String> lastRevalidationWarnings = Set.of();
     private volatile @Nullable StoreCapabilities storeCapabilities;
 
     /**
@@ -168,6 +195,9 @@ public final class CesiumEngine implements AutoCloseable {
         this.shutdownTimeout = Objects.requireNonNull(shutdownTimeout, "shutdownTimeout");
         this.maxHeapBytes = Runtime.getRuntime().maxMemory();
         this.health = new MutableEngineHealth(clock);
+        Gauge.builder(REVALIDATION_ERRORS_GAUGE, revalidationErrors, AtomicInteger::get)
+                .description("errors found by the last runtime re-validation round (D23); 0 when clean")
+                .register(registry);
     }
 
     // ------------------------------------------------------------------ health/observation surface
@@ -242,6 +272,7 @@ public final class CesiumEngine implements AutoCloseable {
             // assigned=false) until the sampler observes them iterating, so READY stays loop-gated (§9).
             health.markStartupComplete();
             startHealthSampler();
+            startRevalidation(clusterAdmin, identity, Objects.requireNonNull(route.trackerTopicId(), "trackerTopicId"));
             log.info(
                     "cesium engine started: applicationId={} roles={} ingestWorkers={} dispatchWorkers={} store={}",
                     config.applicationId(),
@@ -260,7 +291,7 @@ public final class CesiumEngine implements AutoCloseable {
 
     /**
      * Blocks until the engine finishes: a fatal engine failure is signalled (a loop thread dying,
-     * §3.8) or an external {@link #stop(Duration)} completes. Ensures a graceful shutdown ran (idempotently) before
+     * §3.8, or a topic identity change, R17) or an external {@link #stop(Duration)} completes. Ensures a graceful shutdown ran (idempotently) before
      * returning.
      *
      * @return {@code true} when the engine stopped cleanly with no fatal engine failure and within
@@ -656,6 +687,10 @@ public final class CesiumEngine implements AutoCloseable {
     }
 
     private boolean doStop(Duration budget) {
+        // First, so no round reports on clients that are closing; the wait lets an interrupted round
+        // unwind before closeAdmin() pulls the Admin out from under it. Findings are dropped (stopping).
+        shutdown(adminExecutor, REVALIDATION_STOP_TIMEOUT);
+        adminExecutor = null;
         long deadlineNanos = System.nanoTime() + Math.max(0, budget.toNanos());
         LoopHandles snapshot = handles; // safely-published read (may be EMPTY if start() failed early)
         // Signal all loops up front so they all begin draining; join ingest-before-dispatch (§6).
@@ -676,7 +711,8 @@ public final class CesiumEngine implements AutoCloseable {
         if (!clean) {
             log.warn("one or more loops did not stop within the {} shutdown budget", budget);
         }
-        shutdownSampler();
+        shutdown(healthSampler, Duration.ZERO);
+        healthSampler = null;
         closeStore();
         closeAdmin();
         return clean;
@@ -694,11 +730,17 @@ public final class CesiumEngine implements AutoCloseable {
         return !handle.thread.isAlive();
     }
 
-    private void shutdownSampler() {
-        ScheduledExecutorService sampler = healthSampler;
-        if (sampler != null) {
-            sampler.shutdownNow();
-            healthSampler = null;
+    private static void shutdown(@Nullable ScheduledExecutorService executor, Duration wait) {
+        if (executor == null) {
+            return;
+        }
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(wait.toMillis(), TimeUnit.MILLISECONDS) && !wait.isZero()) {
+                log.warn("a background task did not stop within {}", wait);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -724,6 +766,119 @@ public final class CesiumEngine implements AutoCloseable {
             }
             admin = null;
         }
+    }
+
+    // ------------------------------------------------------------------ re-validation (D23, ADR-0020)
+
+    private void startRevalidation(ClusterAdmin clusterAdmin, IdentityBlob identity, Uuid trackerTopicId) {
+        // A fresh validator per round: TopicVisibility is confined to the thread running it.
+        this.adminExecutor = scheduleRevalidation(
+                config.startupChecks().revalidationInterval(),
+                config.applicationId(),
+                () -> new StartupValidator(clusterAdmin, clock).revalidate(config, identity, trackerTopicId),
+                this::onRevalidation);
+    }
+
+    /**
+     * Runs {@code round} every {@code interval} on a dedicated {@code cesium-admin} daemon thread and
+     * hands each result to {@code sink}. A round that throws is reported as an error finding ("round
+     * could not complete") rather than escaping, because one uncaught throw would cancel every later
+     * run of {@code scheduleWithFixedDelay}.
+     */
+    static ScheduledExecutorService scheduleRevalidation(
+            Duration interval, String applicationId, Supplier<Revalidation> round, Consumer<Revalidation> sink) {
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "cesium-admin");
+            thread.setDaemon(true);
+            return thread;
+        });
+        long intervalMs = interval.toMillis();
+        var unused = executor.scheduleWithFixedDelay(
+                () -> {
+                    MDC.put("applicationId", applicationId); // dedicated thread: idempotent, never pooled
+                    Revalidation result;
+                    try {
+                        result = round.get();
+                    } catch (Throwable t) {
+                        log.debug("re-validation round failed", t);
+                        result = new Revalidation(
+                                Optional.empty(),
+                                new ValidationReport(List.of(ValidationReport.Finding.error(
+                                        "startup-checks.revalidation-interval",
+                                        "the re-validation round could not complete: " + t))));
+                    }
+                    try {
+                        sink.accept(result);
+                    } catch (RuntimeException e) {
+                        log.warn("re-validation result handling failed", e);
+                    }
+                },
+                intervalMs,
+                intervalMs,
+                TimeUnit.MILLISECONDS);
+        return executor;
+    }
+
+    /**
+     * Applies one re-validation round (D1): an identity change is fatal; every other error is logged at
+     * ERROR, counted in {@code cesium_revalidation_errors} and becomes the degraded cause; a warning is
+     * logged when it first appears. Ignored entirely once shutdown has begun.
+     */
+    void onRevalidation(Revalidation result) {
+        if (stopping) {
+            return;
+        }
+        if (result.identityChange().isPresent()) {
+            failFatally(
+                    "re-validation",
+                    new IllegalStateException(result.identityChange().get()));
+            return;
+        }
+        List<ValidationReport.Finding> errors = result.report().errors();
+        for (ValidationReport.Finding error : errors) {
+            log.error("re-validation finding {}: {}", error.path(), error.message());
+        }
+        Set<String> warnings = new LinkedHashSet<>();
+        for (ValidationReport.Finding warning : result.report().warnings()) {
+            String line = warning.path() + ": " + warning.message();
+            warnings.add(line);
+            if (!lastRevalidationWarnings.contains(line)) {
+                log.warn("re-validation finding {}", line);
+            }
+        }
+        lastRevalidationWarnings = warnings;
+        String previous = revalidationCause;
+        revalidationErrors.set(errors.size());
+        revalidationCause = errors.isEmpty()
+                ? null
+                : "re-validation: " + errors.size() + " error(s) at "
+                        + errors.stream()
+                                .map(ValidationReport.Finding::path)
+                                .distinct()
+                                .collect(Collectors.joining(", "));
+        if (previous != null && errors.isEmpty()) {
+            log.info("re-validation is clean again; the degraded cause is cleared");
+        }
+    }
+
+    /** The degraded cause from the last re-validation round, or null when it was clean. */
+    @Nullable String revalidationCause() {
+        return revalidationCause;
+    }
+
+    /**
+     * The readiness degraded cause: parked-and-degraded loops and the re-validation cause, either or
+     * both; null when neither applies.
+     */
+    static @Nullable String degradedCause(Set<String> degradedRoles, @Nullable String revalidationCause) {
+        List<String> causes = new ArrayList<>(2);
+        if (!degradedRoles.isEmpty()) {
+            causes.add("parked-and-degraded loop(s): " + String.join(", ", degradedRoles));
+        }
+        if (revalidationCause != null) {
+            causes.add(revalidationCause);
+        }
+        return causes.isEmpty() ? null : String.join("; ", causes);
     }
 
     // ------------------------------------------------------------------ health sampler (§6/§9)
@@ -777,11 +932,8 @@ public final class CesiumEngine implements AutoCloseable {
                     degradedRoles.add(handle.role.name().toLowerCase(Locale.ROOT));
                 }
             }
-            if (degradedRoles.isEmpty()) {
-                health.setDegraded(false, null);
-            } else {
-                health.setDegraded(true, "parked-and-degraded loop(s): " + String.join(", ", degradedRoles));
-            }
+            String cause = degradedCause(degradedRoles, revalidationCause);
+            health.setDegraded(cause != null, cause);
             health.updateRecovery(recoverySnapshot(registry, clock.millis(), lastReplaySample));
         } catch (RuntimeException e) {
             // The sampler must never die: a transient registry/probe hiccup is logged, not fatal.

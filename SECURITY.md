@@ -82,9 +82,13 @@ privilege means granting that one principal exactly the ACLs below and nothing e
 |   |  | `Topic` · *DLQ* | WRITE | unfetchable-payload loss notices |
 |   |  | `Group` · `cesium.<app>.dispatch` | READ | `sendOffsetsToTransaction` commits the cursor |
 | 6 | **Admin client** | `Cluster` | DESCRIBE, DESCRIBE_CONFIGS | `describeCluster`, broker-config validation, `describeAcls` (tracker ACL check) |
-|   |  | `Topic` · *source*, *destination*, *tracker*, *DLQ* | DESCRIBE, DESCRIBE_CONFIGS | startup topic-config validation |
-|   |  | `Group` · `cesium.<app>.ingest`, `cesium.<app>.dispatch` | DESCRIBE | `listConsumerGroupOffsets`: startup source-identity check (ingest group), first-run probe (dispatch group) |
+|   |  | `Topic` · *source*, *destination*, *tracker*, *DLQ* | DESCRIBE, DESCRIBE_CONFIGS | topic-config validation at startup and every `startup-checks.revalidation-interval`; `listOffsets` by timestamp (re-validation cursor-age and retention checks) |
+|   |  | `Group` · `cesium.<app>.ingest`, `cesium.<app>.dispatch` | DESCRIBE | `listConsumerGroupOffsets`: startup source-identity check (ingest group), first-run probe and re-validation cursor-age check (dispatch group) |
 |   |  | `Cluster` (`CREATE` bootstrap only) | CREATE, ALTER | `createTopics` (tracker) + `createAcls` (apply the tracker ACL) |
+
+Row 6's checks run at startup and again every `startup-checks.revalidation-interval` (default 5 min,
+ADR-0020). Re-validation needs no grant beyond these: `listOffsets` by timestamp needs only Topic
+DESCRIBE, and it never creates topics or applies ACLs.
 
 > **The `TransactionalId` ACLs (rows 4 and 5) are required.** cesium's transactional ids
 > (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
@@ -123,7 +127,8 @@ Each topic has one writer and one set of readers; restrict each accordingly:
 - **Tracker topic:** cesium writes and reads it; nothing else should. It holds the durable scheduler
   state. **Write access restricted to the cesium principal is a normative deployment requirement
   (R12).** A forged ADD record is a duplicate-injection primitive; a forged completion tombstone is a
-  data-loss primitive. cesium verifies the restriction at startup via `startup-checks.tracker-acl`.
+  data-loss primitive. cesium verifies the restriction at startup and every
+  `startup-checks.revalidation-interval` via `startup-checks.tracker-acl`.
   The default `WARN` reports a missing/foreign/unset grant (or a cluster with no authorizer to verify
   against) on every boot without blocking. **Set it to `FAIL` in production** to have cesium refuse to
   start unless the exclusive-write restriction is verifiably in force; `SKIP` omits the check for
@@ -133,7 +138,8 @@ Each topic has one writer and one set of readers; restrict each accordingly:
 ### 4. Tracker integrity: the ACL is the v1 control; the invalid-records counter is not a forgery detector
 
 The write-restricting tracker ACL (above) is the v1 integrity control. cesium verifies it on every
-startup and reports a missing/foreign/unset grant; set `startup-checks.tracker-acl: FAIL` (default
+startup and every `startup-checks.revalidation-interval`, and reports a missing/foreign/unset grant
+(at runtime, under `FAIL` it degrades readiness rather than exiting); set `startup-checks.tracker-acl: FAIL` (default
 `WARN`) to have a deployment missing the normative grant fail closed at startup instead of running
 with an unauthenticated tracker channel. **cesium provides no in-band cryptographic integrity on
 tracker records in v1.**

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-06
 - **Design reference:** [`../design.md`](../design.md) §2.1 (tracker `CREATE` bootstrap), §7.6
-  (startup checks)
+  (startup checks); amended by [ADR-0020](0020-runtime-revalidation.md)
 
 ## Context
 
@@ -78,7 +78,9 @@ time a deployment actually needs a different value.
   gets at most 10 s slower; a healthy one is unchanged (the first attempt still succeeds and costs no
   extra RPC).
 - This introduces the first `Thread.sleep` in production source in this repository, on the
-  startup thread (there is no dedicated `cesium-admin` thread; startup runs on the main thread). There is no liveness impact (readiness is already false and no
+  startup thread (startup runs on the main thread). ADR-0020 adds a `cesium-admin` thread whose
+  re-validation rounds use the same wait for topics startup proved exist; a deleted topic there costs
+  one budget before it is reported, off the loop threads. There is no liveness impact (readiness is already false and no
   loops are running), and the interrupt path restores the flag and returns immediately, so a SIGTERM
   during startup is not converted into a cluster finding.
 - `KafkaClusterAdmin.DEFAULT_TIMEOUT` (30 s) still applies to each individual call underneath, so the

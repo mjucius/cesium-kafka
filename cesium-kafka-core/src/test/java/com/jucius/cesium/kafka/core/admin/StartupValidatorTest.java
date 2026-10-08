@@ -280,7 +280,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.topicConfigs.get(SOURCE).put("retention.ms", "1000");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(CheckMode.WARN, null, null, null, null, null);
+            builder.startupChecks = new StartupChecks(CheckMode.WARN, null, null, null, null, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -294,7 +294,7 @@ class StartupValidatorTest {
             admin.topicConfigs.get(SOURCE).put("retention.ms", "1000");
             admin.topicConfigs.get(SOURCE).put("retention.bytes", "1073741824");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(CheckMode.SKIP, null, null, null, null, null);
+            builder.startupChecks = new StartupChecks(CheckMode.SKIP, null, null, null, null, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -334,8 +334,8 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.topicConfigs.get(SOURCE).put("retention.bytes", "1073741824");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks =
-                    new StartupChecks(null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null, null);
+            builder.startupChecks = new StartupChecks(
+                    null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -709,7 +709,7 @@ class StartupValidatorTest {
 
         private ConfigBuilder failMode(String principal) {
             ConfigBuilder builder = withPrincipal(principal);
-            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.FAIL);
+            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.FAIL, null);
             return builder;
         }
 
@@ -850,7 +850,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.trackerWriteAcls.remove(TRACKER);
             ConfigBuilder builder = withPrincipal(null);
-            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.SKIP);
+            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.SKIP, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -1111,7 +1111,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.brokerConfigs.put("offsets.retention.minutes", "60");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(null, null, null, CheckMode.WARN, null, null);
+            builder.startupChecks = new StartupChecks(null, null, null, CheckMode.WARN, null, null, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -1124,7 +1124,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.brokerConfigs.put("offsets.retention.minutes", "60");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks = new StartupChecks(null, null, Duration.ofMinutes(30), null, null, null);
+            builder.startupChecks = new StartupChecks(null, null, Duration.ofMinutes(30), null, null, null, null);
 
             assertNoErrors(validator.validate(builder.build()));
         }
@@ -1437,8 +1437,8 @@ class StartupValidatorTest {
         private CesiumConfig acknowledgedSizeEviction() {
             admin.topicConfigs.get(SOURCE).put("retention.bytes", "1073741824");
             ConfigBuilder builder = new ConfigBuilder();
-            builder.startupChecks =
-                    new StartupChecks(null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null, null);
+            builder.startupChecks = new StartupChecks(
+                    null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null, null, null);
             return builder.build();
         }
 

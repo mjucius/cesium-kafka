@@ -241,6 +241,9 @@ See [operations.md](operations.md) for the metric inventory and alert rules.
 
 ## 11. Startup checks (`startup-checks.*`)
 
+The strictness knobs below apply at startup and to the runtime re-validation rounds. At runtime only
+an ERROR finding degrades; a `WARN`-mode finding is logged once when it appears.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `startup-checks.retention` | `FAIL` | Validate source `retention.ms` against `delay.max` plus a 1-hour margin (`retention.ms=-1` passes): `FAIL`, `WARN`, or `SKIP`. |
@@ -248,6 +251,7 @@ See [operations.md](operations.md) for the metric inventory and alert rules.
 | `startup-checks.max-tolerated-outage` | `P7D` | The longest outage after which committed offsets must still exist; checked against broker `offsets.retention.minutes` (D18, R6). |
 | `startup-checks.outage-check` | `FAIL` | Strictness of the `max-tolerated-outage` vs broker offsets-retention check: `FAIL` or `WARN` only (`SKIP` is rejected). |
 | `startup-checks.heap-budget` | `FAIL` | Strictness of the worst-case index-footprint vs heap-budget check (§5.3): `FAIL` or `WARN` only. |
+| `startup-checks.revalidation-interval` | `PT5M` | How often a running engine re-runs these checks on the `cesium-admin` thread (D23, ADR-0020); must be positive. A source or tracker topic id change exits non-zero; every other error is logged at ERROR, counted in `cesium_revalidation_errors` and sets the readiness degraded flag, and dispatch continues. It never creates a topic or applies an ACL. |
 | `startup-checks.tracker-acl` | `WARN` | Strictness of the R12 tracker write-ACL verification: `FAIL`, `WARN`, or `SKIP`. `FAIL` refuses to start unless only the cesium principal can write the tracker (it also fails on an unset `acl-principal` or a cluster without an authorizer). `FAIL` is recommended for production. |
 
 Operator-acknowledged escape hatches (`size-based-retention: ACKNOWLEDGED`, any check set to `SKIP`

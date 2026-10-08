@@ -184,6 +184,10 @@ public final class CesiumConfigValidator {
                 findings,
                 "startup-checks.max-tolerated-outage",
                 config.startupChecks().maxToleratedOutage());
+        positiveDuration(
+                findings,
+                "startup-checks.revalidation-interval",
+                config.startupChecks().revalidationInterval());
         failOrWarnOnly(
                 findings, "startup-checks.outage-check", config.startupChecks().outageCheck());
         failOrWarnOnly(

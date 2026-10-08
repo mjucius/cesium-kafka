@@ -121,6 +121,7 @@ class YamlBindingTest {
                 startup-checks:
                   retention: WARN
                   max-tolerated-outage: P3D
+                  revalidation-interval: PT30S
                 """);
 
         CesiumConfig config = LoaderTestSupport.loader(Map.of()).load(file).config();
@@ -169,6 +170,7 @@ class YamlBindingTest {
         assertEquals("127.0.0.1", config.observability().bindAddress());
         assertTrue(config.observability().detailedInfo());
         assertEquals(Duration.ofDays(3), config.startupChecks().maxToleratedOutage());
+        assertEquals(Duration.ofSeconds(30), config.startupChecks().revalidationInterval());
 
         // Untouched keys keep their §8 defaults.
         assertEquals(Duration.ofSeconds(2), dispatch.fetch().partitionTimeFloor());

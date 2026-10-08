@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-06
-- **Design reference:** [`../design.md`](../design.md) §2.1–2.2, §3.7 (D4, D14, D15)
+- **Design reference:** [`../design.md`](../design.md) §2.1–2.2, §3.7 (D4, D14, D15); amended by
+  [ADR-0020](0020-runtime-revalidation.md)
 
 ## Context
 
@@ -49,5 +50,8 @@ is lowered to `P1D` to keep default tracker disk sane.
   ([ADR-0003](0003-sealed-two-archetype-store-spi.md)); the `CANCEL` reservation leaves room for a
   future cancellation API.
 
-> **As shipped:** only the `delay.max` term of the floor is validated, at startup. The periodic
-> re-validation of the observed terms (oldest-pending age, committed-cursor age) is not built yet.
+> **Amended by [ADR-0020](0020-runtime-revalidation.md):** the `delay.max` term is validated at
+> startup (FAIL). Every `startup-checks.revalidation-interval`, re-validation compares the dispatch
+> group's committed-cursor age with `delete.retention.ms / 2 + 1h`. A violation degrades health, logs
+> an ERROR and sets `cesium_revalidation_errors`, and dispatch continues rather than refusing. The
+> oldest-pending term is dropped as subsumed by the cursor term.

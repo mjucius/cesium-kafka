@@ -4,7 +4,8 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Startup-check strictness knobs (design §7.6, §8, R6/R13).
+ * Startup-check strictness knobs and the runtime re-validation interval (design §7.6, §8, D23,
+ * R6/R13).
  *
  * @param retention source-retention validation vs {@code delay.max + margin}; default FAIL
  * @param sizeBasedRetention when {@code retention.bytes != -1} or remote/tiered storage is enabled
@@ -26,6 +27,9 @@ import java.util.Objects;
  *     acl-principal, or no authorizer to verify it); WARN surfaces the same conditions without
  *     blocking; SKIP omits the check. Default WARN — set FAIL to have cesium refuse to start unless
  *     the R12 restriction is verifiably in force (recommended for production; see SECURITY.md §4)
+ * @param revalidationInterval how often a running engine re-runs the environment checks on
+ *     {@code cesium-admin} (D23, ADR-0020); a topic identity change stops the engine and every other
+ *     error degrades it; default {@code PT5M}
  */
 public record StartupChecks(
         CheckMode retention,
@@ -33,10 +37,14 @@ public record StartupChecks(
         Duration maxToleratedOutage,
         CheckMode outageCheck,
         CheckMode heapBudget,
-        CheckMode trackerAcl) {
+        CheckMode trackerAcl,
+        Duration revalidationInterval) {
 
     /** Default maximum tolerated outage (§8 defaults table). */
     public static final Duration DEFAULT_MAX_TOLERATED_OUTAGE = Duration.ofDays(7);
+
+    /** Default runtime re-validation interval (§8 defaults table). */
+    public static final Duration DEFAULT_REVALIDATION_INTERVAL = Duration.ofMinutes(5);
 
     /** The size-based/tiered-retention gate (R13): unset means FAIL when such eviction is detected. */
     public enum SizeBasedRetention {
@@ -56,6 +64,7 @@ public record StartupChecks(
         // Default WARN (not FAIL): surface the unenforced R12 control on every boot without blocking
         // clusters that have no authorizer; operators opt into FAIL to refuse an unverified ACL.
         trackerAcl = Objects.requireNonNullElse(trackerAcl, CheckMode.WARN);
+        revalidationInterval = Objects.requireNonNullElse(revalidationInterval, DEFAULT_REVALIDATION_INTERVAL);
     }
 
     /** Returns a {@code StartupChecks} populated entirely from the §8 defaults table. */
@@ -66,6 +75,7 @@ public record StartupChecks(
                 DEFAULT_MAX_TOLERATED_OUTAGE,
                 CheckMode.FAIL,
                 CheckMode.FAIL,
-                CheckMode.WARN);
+                CheckMode.WARN,
+                DEFAULT_REVALIDATION_INTERVAL);
     }
 }
