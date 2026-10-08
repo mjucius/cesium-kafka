@@ -153,8 +153,8 @@ import org.slf4j.LoggerFactory;
  * </ul>
  *
  * <p><strong>Backpressure (§5.3):</strong> an ACTIVE shard pauses tracker intake above
- * {@code dispatch.max-pending-per-partition} (resumes below half of it) and while the global
- * pending cap is exceeded; a RECOVERING shard is <em>never</em> paused — replay must reach the
+ * {@code dispatch.max-pending-per-partition} (resumes below half of it) and while this loop's share
+ * of the process-wide {@code dispatch.max-pending-total} is exceeded; a RECOVERING shard is <em>never</em> paused — replay must reach the
  * barrier. Pause state is observable as {@code cesium_shard_paused{partition}}.
  *
  * <p><strong>Idle cursor advancement (§3.5):</strong> a streaming, non-recovering partition
@@ -1175,7 +1175,7 @@ public final class DispatchLoop implements Runnable {
 
     /**
      * Pause/resume tracker intake per shard: above the per-partition high-water mark (or while
-     * the global cap is exceeded) an ACTIVE shard's tracker partition pauses — backlog
+     * this loop's share of the process-wide cap is exceeded) an ACTIVE shard's tracker partition pauses — backlog
      * accumulates durably in the tracker topic; below the low-water mark (half the high) it
      * resumes. A RECOVERING shard is never paused: replay must reach the barrier (R7).
      */

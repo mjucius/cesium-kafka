@@ -119,7 +119,7 @@ dispatch:
   # Xmx, design §5.3). Quickstart-sized so it fits a small container heap;
   # production default is 2,000,000.
   max-pending-per-partition: 100000
-  # max-pending-total: 0       # 0 = AUTO (heap-derived, ~25% of Xmx / 64 B)
+  # max-pending-total: 0       # process-wide; 0 = AUTO (heap-derived, ~25% of Xmx / 64 B)
 
 observability:
   # HTTP port for /metrics, /health/live, /health/ready, /info (design §9).

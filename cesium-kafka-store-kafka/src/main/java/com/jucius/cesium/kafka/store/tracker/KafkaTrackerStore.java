@@ -209,9 +209,9 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                 heapBudgetBytes > 0 ? heapBudgetBytes : Runtime.getRuntime().maxMemory() / 4;
         // Runtime recovery ceiling (H1): the most resident pending entries the heap budget can hold
         // at the worst-case per-entry footprint. The seed/replay paths refuse to allocate past it
-        // (controlled fail, not OOM); it uses the same 64 B/entry as the engine's footprint check and
-        // dispatch.max-pending-total AUTO. >= 1 so a budget below one entry still admits the trip
-        // rather than silently flooring to zero.
+        // (controlled fail, not OOM). It counts every owned shard, so with the default budget it equals
+        // the process-wide dispatch.max-pending-total AUTO (25% of Xmx / 64 B). >= 1 so a budget below
+        // one entry still admits the trip rather than silently flooring to zero.
         long maxResidentEntries = Math.max(1L, effectiveHeapBudget / WORST_CASE_BYTES_PER_ENTRY);
         log.info(
                 "kafka-tracker validated: heap budget {} B; sidecar budget {} B;"

@@ -279,7 +279,7 @@ note and `§5.4`.)
 Add +30 % G1 / +20 % ZGC headroom; container memory = heap + ~1 GB native.
 
 **Backpressure and caps (design `§5.3`).** `dispatch.max-pending-per-partition` pauses the tracker
-consumer above high-water (ACTIVE shards only; a RECOVERING shard is never paused). The global cap
+consumer above high-water (ACTIVE shards only; a RECOVERING shard is never paused). The process-wide cap
 `dispatch.max-pending-total` (default ≈ 25 % of `Xmx` ÷ 64 B) pauses ACTIVE shards above the
 total. The engine's startup heap-budget check refuses startup (or warns, per
 `startup-checks.heap-budget`) when `assigned-partitions × dispatch.max-pending-per-partition × 64 B`

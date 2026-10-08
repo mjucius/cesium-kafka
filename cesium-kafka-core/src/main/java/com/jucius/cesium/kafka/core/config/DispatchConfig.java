@@ -22,7 +22,8 @@ import java.util.Objects;
  * @param onUnfetchablePayload policy for provably-expired payloads (§7.4); default DLQ
  * @param maxPendingPerPartition pause/resume backpressure threshold for ACTIVE shards (§5.3);
  *     default 2,000,000
- * @param maxPendingTotal global pending cap; {@link #AUTO_MAX_PENDING_TOTAL} (the default) derives
+ * @param maxPendingTotal process-wide pending cap, split evenly across {@code workers} (each loop
+ *     enforces {@code cap / workers}, at least 1); {@link #AUTO_MAX_PENDING_TOTAL} (the default) derives
  *     it from the heap budget — ≈ 25% of {@code Xmx} ÷ {@value #INDEX_BYTES_PER_ENTRY} B/entry
  *     (§5.3, R18; 64 B/entry per the post-approval fastutil revision)
  */
@@ -88,7 +89,7 @@ public record DispatchConfig(
     }
 
     /**
-     * The effective global pending cap: the configured value, or — when {@code AUTO} — the heap
+     * The effective process-wide pending cap: the configured value, or — when {@code AUTO} — the heap
      * budget divided by {@value #INDEX_BYTES_PER_ENTRY} B/entry (≈ 25% of {@code Xmx} ÷ 64).
      */
     public long resolveMaxPendingTotal(long maxHeapBytes) {

@@ -36,8 +36,9 @@ import java.util.Objects;
  *     stay on the abort/restore retry path
  * @param maxPendingPerPartition backpressure high-water mark per ACTIVE shard (§5.3); intake for
  *     the partition pauses above it and resumes below {@code maxPendingPerPartition / 2}
- * @param maxPendingTotal global pending cap pausing all ACTIVE shards ({@code ≤ 0} disables; the
- *     caller resolves the {@code AUTO} sentinel against the heap budget before constructing this)
+ * @param maxPendingTotal this loop's share of the process-wide pending cap: above it, every ACTIVE
+ *     shard this loop owns pauses ({@code ≤ 0} disables; {@link #from} resolves the {@code AUTO}
+ *     sentinel and divides the process-wide cap by {@code dispatch.workers})
  * @param commitRetryLimit bounded retries of a timed-out {@code commitTransaction} before the
  *     outcome is declared in-doubt and the I9 procedure runs ({@code kafka.transactions
  *     .commit-retry}, §3.8)
@@ -136,9 +137,10 @@ public record DispatchLoopConfig(
     }
 
     /**
-     * Derives the loop settings from a validated {@link CesiumConfig}. The global pending cap's
-     * {@code AUTO} sentinel is resolved against {@code maxHeapBytes} (≈ 25% of the heap ÷ the
-     * per-entry budget, §5.3/R18).
+     * Derives the loop settings from a validated {@link CesiumConfig}. {@code
+     * dispatch.max-pending-total} is process-wide: its {@code AUTO} sentinel is resolved against
+     * {@code maxHeapBytes} (≈ 25% of the heap ÷ the per-entry budget, §5.3/R18), and each of the
+     * {@code dispatch.workers} loops enforces an equal share (at least 1).
      *
      * @param config the frozen configuration
      * @param maxHeapBytes the JVM max heap ({@code Runtime.getRuntime().maxMemory()}) the AUTO
@@ -160,7 +162,9 @@ public record DispatchLoopConfig(
                 dispatch.onUnfetchablePayload(),
                 config.route().relay().onUnrelayable(),
                 dispatch.maxPendingPerPartition(),
-                dispatch.resolveMaxPendingTotal(maxHeapBytes),
+                // ponytail: static cap/workers split; a shared AtomicLongArray of per-worker pending
+                // slots would let one busy worker use another's idle share.
+                Math.max(1, dispatch.resolveMaxPendingTotal(maxHeapBytes) / dispatch.workers()),
                 config.kafka().transactions().commitRetry(),
                 DEFAULT_PARK_THRESHOLD,
                 DEFAULT_RETRY_BACKOFF_INITIAL,

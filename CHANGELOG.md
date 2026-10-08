@@ -36,6 +36,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   no longer repeats the footprint check. Under the default FAIL the engine check still exits 1.
 - `store.properties.heap-budget-bytes` keeps its name but now feeds only the store's H1 recovery
   resident-pending ceiling. It no longer feeds a startup footprint check.
+- `dispatch.max-pending-total` is now process-wide. Each dispatch worker enforces
+  cap ÷ `dispatch.workers` (minimum 1); with `dispatch.workers` fixed at 1 that is the whole cap.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
@@ -81,6 +83,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `startup-checks.heap-budget: WARN` did not let startup proceed: `KafkaTrackerStore.validate()`
   repeated the footprint check with its own store-side cap and always failed. The engine check is now
   the only one.
+- `dispatch.max-pending-total` was enforced separately by every dispatch worker, so the effective
+  process cap was `dispatch.workers` times the configured (or AUTO heap-derived) value. Each worker
+  now gets an equal share.
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).

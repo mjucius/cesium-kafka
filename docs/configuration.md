@@ -223,7 +223,7 @@ not 78: the config schema leaves this map open).
 | `dispatch.fetch.penalty.backoff-max` | `PT10S` | Penalty-box backoff ceiling under consecutive failures. |
 | `dispatch.on-unfetchable-payload` | `DLQ` | Policy for provably-expired payloads: `DLQ` (loss notice + COMPLETE, atomic), `DROP` (COMPLETE only + metric), or `FAIL`. In all non-FAIL modes the COMPLETE is always written, so a poison entry never replays forever. |
 | `dispatch.max-pending-per-partition` | `2000000` | Backpressure high-water mark per ACTIVE shard; pauses the tracker consumer above it, resumes below half. A RECOVERING shard is never paused. Backlog accumulates durably in the tracker topic. |
-| `dispatch.max-pending-total` | `0` (AUTO) | Process-wide pending cap (there is one dispatch worker per process). `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap is checked at load (`cap × 64 B` against the heap budget, strictness from `startup-checks.heap-budget`). |
+| `dispatch.max-pending-total` | `0` (AUTO) | Process-wide pending cap across every ACTIVE shard this instance owns (there is one dispatch worker per process). `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap is checked at load (`cap × 64 B` against the heap budget, strictness from `startup-checks.heap-budget`). |
 
 ---
 

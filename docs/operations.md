@@ -512,7 +512,7 @@ Full detail and the memory worksheet are in [performance.md §5–§6](performan
   size. Keep JFR continuous recording on to catch footprint/pause regressions in production.
 
 - **Backpressure.** `dispatch.max-pending-per-partition` pauses ACTIVE shards above its high-water
-  (resumes below half); the global `dispatch.max-pending-total` (AUTO ≈ 25 % of `Xmx` ÷ 64 B) pauses
+  (resumes below half); the process-wide `dispatch.max-pending-total` (AUTO ≈ 25 % of `Xmx` ÷ 64 B) pauses
   ACTIVE shards above the total. A RECOVERING shard is never paused. The startup heap-budget check
   (`startup-checks.heap-budget`) sizes the steady-state caps only; recovery is bounded by a runtime
   resident-entry ceiling that fails fast instead of running out of heap
