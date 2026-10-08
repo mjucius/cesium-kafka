@@ -393,7 +393,7 @@ public abstract class ExternalSchedulerStoreContract {
         f.harness().commitDispatchLosingMarkDispatched(first);
 
         Fixture next = sibling(f);
-        dropAndRecover(next, 0);
+        restart(next, 0); // a fresh process never owned the partition, so nothing is lost first
         List<Long> expected = supportsCursorReconciliation() ? List.of(2L, 3L, 4L) : List.of(1L, 2L, 3L, 4L);
         assertEquals(
                 expected,
@@ -540,6 +540,14 @@ public abstract class ExternalSchedulerStoreContract {
      */
     private void dropAndRecover(Fixture f, int partition) {
         f.store().onPartitionsLost(Set.of(partition));
+        restart(f, partition);
+    }
+
+    /**
+     * A fresh process adopting {@code partition}: assign it, hand back the committed reconciliation
+     * cursor if there is one, and rebuild from the durable rows.
+     */
+    private void restart(Fixture f, int partition) {
         f.harness().assign(partition);
         if (supportsCursorReconciliation()) {
             f.harness()
