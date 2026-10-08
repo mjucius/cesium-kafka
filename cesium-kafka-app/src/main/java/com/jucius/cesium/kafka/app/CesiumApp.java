@@ -42,7 +42,7 @@ import org.slf4j.MDC;
  * {@link CesiumEngine} → start the observability HTTP server (before the engine, so probes answer
  * during startup) → install a SIGTERM/SIGINT hook calling {@code engine.stop(shutdown.timeout)} →
  * start the engine → block in {@link CesiumEngine#awaitDone()} → exit {@code 0} on a clean shutdown,
- * non-zero on a fatal loop failure or shutdown-budget overrun.
+ * non-zero on a fatal engine failure or shutdown-budget overrun.
  *
  * <p><strong>Exit codes.</strong> {@code 0} normal, {@value CesiumConfigLoader#EX_CONFIG} config
  * (BSD {@code EX_CONFIG}), {@value #EX_FATAL} any other fatal (startup validation, engine failure).
@@ -142,7 +142,7 @@ public final class CesiumApp {
             engine.start();
             boolean clean = engine.awaitDone();
             if (!clean) {
-                engine.fatalCause().ifPresent(cause -> log.error("engine exited on a fatal loop failure", cause));
+                engine.fatalCause().ifPresent(cause -> log.error("engine exited on a fatal engine failure", cause));
                 return EX_FATAL;
             }
             log.info("cesium engine stopped cleanly");

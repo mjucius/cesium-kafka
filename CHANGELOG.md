@@ -50,6 +50,10 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main and `cesium-shutdown`
   threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
   shape, and `txn` is the loop's transactional id, which includes the instance id.
+- Logs: the fatal log changes from `fatal {role} loop failure — initiating engine shutdown` to
+  `fatal engine failure ({source}) — initiating engine shutdown` (for example `(ingest loop)`), and
+  the exit line from `engine exited on a fatal loop failure` to
+  `engine exited on a fatal engine failure`.
 
 ### Added
 - `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive

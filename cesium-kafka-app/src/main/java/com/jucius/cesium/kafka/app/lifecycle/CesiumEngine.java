@@ -86,7 +86,7 @@ import org.slf4j.MDC;
  * </ol>
  *
  * <p><strong>Lifecycle.</strong> {@link #start()} is non-blocking; {@link #awaitDone()} blocks until
- * a loop dies fatally (§3.8) or {@link #stop(Duration)} completes; {@link #stop(Duration)} performs
+ * a fatal engine failure (today, a loop thread dying, §3.8) or {@link #stop(Duration)} completes; {@link #stop(Duration)} performs
  * the §6 graceful shutdown — <em>readiness flips false first</em> (so a preStop hook / load balancer
  * drains), then every loop is signalled to stop at a transaction boundary and joined within the
  * budget, then the store and admin client close. A single worker parking-and-degrading (§3.8/R15)
@@ -182,7 +182,10 @@ public final class CesiumEngine implements AutoCloseable {
         return Optional.ofNullable(storeCapabilities);
     }
 
-    /** The fatal cause that terminated a loop, when {@link #awaitDone()} ended on the fatal path. */
+    /**
+     * The first fatal engine failure (see {@link #failFatally}), when {@link #awaitDone()} ended on
+     * the fatal path.
+     */
     public Optional<Throwable> fatalCause() {
         return Optional.ofNullable(fatalCause.get());
     }
@@ -256,12 +259,12 @@ public final class CesiumEngine implements AutoCloseable {
     }
 
     /**
-     * Blocks until the engine finishes: a loop dies fatally (§3.8) or an external
-     * {@link #stop(Duration)} completes. Ensures a graceful shutdown ran (idempotently) before
+     * Blocks until the engine finishes: a fatal engine failure is signalled (a loop thread dying,
+     * §3.8) or an external {@link #stop(Duration)} completes. Ensures a graceful shutdown ran (idempotently) before
      * returning.
      *
-     * @return {@code true} when the engine stopped cleanly with no fatal loop death and within the
-     *     shutdown budget; {@code false} when a loop died fatally or a loop overran the budget — the
+     * @return {@code true} when the engine stopped cleanly with no fatal engine failure and within
+     *     the shutdown budget; {@code false} on a fatal engine failure or when a loop overran the budget — the
      *     app maps {@code false} to a non-zero exit (§6)
      */
     public boolean awaitDone() {
@@ -618,10 +621,10 @@ public final class CesiumEngine implements AutoCloseable {
     }
 
     /**
-     * A loop thread terminated. During shutdown that is expected. Otherwise it is fatal (§3.8): a
-     * thrown failure, or a clean exit with no stop request — either way the durable log is
-     * authoritative for a successor, so the engine signals the fatal path and lets {@link #awaitDone()}
-     * gracefully stop the survivors and exit non-zero (readiness is already gated by liveness/death).
+     * A loop thread terminated. During shutdown that is expected (a throw is logged at WARN).
+     * Otherwise it is a fatal engine failure (§3.8): a thrown failure, or a clean exit with no stop
+     * request. Either way the durable log is authoritative for a successor, so this delegates to
+     * {@link #failFatally} (readiness is already gated by liveness/death).
      */
     private void onLoopTerminated(Role role, @Nullable Throwable failure) {
         if (stopping) {
@@ -630,10 +633,24 @@ public final class CesiumEngine implements AutoCloseable {
             }
             return;
         }
-        Throwable cause =
-                failure != null ? failure : new IllegalStateException(role + " loop exited without a stop request");
+        failFatally(
+                role.name().toLowerCase(Locale.ROOT) + " loop",
+                failure != null ? failure : new IllegalStateException(role + " loop exited without a stop request"));
+    }
+
+    /**
+     * The single fatal path: records the first cause, logs it once, and releases {@link #awaitDone()},
+     * which gracefully stops the survivors and reports failure so the app exits non-zero. Ignored once
+     * shutdown has begun, since anything that fails while stopping is expected.
+     *
+     * @param source what failed, for the log line (for example {@code "ingest loop"})
+     */
+    private void failFatally(String source, Throwable cause) {
+        if (stopping) {
+            return;
+        }
         if (fatalCause.compareAndSet(null, cause)) {
-            log.error("fatal {} loop failure — initiating engine shutdown", role, cause);
+            log.error("fatal engine failure ({}) — initiating engine shutdown", source, cause);
         }
         terminationLatch.countDown();
     }

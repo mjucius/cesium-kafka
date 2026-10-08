@@ -57,7 +57,7 @@ import org.slf4j.LoggerFactory;
  *   <li>readiness carries the recovery/degraded decoupling detail (D21, §3.8) while staying ready;
  *   <li>the loop threads' log lines carry the {@code applicationId}/{@code loop}/{@code txn} MDC (§9);
  *   <li>{@code engine.stop()} flips readiness {@code 503} (shutdown signalled before clients close),
- *       joins cleanly with no fatal loop death, and the consumed source offset is committed.
+ *       joins cleanly with no fatal engine failure, and the consumed source offset is committed.
  * </ul>
  *
  * <p>The first-run group-A offset seed is the documented explicit-operator step (D18/§3.6): the
@@ -220,7 +220,7 @@ class AppQuickstartIT extends KafkaIT {
         // loop joins within the budget, no fatal death.
         boolean clean = engine.stop(SHUTDOWN_BUDGET);
         assertTrue(clean, "all loops joined within the shutdown budget");
-        assertTrue(engine.fatalCause().isEmpty(), "clean shutdown: no fatal loop death");
+        assertTrue(engine.fatalCause().isEmpty(), "clean shutdown: no fatal engine failure");
 
         HttpResponse<String> afterStop = get("/health/ready");
         assertEquals(503, afterStop.statusCode());

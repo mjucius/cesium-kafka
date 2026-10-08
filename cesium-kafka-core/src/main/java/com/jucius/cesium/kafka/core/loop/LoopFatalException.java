@@ -1,7 +1,7 @@
 package com.jucius.cesium.kafka.core.loop;
 
 /**
- * A fatal loop failure per the §3.8 taxonomy: the ingest or dispatch loop has closed (or is about
+ * A loop-fatal failure per the §3.8 taxonomy: the ingest or dispatch loop has closed (or is about
  * to close) its clients and will not continue — producer fenced, out-of-order sequence,
  * authentication or authorization failure, a {@code FAIL} policy firing, or a committed-offset /
  * cursor integrity failure ({@code NoOffsetForPartitionException} under the locked {@code
