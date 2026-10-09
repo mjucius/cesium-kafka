@@ -26,7 +26,7 @@ class KafkaTrackerStoreRecoveryTest {
 
     /** Runs a first store through a partial cycle and returns its committed cursor. */
     private TrackerCursor cursorFromFirstIncarnation() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
         store.beginRecovery(0, new TrackerCursor(0, ""), 0);
@@ -56,7 +56,7 @@ class KafkaTrackerStoreRecoveryTest {
         TrackerCursor committed = cursorFromFirstIncarnation();
 
         // New incarnation (e.g. after a rebalance): fresh store, same route identity.
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
         assertTrue(store.isRecovering(0), "ASSIGNED shards are gated before recovery begins");
@@ -99,7 +99,7 @@ class KafkaTrackerStoreRecoveryTest {
         // commit marker -- never delivered to a read_committed consumer. The engine reports
         // consumer.position() through onTrackerPosition; the store must promote on it instead of
         // waiting forever for a delivered record at the barrier (the idle-partition wedge).
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
 
@@ -124,7 +124,7 @@ class KafkaTrackerStoreRecoveryTest {
     @Test
     void beginRecoveryIsIdempotentAndConverges() {
         TrackerCursor committed = cursorFromFirstIncarnation();
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
 
@@ -146,7 +146,7 @@ class KafkaTrackerStoreRecoveryTest {
 
     @Test
     void barrierAtOrBelowCursorPromotesImmediately() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
         store.beginRecovery(0, new TrackerCursor(5, ""), 5); // barrier <= cursor: nothing to replay
@@ -155,7 +155,7 @@ class KafkaTrackerStoreRecoveryTest {
 
     @Test
     void identityMismatchFailsFast() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
 
@@ -194,7 +194,7 @@ class KafkaTrackerStoreRecoveryTest {
 
     @Test
     void corruptedCursorsFailFastNeverSilentlyIgnored() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
 
@@ -220,7 +220,7 @@ class KafkaTrackerStoreRecoveryTest {
 
     @Test
     void firstRunWithEmptyMetadataSkipsSeedingAndIdentityCheck() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
         store.beginRecovery(0, new TrackerCursor(0, ""), 0); // §3.6 explicit first-run seek shape
@@ -237,7 +237,7 @@ class KafkaTrackerStoreRecoveryTest {
 
     @Test
     void activeShardsKeepDispatchingWhileOthersRecover() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(2);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0, 1));
         store.beginRecovery(0, new TrackerCursor(0, ""), 0); // partition 0 immediately ACTIVE

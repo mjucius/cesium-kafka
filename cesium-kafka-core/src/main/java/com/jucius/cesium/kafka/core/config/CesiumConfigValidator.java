@@ -90,9 +90,6 @@ public final class CesiumConfigValidator {
         if (config.route().dlq().isPresent() && !config.route().dlq().get().isConfigured()) {
             findings.add(Finding.error("route.dlq.topic", "must not be blank when route.dlq is configured."));
         }
-        if (config.store().type().isBlank()) {
-            findings.add(Finding.error("store.type", "required: the scheduler store must be selected explicitly."));
-        }
     }
 
     // ------------------------------------------------------------------ ranges
@@ -117,11 +114,14 @@ public final class CesiumConfigValidator {
         atLeast(findings, "dispatch.batch.max-bytes", config.dispatch().batch().maxBytes(), 1);
         // The sidecar carries the pinned-entry encoding in offset metadata (§3.5); a zero budget
         // would silently force every partition into the overflow fallback.
-        atLeast(
-                findings,
-                "dispatch.cursor.sidecar-max-bytes",
-                config.dispatch().cursor().sidecarMaxBytes(),
-                1);
+        int sidecarMaxBytes = config.dispatch().cursor().sidecarMaxBytes();
+        if (sidecarMaxBytes < DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES
+                || sidecarMaxBytes > DispatchConfig.Cursor.MAX_SIDECAR_MAX_BYTES) {
+            findings.add(Finding.error(
+                    "dispatch.cursor.sidecar-max-bytes",
+                    "must be in [" + DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES + ", "
+                            + DispatchConfig.Cursor.MAX_SIDECAR_MAX_BYTES + "], got " + sidecarMaxBytes + "."));
+        }
         atLeast(
                 findings,
                 "dispatch.max-pending-per-partition",

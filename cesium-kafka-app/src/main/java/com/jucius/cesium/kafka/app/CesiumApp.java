@@ -192,8 +192,8 @@ public final class CesiumApp {
     }
 
     /**
-     * The {@code /info} supplier: build provenance + applicationId + lower-cased roles + store type
-     * + the named startup acknowledgments.
+     * The {@code /info} supplier: build provenance + applicationId + lower-cased roles + the named
+     * startup acknowledgments.
      */
     private static Supplier<ServiceInfo> serviceInfoSupplier(CesiumConfig config) {
         BuildInfo build = BuildInfo.load();
@@ -205,8 +205,7 @@ public final class CesiumApp {
         if (config.startupChecks().sizeBasedRetention() == StartupChecks.SizeBasedRetention.ACKNOWLEDGED) {
             acknowledgments.add("size-based-retention");
         }
-        ServiceInfo info = new ServiceInfo(
-                build, config.applicationId(), roles, config.store().type(), acknowledgments);
+        ServiceInfo info = new ServiceInfo(build, config.applicationId(), roles, acknowledgments);
         return () -> info;
     }
 

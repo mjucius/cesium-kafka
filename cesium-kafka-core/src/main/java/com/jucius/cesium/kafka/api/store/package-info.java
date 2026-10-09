@@ -1,24 +1,15 @@
 /**
- * The scheduler-store SPI (design §4): the stable boundary between the cesium engine and pluggable
- * scheduler-state stores.
+ * The loop-to-store boundary (design §4–§5): {@link com.jucius.cesium.kafka.api.store.TrackerBackedStore}
+ * and the value types that cross it. Engine-internal, with no compatibility promise (ADR-0021); the
+ * only implementation is {@code KafkaTrackerStore}.
  *
  * <p>The <em>engine</em> owns consumer groups and partition ownership, Kafka transactions and
  * fencing (invariants I1–I9), dispatch timing, header policies, and the recovery barrier gate. The
- * <em>store</em> owns durable recording of scheduler-state mutations, recovery enumeration, the
- * in-memory time index, and — for the tracker archetype — the per-partition recovery cursor the
- * engine commits as the group-B offset+metadata.
- *
- * <p>The root {@link com.jucius.cesium.kafka.api.store.SchedulerStore} is sealed with one {@code
- * non-sealed} archetype, {@link com.jucius.cesium.kafka.api.store.TrackerBackedStore}, which enlists
- * its writes in the engine's Kafka transactions (exactly-once). Hot-path types are primitive-accessor
- * views ({@link
- * com.jucius.cesium.kafka.api.store.DueBatch}) so the steady state allocates nothing per entry, and
- * the thread-confinement contract is explicit so the shipped store needs no locking.
- *
- * <p>Discovery is via {@link java.util.ServiceLoader} registration of {@link
- * com.jucius.cesium.kafka.api.store.SchedulerStoreProvider}; selection is always explicit
- * ({@code store.type}), never automatic. This package is semver-stable from 2.0.0; evolution is
- * additive via default methods.
+ * <em>store</em> owns durable recording of scheduler-state mutations (as tracker-record bytes the
+ * engine produces), recovery enumeration, the in-memory time index, and the per-partition recovery
+ * cursor the engine commits as the group-B offset+metadata. Hot-path types are primitive-accessor
+ * views ({@link com.jucius.cesium.kafka.api.store.DueBatch}) so the steady state allocates nothing per
+ * entry, and the thread-confinement contract is explicit so the store needs no locking.
  */
 @org.jspecify.annotations.NullMarked
 package com.jucius.cesium.kafka.api.store;

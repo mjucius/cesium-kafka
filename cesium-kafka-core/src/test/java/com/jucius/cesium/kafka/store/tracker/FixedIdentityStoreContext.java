@@ -1,78 +1,54 @@
 package com.jucius.cesium.kafka.store.tracker;
 
-import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.RouteDescriptor;
-import com.jucius.cesium.kafka.api.store.StoreContext;
-import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.util.HashMap;
-import java.util.Map;
 import org.apache.kafka.common.Uuid;
 
 /**
- * Deterministic {@link StoreContext} for store-level unit tests, with <em>fixed</em> identity
- * material ({@link #CLUSTER_ID}, {@link #SOURCE_TOPIC_ID}, {@link #TRACKER_TOPIC_ID}).
+ * Store-level unit-test fixture with <em>fixed</em> identity material ({@link #CLUSTER_ID},
+ * {@link #SOURCE_TOPIC_ID}, {@link #TRACKER_TOPIC_ID}) and its own registry.
  *
- * <p>Deliberately distinct from the published testkit's
- * {@code com.jucius.cesium.kafka.testkit.FakeStoreContext} (also on this module's test classpath),
- * whose identity is <em>random per build</em> — the right default for contract tests, where
- * independently built contexts must model different clusters. These unit tests instead need
- * byte-exact, name-addressable identity constants (sidecar identity headers are asserted against
- * them, and forged/foreign sidecars are constructed from them). The distinct name keeps the two
- * fixtures from being confused —
- * importing the testkit fake here would silently change what "foreign identity" means in a test.
+ * <p>Deliberately distinct from the contract kit's {@code FakeStoreContext}, whose identity is
+ * <em>random per build</em> — the right default for contract tests, where independently built
+ * contexts must model different clusters. These unit tests instead need byte-exact,
+ * name-addressable identity constants (sidecar identity headers are asserted against them, and
+ * forged/foreign sidecars are constructed from them).
  */
-final class FixedIdentityStoreContext implements StoreContext {
+final class FixedIdentityStoreContext {
 
     static final String CLUSTER_ID = "test-cluster";
     static final Uuid SOURCE_TOPIC_ID = new Uuid(0x0102030405060708L, 0x1112131415161718L);
     static final Uuid DESTINATION_TOPIC_ID = new Uuid(0x4142434445464748L, 0x5152535455565758L);
     static final Uuid TRACKER_TOPIC_ID = new Uuid(0x2122232425262728L, 0x3132333435363738L);
 
-    private final RouteDescriptor route;
-    private final ConfigView config;
+    /** Deterministic heap budget: the H1 recovery ceiling must not depend on the test JVM's -Xmx. */
+    static final long DEFAULT_HEAP_BUDGET_BYTES = 1L << 30;
+
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    private final int sidecarMaxBytes;
+    private final long heapBudgetBytes;
 
-    FixedIdentityStoreContext(int partitionCount, Map<String, String> properties) {
-        this(partitionCount, properties, TRACKER_TOPIC_ID);
+    private FixedIdentityStoreContext(int sidecarMaxBytes, long heapBudgetBytes) {
+        this.sidecarMaxBytes = sidecarMaxBytes;
+        this.heapBudgetBytes = heapBudgetBytes;
     }
 
-    FixedIdentityStoreContext(int partitionCount, Map<String, String> properties, Uuid trackerTopicId) {
-        this.route = new RouteDescriptor(
-                "test-app",
-                CLUSTER_ID,
-                "source",
-                SOURCE_TOPIC_ID,
-                "destination",
-                DESTINATION_TOPIC_ID,
-                "cesium.test-app.tracker",
-                trackerTopicId,
-                "dlq",
-                partitionCount);
-        Map<String, String> withDefaults = new HashMap<>(properties);
-        // Deterministic heap budget: the H1 recovery ceiling (heap budget / 64 B) must not depend on
-        // the test JVM's -Xmx.
-        withDefaults.putIfAbsent(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, Long.toString(1L << 30));
-        this.config = ConfigView.of(withDefaults);
+    /** The default 3 KiB sidecar budget and a 1 GiB heap budget. */
+    static FixedIdentityStoreContext defaults() {
+        return new FixedIdentityStoreContext(3072, DEFAULT_HEAP_BUDGET_BYTES);
     }
 
-    static FixedIdentityStoreContext withPartitions(int partitionCount) {
-        return new FixedIdentityStoreContext(partitionCount, Map.of());
+    static FixedIdentityStoreContext withSidecarBudget(int sidecarMaxBytes) {
+        return new FixedIdentityStoreContext(sidecarMaxBytes, DEFAULT_HEAP_BUDGET_BYTES);
     }
 
-    @Override
-    public RouteDescriptor route() {
-        return route;
+    static FixedIdentityStoreContext withHeapBudget(long heapBudgetBytes) {
+        return new FixedIdentityStoreContext(3072, heapBudgetBytes);
     }
 
-    @Override
-    public ConfigView config() {
-        return config;
-    }
-
-    @Override
-    public MeterRegistry meterRegistry() {
-        return registry;
+    /** A new store over this fixture's identity, budgets and registry. */
+    KafkaTrackerStore newStore() {
+        return new KafkaTrackerStore(
+                CLUSTER_ID, SOURCE_TOPIC_ID, TRACKER_TOPIC_ID, sidecarMaxBytes, heapBudgetBytes, registry);
     }
 
     SimpleMeterRegistry registry() {

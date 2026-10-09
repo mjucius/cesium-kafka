@@ -186,7 +186,7 @@ that the DLQ exists and only warns when its retention is fully unbounded (`reten
 The observability HTTP server (default `observability.port: 8081`, serving `/metrics`, `/info`,
 `/health/live`, `/health/ready`) is read-only but **completely unauthenticated**: no token, no mTLS,
 no source-IP gate. `/metrics` discloses per-partition operational gauges. `/info` returns only the
-build version, git commit, and store type by default; `observability.detailed-info: true` (default
+build version and git commit by default; `observability.detailed-info: true` (default
 `false`) adds the `application-id` (which seeds the M3 fencing ids), roles, and
 acknowledgments, so leave it off on any port you cannot restrict.
 

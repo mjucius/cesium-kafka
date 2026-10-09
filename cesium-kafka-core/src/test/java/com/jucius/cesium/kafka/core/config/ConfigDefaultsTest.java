@@ -24,8 +24,7 @@ import org.junit.jupiter.api.Test;
 class ConfigDefaultsTest {
 
     private static CesiumConfig allDefaults() {
-        return new CesiumConfig(
-                "app", new InstanceId("slot-0"), null, null, null, null, null, null, null, null, null, null);
+        return new CesiumConfig("app", new InstanceId("slot-0"), null, null, null, null, null, null, null, null, null);
     }
 
     @Test
@@ -46,7 +45,6 @@ class ConfigDefaultsTest {
                 null,
                 null,
                 null,
-                null,
                 null);
         assertEquals(Set.of(Role.INGEST), config.roles());
         assertThrows(UnsupportedOperationException.class, () -> config.roles().add(Role.DISPATCH));
@@ -55,7 +53,7 @@ class ConfigDefaultsTest {
     @Test
     void explicitlyEmptyRolesArePreservedForValidation() {
         CesiumConfig config = new CesiumConfig(
-                "app", new InstanceId("slot-0"), Set.of(), null, null, null, null, null, null, null, null, null);
+                "app", new InstanceId("slot-0"), Set.of(), null, null, null, null, null, null, null, null);
         assertTrue(config.roles().isEmpty());
     }
 
@@ -90,13 +88,6 @@ class ConfigDefaultsTest {
     void headersDefaults() {
         HeadersConfig headers = allDefaults().headers();
         assertTrue(headers.stampProvenance());
-    }
-
-    @Test
-    void storeDefaults() {
-        StoreConfig store = allDefaults().store();
-        assertEquals("kafka-tracker", store.type());
-        assertEquals(Map.of(), store.properties());
     }
 
     @Test
@@ -177,8 +168,5 @@ class ConfigDefaultsTest {
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> config.kafka().properties().put("x", "y"));
-        assertThrows(
-                UnsupportedOperationException.class,
-                () -> config.store().properties().put("x", "y"));
     }
 }

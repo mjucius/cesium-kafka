@@ -173,7 +173,7 @@ durable schedule book.
 
 ## 6. The in-memory delay queue
 
-The default scheduler implementation is called `kafka-tracker`. It has two parts:
+The scheduler store has two parts:
 
 - an in-memory delay queue inside the running cesium-kafka process
 - the tracker topic in Kafka, which is the durable source of truth used to rebuild that queue

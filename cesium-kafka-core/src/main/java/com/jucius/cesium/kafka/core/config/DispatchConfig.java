@@ -152,14 +152,21 @@ public record DispatchConfig(
     /**
      * Committed-cursor v2 settings (§3.5, D16).
      *
-     * @param sidecarMaxBytes encoded pinned-entry sidecar budget in the offset metadata; default
-     *     3072; checked against broker {@code offset.metadata.max.bytes} at startup and clamped
+     * @param sidecarMaxBytes encoded pinned-entry sidecar budget in the offset metadata, in
+     *     {@code [MIN_SIDECAR_MAX_BYTES, MAX_SIDECAR_MAX_BYTES]}; default 3072 (≈ 200–300 pinned
+     *     entries); checked against broker {@code offset.metadata.max.bytes} at startup and clamped
      *     (with a warning) when larger
      */
     public record Cursor(Integer sidecarMaxBytes) {
 
         /** Default sidecar budget in bytes (§8 defaults table). */
         public static final int DEFAULT_SIDECAR_MAX_BYTES = 3072;
+
+        /** Smallest accepted sidecar budget: room for the identity header plus a few entries. */
+        public static final int MIN_SIDECAR_MAX_BYTES = 128;
+
+        /** Largest accepted sidecar budget (1 MiB). */
+        public static final int MAX_SIDECAR_MAX_BYTES = 1 << 20;
 
         /** Materializes the §8 defaults for absent components. */
         public Cursor {

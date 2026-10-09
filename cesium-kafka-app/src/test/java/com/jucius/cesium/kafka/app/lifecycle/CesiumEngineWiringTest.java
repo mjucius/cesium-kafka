@@ -2,17 +2,12 @@ package com.jucius.cesium.kafka.app.lifecycle;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.jucius.cesium.kafka.api.store.RouteDescriptor;
-import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.health.ShardRecovery;
 import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine.LoopSpec;
-import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.DispatchConfig;
@@ -20,11 +15,9 @@ import com.jucius.cesium.kafka.core.config.IngestConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
-import com.jucius.cesium.kafka.core.config.StoreConfig;
 import com.jucius.cesium.kafka.core.config.TopicRef;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
-import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
@@ -42,15 +35,13 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import org.apache.kafka.common.Uuid;
-import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
  * The config-to-engine wiring decisions that do not need a broker (design §6, §10): role selection
- * and worker counts ({@link CesiumEngine#planLoops}), store resolution by {@code store.type}
- * ({@link CesiumEngine#resolveStore}).
+ * and worker counts ({@link CesiumEngine#planLoops}), the sidecar budget, and the health and
+ * re-validation plumbing.
  */
 class CesiumEngineWiringTest {
 
@@ -91,32 +82,6 @@ class CesiumEngineWiringTest {
         assertEquals(1, specs.stream().filter(s -> s.role() == Role.DISPATCH).count());
     }
 
-    // ------------------------------------------------------------------ store resolution by type
-
-    @Test
-    void resolvesTheKafkaTrackerStoreByTypeId() {
-        TrackerBackedStore store = CesiumEngine.resolveStore(KafkaTrackerStoreProvider.TYPE_ID);
-        assertInstanceOf(TrackerBackedStore.class, store);
-    }
-
-    @Test
-    void unknownStoreTypeFailsFast() {
-        EngineStartupException failure =
-                assertThrows(EngineStartupException.class, () -> CesiumEngine.resolveStore("does-not-exist"));
-        assertTrue(failure.getMessage().contains("does-not-exist"), failure::getMessage);
-    }
-
-    // ------------------------------------------------------------------ route descriptor
-
-    /**
-     * {@link CesiumEngine#buildRouteDescriptor} re-describes the source, destination and tracker
-     * <em>after</em> startup validation already described them successfully. An unknown-topic answer
-     * there is therefore broker metadata lag — possibly from a different node than validation asked —
-     * not a vanished topic, so the path must wait it out rather than fail startup.
-     *
-     * <p>These are the regression guard for that: reverting the call to a single-shot
-     * {@code describeTopic} turns them red.
-     */
     @Nested
     class RecoverySnapshot {
 
@@ -165,71 +130,6 @@ class CesiumEngineWiringTest {
         void emptyWithoutStoreGauges() {
             assertEquals(List.of(), CesiumEngine.recoverySnapshot(registry, 0, previous));
         }
-    }
-
-    @Nested
-    class BuildRouteDescriptor {
-
-        private final LaggingClusterAdmin admin = new LaggingClusterAdmin();
-        private final CesiumConfig config = config(Set.of(Role.INGEST), 1, 1);
-        private final IdentityBlob identity = new IdentityBlob("cluster-1", Uuid.randomUuid());
-
-        private String tracker() {
-            return config.route().tracker().resolvedTopic(config.applicationId());
-        }
-
-        private void givenAllTopicsExist() {
-            admin.addTopic("src", 3);
-            admin.addTopic("dst", 3);
-            admin.addTopic(tracker(), 3);
-        }
-
-        @Test
-        void aVisibleClusterCostsExactlyOneDescribePerTopic() {
-            givenAllTopicsExist();
-
-            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
-
-            assertEquals("src", route.sourceTopic());
-            assertEquals("dst", route.destinationTopic());
-            assertEquals(tracker(), route.trackerTopic());
-            assertEquals(
-                    Map.of("src", 1, "dst", 1, tracker(), 1), admin.describeCalls, "the happy path must not add RPCs");
-        }
-
-        @Test
-        void aTransientlyInvisibleTopicIsWaitedOutRatherThanReportedVanished() {
-            givenAllTopicsExist();
-            // The tracker is the one cesium itself just created, so it is the likeliest to lag.
-            admin.invisibleForDescribes(tracker(), 2);
-
-            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
-
-            assertEquals(tracker(), route.trackerTopic());
-            assertEquals(3, admin.describeCalls.get(tracker()), "two lagging answers, then the real one");
-        }
-
-        @Test
-        void everyRouteTopicIsAwaitedNotJustTheTracker() {
-            givenAllTopicsExist();
-            admin.invisibleForDescribes("src", 1);
-            admin.invisibleForDescribes("dst", 1);
-
-            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
-
-            assertEquals("src", route.sourceTopic());
-            assertEquals("dst", route.destinationTopic());
-            assertEquals(2, admin.describeCalls.get("src"));
-            assertEquals(2, admin.describeCalls.get("dst"));
-        }
-
-        // The terminal case — a topic that NEVER becomes visible must still fail startup rather than
-        // wait forever — is deliberately not asserted here. Reaching it means spending the whole
-        // TopicVisibility budget, which costs ~10 s of real sleeping in this module (there is no
-        // clock/waiter seam across the module boundary, and widening TopicVisibility's API for one
-        // test is not worth it). Budget expiry is already pinned in TopicVisibilityTest
-        // (aTopicThatTrulyDoesNotExistReturnsEmptyAfterTheBudget); all that is left uncovered here is
-        // describeOrFail's three-line orElseThrow.
     }
 
     // ------------------------------------------------------------------ re-validation (D23)
@@ -335,69 +235,21 @@ class CesiumEngineWiringTest {
     @Nested
     class SidecarBudget {
 
-        private static final String KEY = "cursor.sidecar-max-bytes";
-
-        private CesiumConfig withBudget(@Nullable Integer dispatchBudget, Map<String, String> storeProperties) {
-            return withBudget(StoreConfig.DEFAULT_TYPE, dispatchBudget, storeProperties);
-        }
-
-        private CesiumConfig withBudget(
-                String storeType, @Nullable Integer dispatchBudget, Map<String, String> storeProperties) {
-            return new CesiumConfig(
-                    "orders",
-                    InstanceId.of("slot-0"),
-                    null,
-                    null,
-                    new RouteConfig(
-                            new TopicRef("src"), new TopicRef("dst"), null, Optional.of(new TopicRef("dlq")), null),
-                    null,
-                    null,
-                    new StoreConfig(storeType, storeProperties),
-                    null,
-                    new DispatchConfig(
-                            null, null, null, null, new DispatchConfig.Cursor(dispatchBudget), null, null, null, null),
-                    null,
-                    null);
+        @Test
+        void theConfiguredBudgetIsClampedToTheBrokerCap() {
+            assertEquals(2048, CesiumEngine.sidecarBudget(2048, OptionalInt.of(4096)));
+            assertEquals(4096, CesiumEngine.sidecarBudget(8192, OptionalInt.of(4096)));
         }
 
         @Test
-        void dispatchBudgetReachesTheStore() {
-            Map<String, String> props = CesiumEngine.storeProperties(withBudget(2048, Map.of()), OptionalInt.of(4096));
-            assertEquals("2048", props.get(KEY));
+        void anUnknownBrokerCapPassesTheBudgetThrough() {
+            assertEquals(8192, CesiumEngine.sidecarBudget(8192, OptionalInt.empty()));
         }
 
         @Test
-        void dispatchBudgetIsClampedToTheBrokerCap() {
-            Map<String, String> props = CesiumEngine.storeProperties(withBudget(8192, Map.of()), OptionalInt.of(4096));
-            assertEquals("4096", props.get(KEY));
-        }
-
-        @Test
-        void unknownBrokerCapPassesTheBudgetThrough() {
-            Map<String, String> props = CesiumEngine.storeProperties(withBudget(8192, Map.of()), OptionalInt.empty());
-            assertEquals("8192", props.get(KEY));
-        }
-
-        @Test
-        void explicitStoreValueWinsAndIsNotClamped() {
-            Map<String, String> props =
-                    CesiumEngine.storeProperties(withBudget(2048, Map.of(KEY, "8192")), OptionalInt.of(4096));
-            assertEquals("8192", props.get(KEY));
-        }
-
-        @Test
-        void outOfRangeBudgetIsLeftOutSoTheStoreKeepsItsDefault() {
-            assertFalse(CesiumEngine.storeProperties(withBudget(64, Map.of()), OptionalInt.empty())
-                    .containsKey(KEY));
-            assertFalse(CesiumEngine.storeProperties(withBudget(3072, Map.of()), OptionalInt.of(100))
-                    .containsKey(KEY));
-        }
-
-        @Test
-        void otherStoreTypesAreNeverInjected() {
-            Map<String, String> props =
-                    CesiumEngine.storeProperties(withBudget("other-store", 2048, Map.of()), OptionalInt.of(4096));
-            assertFalse(props.containsKey(KEY));
+        void aBrokerCapBelowTheStoreMinimumFloorsAtTheMinimum() {
+            assertEquals(
+                    DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES, CesiumEngine.sidecarBudget(3072, OptionalInt.of(100)));
         }
     }
 
@@ -409,7 +261,6 @@ class CesiumEngineWiringTest {
                 roles,
                 null,
                 new RouteConfig(new TopicRef("src"), new TopicRef("dst"), null, Optional.of(new TopicRef("dlq")), null),
-                null,
                 null,
                 null,
                 new IngestConfig(ingestWorkers),

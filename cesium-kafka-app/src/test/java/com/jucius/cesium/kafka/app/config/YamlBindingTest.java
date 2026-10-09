@@ -92,10 +92,6 @@ class YamlBindingTest {
                   on-malformed-header: relay_immediate
                 headers:
                   stamp-provenance: false
-                store:
-                  type: kafka-tracker
-                  properties:
-                    hmac.key: secret
                 ingest:
                   workers: 2
                 dispatch:
@@ -150,7 +146,6 @@ class YamlBindingTest {
         assertEquals(MalformedHeaderPolicy.RELAY_IMMEDIATE, config.delay().onMalformedHeader());
 
         assertFalse(config.headers().stampProvenance());
-        assertEquals("secret", config.store().properties().get("hmac.key"));
         assertEquals(2, config.ingest().workers());
 
         DispatchConfig dispatch = config.dispatch();
@@ -184,7 +179,6 @@ class YamlBindingTest {
         assertEquals(10_000, config.dispatch().batch().maxEntries());
         assertEquals(32L * 1024 * 1024, config.dispatch().batch().maxBytes());
         assertEquals(3072, config.dispatch().cursor().sidecarMaxBytes());
-        assertEquals("kafka-tracker", config.store().type());
         assertEquals(8081, config.observability().port());
     }
 

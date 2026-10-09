@@ -1,10 +1,5 @@
 package com.jucius.cesium.kafka.app.lifecycle;
 
-import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.RouteDescriptor;
-import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.SchedulerStoreProvider;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.health.EngineHealth;
 import com.jucius.cesium.kafka.app.health.MutableEngineHealth;
@@ -15,9 +10,8 @@ import com.jucius.cesium.kafka.core.admin.KafkaClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.admin.StartupValidator.Revalidation;
-import com.jucius.cesium.kafka.core.admin.TopicFacts;
-import com.jucius.cesium.kafka.core.admin.TopicVisibility;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
+import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.core.dispatch.DispatchLoop;
@@ -31,7 +25,6 @@ import com.jucius.cesium.kafka.core.ingest.IngestLoopConfig;
 import com.jucius.cesium.kafka.core.kafka.KafkaClientFactory;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
 import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
-import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
@@ -46,7 +39,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -77,10 +69,8 @@ import org.slf4j.MDC;
  * <ol>
  *   <li>runs {@link StartupValidator} over a real {@link KafkaClusterAdmin} (CREATE bootstrap,
  *       parity, retention, identity) and fail-fasts on errors;
- *   <li>captures the cluster id + topic ids and builds the {@link RouteDescriptor} +
- *       {@link StoreContext};
- *   <li>resolves the {@link SchedulerStore} through the published {@link SchedulerStoreProvider}
- *       ServiceLoader hook by {@code store.type} and drives {@code configure → validate → start};
+ *   <li>builds the {@link KafkaTrackerStore} from the captured cluster and topic ids, the sidecar
+ *       budget (clamped to the broker's {@code offset.metadata.max.bytes}) and the heap budget;
  *   <li>per {@linkplain Role role}, spawns {@code ingest.workers} {@link IngestLoop}s and
  *       {@code dispatch.workers} (validated to 1) {@link DispatchLoop}s — each owning its own Kafka clients (distinct
  *       transactional-id worker ordinals), the shared store, registry, {@link RelayRecordFactory},
@@ -239,15 +229,20 @@ public final class CesiumEngine implements AutoCloseable {
                     .orElseThrow(() ->
                             new EngineStartupException("startup validation passed but captured no partition count"));
 
-            TrackerBackedStore resolved = resolveStore(config.store().type());
-            this.store = resolved;
-            RouteDescriptor route = buildRouteDescriptor(clusterAdmin, config, identity, partitionCount);
-            resolved.configure(new EngineStoreContext(
-                    route, ConfigView.of(storeProperties(config, validation.offsetMetadataMaxBytes()))));
-            resolved.validate();
-            resolved.start();
+            Uuid trackerTopicId = validation
+                    .trackerTopicId()
+                    .orElseThrow(() ->
+                            new EngineStartupException("startup validation passed but captured no tracker topic id"));
+            KafkaTrackerStore created = new KafkaTrackerStore(
+                    identity.clusterId(),
+                    identity.sourceTopicId(),
+                    trackerTopicId,
+                    sidecarBudget(config.dispatch().cursor().sidecarMaxBytes(), validation.offsetMetadataMaxBytes()),
+                    DispatchConfig.heapBudgetBytes(maxHeapBytes),
+                    registry);
+            this.store = created;
 
-            spawnLoops(adminClient, resolved, identity, partitionCount);
+            spawnLoops(adminClient, created, identity, partitionCount);
             // Startup checks + store are up AND every loop is registered with the health seam: only
             // now satisfy readiness's startup gate. Flipping it before spawnLoops would open a brief
             // premature-READY window where readiness() iterates zero started roles and returns 200;
@@ -255,14 +250,13 @@ public final class CesiumEngine implements AutoCloseable {
             // assigned=false) until the sampler observes them iterating, so READY stays loop-gated (§9).
             health.markStartupComplete();
             startHealthSampler();
-            startRevalidation(clusterAdmin, identity, Objects.requireNonNull(route.trackerTopicId(), "trackerTopicId"));
+            startRevalidation(clusterAdmin, identity, trackerTopicId);
             log.info(
-                    "cesium engine started: applicationId={} roles={} ingestWorkers={} dispatchWorkers={} store={}",
+                    "cesium engine started: applicationId={} roles={} ingestWorkers={} dispatchWorkers={}",
                     config.applicationId(),
                     config.roles(),
                     ingestHandles.size(),
-                    dispatchHandles.size(),
-                    config.store().type());
+                    dispatchHandles.size());
         } catch (EngineStartupException e) {
             stop(shutdownTimeout); // unwind any partially-built clients/store
             throw e;
@@ -345,127 +339,23 @@ public final class CesiumEngine implements AutoCloseable {
     }
 
     /**
-     * The {@code store.properties} the store is configured with (§3.5). For the bundled
-     * {@code kafka-tracker} store, {@code dispatch.cursor.sidecar-max-bytes} is the default for the
-     * store's {@code cursor.sidecar-max-bytes}, clamped to the broker's
-     * {@code offset.metadata.max.bytes} (the validator has already warned about the clamp). An
-     * explicit store value always wins and is never clamped, only warned about. A dispatch value
-     * outside the store's accepted range is left out — with a warning — so it can never turn into a
-     * startup failure: the store then keeps its own default. Pure — unit-tested without a broker.
+     * The cursor sidecar budget the store gets: {@code dispatch.cursor.sidecar-max-bytes} clamped to
+     * the broker's {@code offset.metadata.max.bytes} (§3.5; startup validation already warned
+     * about the clamp), and never below the store's minimum. Pure — unit-tested without a broker.
      */
-    static Map<String, String> storeProperties(CesiumConfig config, OptionalInt offsetMetadataMaxBytes) {
-        Map<String, String> properties = config.store().properties();
-        if (!KafkaTrackerStoreProvider.TYPE_ID.equals(config.store().type())) {
-            return properties; // another store's keys are its own; never inject one it may reject
-        }
-        String key = KafkaTrackerStore.SIDECAR_MAX_BYTES_KEY;
-        String explicit = properties.get(key);
-        if (explicit != null) {
-            try {
-                int value = Integer.parseInt(explicit.trim());
-                if (offsetMetadataMaxBytes.isPresent() && value > offsetMetadataMaxBytes.getAsInt()) {
-                    log.warn(
-                            "store.properties.{} ({}) exceeds broker offset.metadata.max.bytes ({}); cursor commits"
-                                    + " fail once the sidecar outgrows the broker cap — lower it or raise the broker"
-                                    + " setting (§3.5)",
-                            key,
-                            value,
-                            offsetMetadataMaxBytes.getAsInt());
-                }
-            } catch (NumberFormatException e) {
-                // Not ours to report: the store's validate() rejects it with a non-disclosing message.
-            }
-            return properties;
-        }
-        int budget = config.dispatch().cursor().sidecarMaxBytes();
-        int effective =
-                offsetMetadataMaxBytes.isPresent() ? Math.min(budget, offsetMetadataMaxBytes.getAsInt()) : budget;
-        if (effective < KafkaTrackerStore.MIN_SIDECAR_MAX_BYTES
-                || effective > KafkaTrackerStore.MAX_SIDECAR_MAX_BYTES) {
-            log.warn(
-                    "sidecar budget {} (dispatch.cursor.sidecar-max-bytes, clamped to the broker cap) is outside the"
-                            + " store's accepted range [{}, {}]; keeping the store default of {} bytes",
-                    effective,
-                    KafkaTrackerStore.MIN_SIDECAR_MAX_BYTES,
-                    KafkaTrackerStore.MAX_SIDECAR_MAX_BYTES,
-                    KafkaTrackerStore.DEFAULT_SIDECAR_MAX_BYTES);
-            return properties;
-        }
-        Map<String, String> withBudget = new HashMap<>(properties);
-        withBudget.put(key, Integer.toString(effective));
-        return withBudget;
-    }
-
-    /**
-     * Resolves the tracker-backed store for {@code typeId} through the published
-     * {@link SchedulerStoreProvider} ServiceLoader hook — the same explicit-selection path the
-     * integration harness uses (design §4.5). Duplicate providers for one type, an unknown type, or
-     * a non-tracker-backed store all fail fast. Pure — unit-tested without a broker.
-     */
-    static TrackerBackedStore resolveStore(String typeId) {
-        SchedulerStore resolved = null;
-        for (SchedulerStoreProvider provider : ServiceLoader.load(SchedulerStoreProvider.class)) {
-            if (provider.typeId().equals(typeId)) {
-                if (resolved != null) {
-                    throw new EngineStartupException("duplicate SchedulerStoreProvider registered for store.type '"
-                            + typeId + "' — remove the conflicting provider jar from the classpath");
-                }
-                resolved = provider.create();
-            }
-        }
-        if (resolved == null) {
-            throw new EngineStartupException("no SchedulerStoreProvider registered for store.type '" + typeId
-                    + "' — the kafka-tracker store ships in cesium-kafka-store-kafka; check the classpath");
-        }
-        if (resolved instanceof TrackerBackedStore trackerBacked) {
-            return trackerBacked;
-        }
-        throw new EngineStartupException("store.type '" + typeId + "' resolved to a non-tracker-backed store ("
-                + resolved.getClass().getName() + "); this app build orchestrates tracker-backed stores only");
+    static int sidecarBudget(int configured, OptionalInt offsetMetadataMaxBytes) {
+        int budget = offsetMetadataMaxBytes.isPresent()
+                ? Math.min(configured, offsetMetadataMaxBytes.getAsInt())
+                : configured;
+        // ponytail: a broker cap below 128 B is not a real deployment; cursor commits that outgrow
+        // it fail either way, so the floor only keeps the identity header encodable.
+        return Math.max(DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES, budget);
     }
 
     /** One planned loop worker: its role and its transactional-id ordinal. */
     record LoopSpec(Role role, int workerOrdinal) {}
 
     // ------------------------------------------------------------------ startup helpers
-
-    /**
-     * The route identity triple + topic facts from the same admin plane production uses (§3.5).
-     *
-     * <p>Package-private and static so the wiring test can drive it over a fake {@link ClusterAdmin}
-     * — in particular to prove the bounded metadata wait below is really on this path.
-     */
-    static RouteDescriptor buildRouteDescriptor(
-            ClusterAdmin clusterAdmin, CesiumConfig config, IdentityBlob identity, int partitions) {
-        // All three topics were described successfully moments ago during startup validation, so an
-        // unknown-topic answer here is a laggy broker's metadata image — possibly a different node
-        // than validation asked — not a vanished topic. Wait it out before declaring the latter.
-        TopicVisibility visibility = new TopicVisibility(clusterAdmin);
-        TopicFacts source = describeOrFail(visibility, config.route().source().topic());
-        TopicFacts destination =
-                describeOrFail(visibility, config.route().destination().topic());
-        // The tracker exists by now: the CREATE bootstrap ran inside startup validation.
-        TopicFacts tracker = describeOrFail(visibility, trackerTopic(config));
-        String dlq = config.route().hasDlq() ? config.route().dlq().get().topic() : null;
-        return new RouteDescriptor(
-                config.applicationId(),
-                identity.clusterId(),
-                source.name(),
-                source.topicId(),
-                destination.name(),
-                destination.topicId(),
-                tracker.name(),
-                tracker.topicId(),
-                dlq,
-                partitions);
-    }
-
-    private static TopicFacts describeOrFail(TopicVisibility visibility, String topic) {
-        return visibility
-                .awaitVisible(topic)
-                .orElseThrow(() -> new EngineStartupException(
-                        "topic '" + topic + "' vanished between startup validation and store build"));
-    }
 
     private void spawnLoops(
             Admin adminClient, TrackerBackedStore sharedStore, IdentityBlob identity, int partitionCount) {
@@ -987,35 +877,6 @@ public final class CesiumEngine implements AutoCloseable {
             this.thread = thread;
             this.stopper = stopper;
             this.degradedProbe = degradedProbe;
-        }
-    }
-
-    /**
-     * The production {@link StoreContext}: real route identity, the {@code store.properties} subtree
-     * and the shared registry.
-     */
-    private final class EngineStoreContext implements StoreContext {
-        private final RouteDescriptor route;
-        private final ConfigView configView;
-
-        EngineStoreContext(RouteDescriptor route, ConfigView configView) {
-            this.route = route;
-            this.configView = configView;
-        }
-
-        @Override
-        public RouteDescriptor route() {
-            return route;
-        }
-
-        @Override
-        public ConfigView config() {
-            return configView;
-        }
-
-        @Override
-        public MeterRegistry meterRegistry() {
-            return registry;
         }
     }
 }

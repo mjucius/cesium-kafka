@@ -13,9 +13,9 @@ Wire formats are unchanged, so a mixed 1.1.5/2.0.0 rolling restart is safe.
 HTTP bodies are the same JSON, though an escaped control character there would now use uppercase hex.
 
 ### Upgrading from 1.x
-1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce` and
-   `store.properties.max-pending-per-partition`. Set `dispatch.workers` to 1 and add instances
-   instead. Replace any `store.type: class:...` value with the provider's `typeId`.
+1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce` and the whole `store` block
+   (`store.type`, `store.properties`). Move a `store.properties.cursor.sidecar-max-bytes` value to
+   `dispatch.cursor.sidecar-max-bytes`. Set `dispatch.workers` to 1 and add instances instead.
 2. Roll instances one at a time. The tracker wire format, committed-cursor offset metadata and
    worker-0 `group.instance.id`s are unchanged, so 1.1.5 and 2.0.0 instances can run side by side.
 3. Expect runtime re-validation (every `startup-checks.revalidation-interval`, default PT5M) to set
@@ -50,15 +50,19 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `dispatch.coalesce` is removed (YAML and `CESIUM_DISPATCH__COALESCE`).
   Setting it is now an unknown-key error (exit 78). It never had any effect. Internally,
   `DispatchConfig` loses its `coalesce` component (10 to 9 components).
-- Testkit: `FakeStoreContext.MapConfigView` is removed; use `ConfigView.of(Map)`.
-  `FakeStoreContext.config()` now parses the way the engine does: trimmed values, case-insensitive
-  booleans, and no value echoed in errors.
-- `store.properties.max-pending-per-partition` (kafka-tracker) is removed and now fails startup as
-  an unknown store key (exit 1). `dispatch.max-pending-per-partition` is the only per-partition cap
-  input. `KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY` and
-  `DEFAULT_MAX_PENDING_PER_PARTITION` are removed, and the `SchedulerStore.validate` javadoc no
-  longer lists the footprint check as a store duty. The `kafka-tracker validated` INFO line loses
-  its footprint fields.
+- Config: `store.type` and `store.properties` are removed; setting either is an unknown-key error
+  (exit 78). The store's keys go with them: `cursor.sidecar-max-bytes` is now
+  `dispatch.cursor.sidecar-max-bytes` (already the documented key), `heap-budget-bytes` is derived
+  from 25% of `-Xmx` like `dispatch.max-pending-total`, `index.stale-rebuild-floor` and
+  `index.completed-sweep-floor` are fixed at their defaults, and `max-pending-per-partition` was
+  already a duplicate of `dispatch.max-pending-per-partition`.
+- `dispatch.cursor.sidecar-max-bytes` must be in [128, 1048576] (exit 78). 1.x accepted any value
+  of at least 1 and silently ignored it.
+- SPI: `SchedulerStore`, `SchedulerStoreProvider` and its `META-INF/services` registration,
+  `StoreContext`, `ConfigView`/`MapConfigView` and `RouteDescriptor` are removed.
+  `TrackerBackedStore` is an engine-internal interface, and `KafkaTrackerStore` takes its identity,
+  budgets and meter registry in its constructor instead of `configure → validate → start`.
+- `/info` drops its `store` object (`store.type`).
 - `startup-checks.heap-budget` is removed, together with the startup check it controlled; setting
   it is an unknown-key error (exit 78). That check required `source partitions ×
   dispatch.max-pending-per-partition × 64 B` to fit in 25% of the heap, so at the 2,000,000 default
@@ -66,8 +70,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   AUTO `dispatch.max-pending-total` pauses ACTIVE shards at the same budget, and the store's H1
   ceiling bounds RECOVERING shards. An explicit `dispatch.max-pending-total` larger than the budget
   is now a warning instead of an error. The store's own repeat of the check is gone too.
-- `store.properties.heap-budget-bytes` keeps its name but now feeds only the store's H1 recovery
-  resident-pending ceiling.
 - `kafka.transactions.commit-retry` must be at least 1 (exit 78). It counts `commitTransaction`
   attempts, so `0` behaved like `1`; it passed config load and then failed engine construction
   with exit 1.
@@ -93,8 +95,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   cap ÷ `dispatch.workers` (minimum 1); with `dispatch.workers` fixed at 1 that is the whole cap.
 - `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now
   includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
-- `store.type: class:<FQCN>` is removed from the `SchedulerStoreProvider` contract. It was never
-  implemented, and such a value still fails startup as an unknown typeId.
 - Logs: JSON lines from the loop threads (`cesium-ingest-N`, `cesium-dispatch-N`) now carry an
   `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main, `cesium-shutdown`
   and `cesium-admin` threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
@@ -128,22 +128,16 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   eviction, an R-11 earliest-retained-record check. It never creates topics or applies ACLs, and
   needs no new ACL grants.
 - Metric `cesium_revalidation_errors`: errors found by the last re-validation round; `0` when clean.
-- `ConfigView.of(Map)` in `cesium-kafka-api`: the engine's parsing (trimmed values, case-insensitive
-  booleans, errors that never echo a possibly-secret value) is now available to store implementers.
 - Metrics `cesium_shard_state{partition}` (0 = ASSIGNED, 1 = RECOVERING, 2 = ACTIVE) and
   `cesium_replay_remaining_records{partition}` (barrier − position while recovering), previously
   listed as "not yet emitted".
 
 ### Fixed
-- `dispatch.cursor.sidecar-max-bytes` had no effect. It is now passed to the `kafka-tracker`
-  store when `store.properties.cursor.sidecar-max-bytes` is unset, so a dispatch-only setting now
-  takes effect. An explicit store value still wins, and a value outside the store's 128 B–1 MiB range
-  is ignored with a warning (the store keeps its default, as before).
+- `dispatch.cursor.sidecar-max-bytes` had no effect: the store read its own
+  `store.properties.cursor.sidecar-max-bytes` instead. It is now the store's only sidecar budget.
 - The documented startup check against broker `offset.metadata.max.bytes` did not exist. Startup
   now reads it and, when the sidecar budget exceeds it, warns and clamps the budget so cursor commits
-  pin fewer entries instead of failing at commit time. It only ever warns; an explicit store-side value
-  is warned about but not overridden. If the clamped budget falls below the store's 128-byte minimum
-  (a broker set that low), it is ignored with a warning and the store keeps its default.
+  pin fewer entries instead of failing at commit time. It only ever warns.
 - `/health/ready` always reported `"recovery": []`. The per-shard recovery detail (state,
   records remaining, ETA) is now fed from the store's shard-state gauges. Recovery still never affects
   readiness (D21).
@@ -178,16 +172,12 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `cesium_retention_margin_seconds`, a metric that was never emitted. It now cites
   `cesium_fetch_unfetchable_total`, `dispatch.on-unfetchable-payload` and broker-side monitoring of
   the source's earliest-record age.
-- `ConfigView.of` hid an unparseable `store.properties` value from its error message but kept the
-  JDK parse exception as the cause, whose message quotes the value (`For input string: "..."`), so a
-  logged stack trace could still print a secret. The error now carries no cause.
 
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).
-- Testkit `FakeStoreContext.MapConfigView`. Use `ConfigView.of(Map)` (see Breaking changes).
-- `store.properties.max-pending-per-partition`, `startup-checks.heap-budget` and the startup
-  footprint check, in both the engine and the store (see Breaking changes).
-- The documented but unimplemented `store.type: class:<FQCN>` store selection (see Breaking changes).
+- `store.type`, `store.properties` and the store-selection SPI (see Breaking changes).
+- `startup-checks.heap-budget` and the startup footprint check, in both the engine and the store
+  (see Breaking changes).
 - `ExternalSchedulerStore` and its contract kit, `StoreCapabilities`, `OwnershipEpoch`,
   `StoreContext.epoch()`/`clock()`, the testkit's `MutableClock`, and the headers-blind
   `onTrackerRecord` overload (see Breaking changes).

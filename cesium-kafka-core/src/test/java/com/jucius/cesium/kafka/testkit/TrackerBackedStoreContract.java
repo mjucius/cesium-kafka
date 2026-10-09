@@ -8,10 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
+import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.testkit.TrackerStoreHarness.PendingEntry;
 import com.jucius.cesium.kafka.testkit.TrackerStoreHarness.ReasonGroup;
 import io.micrometer.core.instrument.Counter;
@@ -22,14 +22,12 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import net.jqwik.api.Arbitrary;
 import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
 import org.jspecify.annotations.Nullable;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -38,12 +36,11 @@ import org.junit.jupiter.api.Test;
  * the §4.4 correctness checklist). Subclass with a factory and run: every test and property here
  * must pass for a conforming store.
  *
- * <p><strong>How to use.</strong> Implement {@link #createStore(StoreContext)} to return a
- * configured, validated, started instance; override {@link #storeProperties()} for any
- * configuration your store requires, and {@link #overflowForcingProperties()} to unlock the
- * sidecar-overflow test. The contract builds {@link FakeStoreContext}s (random route identity per
- * context — pass an existing {@code route()} through the builder to model a restart of the same
- * route, which {@link TrackerStoreHarness#migrateTo} does for you).
+ * <p><strong>How to use.</strong> Implement {@link #createStore(FakeStoreContext)} to build the
+ * store from the context's identity, budgets and registry. The contract builds
+ * {@link FakeStoreContext}s (random route identity per context — pass an existing
+ * {@code identity()} through the builder to model a restart of the same route, which
+ * {@link TrackerStoreHarness#migrateTo} does for you).
  *
  * <p><strong>What is asserted — and deliberately no more.</strong> Drain order is asserted exactly
  * as specified: within a partition ({@code dispatchAtMs}, then arrival); across partitions,
@@ -78,7 +75,7 @@ public abstract class TrackerBackedStoreContract {
     /**
      * Cluster id used by {@link #overflowFallbackEqualsTheMinPendingWatermark()}: long enough
      * (60 bytes) that a store binding identity into its metadata blob has almost no entry room
-     * left under the smallest budget {@link #overflowForcingProperties()} configures.
+     * left under the smallest sidecar budget, {@link DispatchConfig.Cursor#MIN_SIDECAR_MAX_BYTES}.
      */
     protected static final String OVERFLOW_CLUSTER_ID = "o".repeat(60);
 
@@ -86,26 +83,8 @@ public abstract class TrackerBackedStoreContract {
     // Implementer surface
     // ----------------------------------------------------------------------------------------
 
-    /**
-     * Creates a ready-to-use store: {@code configure(context) → validate() → start()} already
-     * performed. Called many times per test run; instances must be independent.
-     */
-    protected abstract TrackerBackedStore createStore(StoreContext context);
-
-    /** {@code store.properties} merged into every context the contract builds. */
-    protected Map<String, String> storeProperties() {
-        return Map.of();
-    }
-
-    /**
-     * Properties that bound the committed-cursor metadata budget so tightly that not even one
-     * pinned entry fits (the contract pairs them with {@link #OVERFLOW_CLUSTER_ID}). Empty (the
-     * default) skips the min-pending-watermark overflow test via an assumption — override it for
-     * any store with a configurable sidecar budget.
-     */
-    protected Optional<Map<String, String>> overflowForcingProperties() {
-        return Optional.empty();
-    }
+    /** Creates a ready-to-use store for {@code context}. Called many times per test run; instances must be independent. */
+    protected abstract TrackerBackedStore createStore(FakeStoreContext context);
 
     /** Partition count of the routes the contract builds. */
     protected int partitionCount() {
@@ -321,7 +300,7 @@ public abstract class TrackerBackedStoreContract {
         // Replaying across the same invalid records — one of them the LAST record below the
         // barrier — must still reach the barrier: position advances on invalid records too.
         TrackerBackedStore fresh =
-                createStore(contextBuilder().route(ctx.route()).build());
+                createStore(contextBuilder().identity(ctx.identity()).build());
         TrackerStoreHarness freshHarness = harness.migrateTo(fresh);
         freshHarness.startPartition(0);
         assertFalse(fresh.isRecovering(0), "an invalid record below the barrier must not wedge recovery");
@@ -581,17 +560,12 @@ public abstract class TrackerBackedStoreContract {
 
     @Test
     public void overflowFallbackEqualsTheMinPendingWatermark() {
-        Optional<Map<String, String>> overflowProps = overflowForcingProperties();
-        Assumptions.assumeTrue(
-                overflowProps.isPresent(),
-                "store exposes no metadata-budget knob: overflow fallback not testable through the SPI");
-
-        Map<String, String> forcing = overflowProps.orElseThrow();
+        // The smallest supported sidecar budget (128 B Base64 => 96 raw bytes) combined with the
+        // 60-byte OVERFLOW_CLUSTER_ID (94-byte identity header) leaves 2 raw bytes — less than any
+        // encoded entry — so the cursor must degenerate to the min-pending watermark (§3.5).
         FakeStoreContext ctx = FakeStoreContext.builder()
-                .partitions(1)
                 .clusterId(OVERFLOW_CLUSTER_ID)
-                .properties(storeProperties())
-                .properties(forcing)
+                .sidecarMaxBytes(DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES)
                 .build();
         TrackerBackedStore store = createStore(ctx);
         TrackerStoreHarness harness = new TrackerStoreHarness(store);
@@ -611,9 +585,8 @@ public abstract class TrackerBackedStoreContract {
 
         List<PendingEntry> expected = harness.pendingSnapshot();
         TrackerBackedStore fresh = createStore(FakeStoreContext.builder()
-                .route(ctx.route())
-                .properties(storeProperties())
-                .properties(forcing)
+                .identity(ctx.identity())
+                .sidecarMaxBytes(DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES)
                 .build());
         TrackerStoreHarness freshHarness = harness.migrateTo(fresh);
         freshHarness.startPartition(0);
@@ -1107,7 +1080,7 @@ public abstract class TrackerBackedStoreContract {
         assertEquals(expected, harness.pendingSnapshot(), "the live store diverged from the reference model");
 
         TrackerBackedStore fresh =
-                createStore(contextBuilder().route(ctx.route()).build());
+                createStore(contextBuilder().identity(ctx.identity()).build());
         TrackerStoreHarness freshHarness = harness.migrateTo(fresh);
         for (int p = 0; p < partitions; p++) {
             freshHarness.startPartition(p);
@@ -1196,9 +1169,9 @@ public abstract class TrackerBackedStoreContract {
     // Shared plumbing
     // ----------------------------------------------------------------------------------------
 
-    /** Context builder pre-loaded with the contract's partition count and the store's properties. */
+    /** A context builder with the contract defaults. */
     protected FakeStoreContext.Builder contextBuilder() {
-        return FakeStoreContext.builder().partitions(partitionCount()).properties(storeProperties());
+        return FakeStoreContext.builder();
     }
 
     /** An unclamped {@link ScheduledRef}. */
@@ -1224,7 +1197,7 @@ public abstract class TrackerBackedStoreContract {
     /** A fresh incarnation of the same route: new store, shared durable state. */
     private Fixture sibling(Fixture previous) {
         FakeStoreContext ctx =
-                contextBuilder().route(previous.context().route()).build();
+                contextBuilder().identity(previous.context().identity()).build();
         TrackerBackedStore store = createStore(ctx);
         return new Fixture(ctx, store, previous.harness().migrateTo(store));
     }

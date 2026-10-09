@@ -299,8 +299,8 @@ k8s probes reach it. It caps accepted connections (`jdk.httpserver.maxConnection
 top of the slow-client reaper (M1). **It MUST be network-restricted.** Set
 `observability.bind-address: 127.0.0.1` to restrict it to a loopback sidecar scrape (recommended when
 off-host probes are not required), or keep `0.0.0.0` and apply a NetworkPolicy scoping port 8081 to the
-monitoring namespace (the scraper) only. By default `/info` returns only `version`, `gitCommit`, and
-the store type; `observability.detailed-info: true` adds the `application-id` (the seed of the fencing
+monitoring namespace (the scraper) only. By default `/info` returns only `version` and `gitCommit`;
+`observability.detailed-info: true` adds the `application-id` (the seed of the fencing
 ids above), roles, and acknowledgments. Leave it off unless the port is
 restricted (M3).
 
@@ -628,7 +628,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
   detail payload lists each non-ACTIVE shard (`partition`, `state`, `recordsRemaining`,
   `etaMillis`; `-1` until two 1 s samples show the backlog shrinking); a `degraded` flag (with cause) surfaces
   park-and-degrade and re-validation errors without failing the probe.
-- **`/info`**: by default only `version`, `gitCommit`, and `store.type`. With
+- **`/info`**: by default only `version` and `gitCommit`. With
   `observability.detailed-info: true` it adds `applicationId`, `roles`, and any
   acknowledged escape hatches (`acknowledgments`).
 

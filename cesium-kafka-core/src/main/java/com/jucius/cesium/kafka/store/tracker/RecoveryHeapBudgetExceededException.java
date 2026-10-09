@@ -21,7 +21,7 @@ package com.jucius.cesium.kafka.store.tracker;
  * outcome because the alternative is an {@code OutOfMemoryError} crash anyway. Nothing is committed
  * — no tracker record is skipped-and-committed-past and no shard is promoted ACTIVE before its
  * barrier — so the durable log stays authoritative and exactly-once semantics are preserved (I4/I8).
- * The operator must raise the heap (or {@code store.properties heap-budget-bytes}) and/or shrink the
+ * The operator must raise the heap (the budget is 25% of {@code -Xmx}) and/or shrink the
  * durable backlog (lower {@code delay.max}, drain the source, shorten source retention) before the
  * restart can make progress. The companion {@code cesium_recovery_over_budget} counter and the
  * runbook-style ERROR log line make the cause unmistakable — it is never a generic OOM.

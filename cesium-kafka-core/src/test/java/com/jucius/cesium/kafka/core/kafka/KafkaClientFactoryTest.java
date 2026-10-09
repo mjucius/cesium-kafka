@@ -25,8 +25,7 @@ class KafkaClientFactoryTest {
     private static CesiumConfig config(InstanceId instanceId, KafkaConfig kafka, IngestConfig ingest) {
         RouteConfig route =
                 new RouteConfig(new TopicRef("orders"), new TopicRef("orders-out"), null, Optional.empty(), null);
-        return new CesiumConfig(
-                "orders-delay", instanceId, null, kafka, route, null, null, null, ingest, null, null, null);
+        return new CesiumConfig("orders-delay", instanceId, null, kafka, route, null, null, ingest, null, null, null);
     }
 
     private static CesiumConfig defaults() {

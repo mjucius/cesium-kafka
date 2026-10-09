@@ -156,7 +156,7 @@ public final class StartupValidator {
 
         String clusterId = fetchClusterId(findings);
         TopicFacts source = checkSource(config, findings);
-        checkTracker(config, source, findings);
+        TopicFacts tracker = checkTracker(config, source, findings);
         checkDlq(config, findings);
         checkDestination(config, source, findings);
         checkOffsetsRetention(config, findings);
@@ -176,6 +176,7 @@ public final class StartupValidator {
                 new ValidationReport(findings),
                 Optional.ofNullable(identity),
                 source == null ? OptionalInt.empty() : OptionalInt.of(source.partitionCount()),
+                tracker == null ? Optional.empty() : Optional.of(tracker.topicId()),
                 offsetMetadataMaxBytes);
     }
 
@@ -567,7 +568,9 @@ public final class StartupValidator {
 
     // ------------------------------------------------------------------ tracker
 
-    private void checkTracker(CesiumConfig config, @Nullable TopicFacts source, List<Finding> findings) {
+    /** Bootstraps (CREATE) and validates the tracker; returns its facts, or null when it is unusable. */
+    private @Nullable TopicFacts checkTracker(
+            CesiumConfig config, @Nullable TopicFacts source, List<Finding> findings) {
         String topic = config.route().tracker().resolvedTopic(config.applicationId());
         try {
             Optional<TopicFacts> existing = admin.describeTopic(topic);
@@ -575,7 +578,7 @@ public final class StartupValidator {
                 if (config.route().tracker().bootstrap() == TrackerConfig.Bootstrap.CREATE) {
                     existing = bootstrapTracker(config, source, topic, findings);
                     if (existing.isEmpty()) {
-                        return;
+                        return null;
                     }
                 } else {
                     findings.add(Finding.error(
@@ -585,13 +588,15 @@ public final class StartupValidator {
                                     + " delete.retention.ms >= 2 x delay.max, min.compaction.lag.ms >= max(2 x"
                                     + " transaction timeout, 1h), segment.ms ~ 1h, LogAppendTime, partitions ="
                                     + " source partitions) or set route.tracker.bootstrap: CREATE."));
-                    return;
+                    return null;
                 }
             }
             validateTracker(config, source, existing.get(), findings);
+            return existing.get();
         } catch (ClusterAdminException e) {
             findings.add(
                     Finding.error("route.tracker", "could not validate the tracker topic: " + e.getMessage() + "."));
+            return null;
         }
     }
 

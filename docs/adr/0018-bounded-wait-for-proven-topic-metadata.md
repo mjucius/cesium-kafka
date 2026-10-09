@@ -1,6 +1,7 @@
 # ADR-0018: Bounded wait for proven-existing topic metadata
 
 - **Status:** Accepted
+- **Amended by:** [ADR-0021](0021-store-spi-folded-into-core.md) (`CesiumEngine.buildRouteDescriptor` is gone; the engine takes the tracker topic id from startup validation instead of re-describing)
 - **Date:** 2026-08-06
 - **Design reference:** [`../design.md`](../design.md) §2.1 (tracker `CREATE` bootstrap), §7.6
   (startup checks); amended by [ADR-0020](0020-runtime-revalidation.md)

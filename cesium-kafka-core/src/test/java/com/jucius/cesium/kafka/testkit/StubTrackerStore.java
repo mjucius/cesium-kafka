@@ -3,7 +3,6 @@ package com.jucius.cesium.kafka.testkit;
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
@@ -51,17 +50,12 @@ final class StubTrackerStore implements TrackerBackedStore {
     // Everything below is out of scope for a codec stub.
 
     @Override
-    public void configure(StoreContext context) {
+    public void onTrackerPosition(int partition, long position) {
         throw new UnsupportedOperationException("codec stub");
     }
 
     @Override
-    public void validate() {
-        throw new UnsupportedOperationException("codec stub");
-    }
-
-    @Override
-    public void start() {
+    public void penalizeSourcePartition(int sourcePartition, long notBeforeMs) {
         throw new UnsupportedOperationException("codec stub");
     }
 

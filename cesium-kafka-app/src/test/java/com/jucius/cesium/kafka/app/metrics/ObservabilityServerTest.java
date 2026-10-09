@@ -233,7 +233,6 @@ class ObservabilityServerTest {
         JsonNode body = JSON.readTree(response.body());
         assertEquals("1.2.3", body.get("version").asText());
         assertEquals("abc1234", body.get("gitCommit").asText());
-        assertEquals("kafka-tracker", body.get("store").get("type").asText());
         // The applicationId is the fencing-id seed — it must not leak on the unauthenticated endpoint.
         assertFalse(body.has("applicationId"), body.toString());
         assertFalse(body.has("roles"), body.toString());
@@ -251,7 +250,6 @@ class ObservabilityServerTest {
         assertEquals("1.2.3", body.get("version").asText());
         assertEquals("abc1234", body.get("gitCommit").asText());
         assertEquals("orders-delay", body.get("applicationId").asText());
-        assertEquals("kafka-tracker", body.get("store").get("type").asText());
         assertEquals(List.of("ingest", "dispatch"), readStrings(body.get("roles")));
         assertEquals(List.of("size-based-retention"), readStrings(body.get("acknowledgments")));
     }
@@ -335,7 +333,6 @@ class ObservabilityServerTest {
                 new BuildInfo("1.2.3", Optional.of("abc1234")),
                 "orders-delay",
                 List.of("ingest", "dispatch"),
-                "kafka-tracker",
                 List.of("size-based-retention"));
     }
 }

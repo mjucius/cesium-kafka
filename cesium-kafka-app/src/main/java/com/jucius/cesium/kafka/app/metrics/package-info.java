@@ -3,7 +3,7 @@
  * on the JDK {@code com.sun.net.httpserver.HttpServer} (zero extra dependencies) serving
  * {@code /metrics} (Prometheus exposition from the engine's {@code PrometheusMeterRegistry}),
  * {@code /health/live}, {@code /health/ready} (decoupled from shard recovery, D21), and {@code /info}
- * (version, git commit, applicationId, store type, roles, named acknowledgments).
+ * (version, git commit, applicationId, roles, named acknowledgments).
  *
  * <p>The server is a lifecycle component: the app starts it <em>before</em> the engine (so probes
  * answer during startup) and stops it after readiness has flipped false on shutdown. Handlers are

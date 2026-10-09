@@ -49,8 +49,8 @@ engine failures, exit with code 1.
 
 Segments are matched case-insensitively (they are lowercased first). Because every `_` inside a
 map-key segment becomes `.`, a map key that contains `-` or `_` cannot be set from the environment:
-`CESIUM_STORE__PROPERTIES__CURSOR__SIDECAR_MAX_BYTES` sets `store.properties.cursor.sidecar.max.bytes`,
-which the `kafka-tracker` store rejects. Set those keys in YAML.
+`CESIUM_KAFKA__PROPERTIES__MY_KEY` sets `kafka.properties.my.key`. Kafka client keys use only dots,
+so this matters only for unusual map keys; set those in YAML.
 
 Unknown keys under the `CESIUM_` prefix are startup errors (exit 78), like unknown YAML keys, so a
 typo'd override fails fast instead of being ignored.
@@ -173,24 +173,12 @@ the violation is visible and the pipeline stays alive (D3). DLQ policies require
 
 ---
 
-## 7. Scheduler store (`store.*`)
+## 7. Scheduler store
 
-| Key | Default | Meaning |
-|---|---|---|
-| `store.type` | `kafka-tracker` | The ServiceLoader-registered store. Selection is always explicit. `kafka-tracker` is the flagship in-memory index durably backed by the tracker topic. Selection is by `typeId` only; an unknown or duplicate `typeId` fails startup. |
-| `store.properties` | `{}` | The store's private namespace, opaque to the engine (exposed to the store via `ConfigView`). The `kafka-tracker` keys are below. |
-
-The `kafka-tracker` store reads these keys from `store.properties`:
-
-| `store.properties` key | Default | Meaning |
-|---|---|---|
-| `cursor.sidecar-max-bytes` | `dispatch.cursor.sidecar-max-bytes` (3072), clamped to the broker cap | Store-side sidecar budget. When unset, the engine fills it from `dispatch.cursor.sidecar-max-bytes`, clamped to broker `offset.metadata.max.bytes`. An explicit value wins and is not clamped (only warned about); accepted range 128 B–1 MiB. |
-| `heap-budget-bytes` | `0` | Heap budget for the store's recovery resident-pending ceiling (H1): recovery fails fast once resident pending entries reach `heap-budget-bytes ÷ 64 B`. `0` means 25% of max heap. It does not feed a startup check; the footprint check is the engine's (`startup-checks.heap-budget`, using `dispatch.max-pending-per-partition`). |
-| `index.stale-rebuild-floor` | `65536` | Stale heap entries tolerated before a maintenance heap rebuild (§5.2). Must be positive. |
-| `index.completed-sweep-floor` | `65536` | Completed-held entries tolerated before a maintenance log sweep (§5.3). Must be positive. |
-
-Any other `store.properties` key is rejected by the store's `validate()` at engine startup (exit 1,
-not 78: the config schema leaves this map open).
+There are no `store.*` keys: since 2.0.0 the tracker store is part of the engine, and `store.type`
+and `store.properties` are unknown keys (exit 78; ADR-0021). Its sidecar budget is
+`dispatch.cursor.sidecar-max-bytes` (§9), its recovery ceiling uses the same 25%-of-heap budget as
+`dispatch.max-pending-total`, and its index maintenance floors are fixed.
 
 ---
 
@@ -211,7 +199,7 @@ not 78: the config schema leaves this map open).
 | `dispatch.batch.max-bytes` | `33554432` (32 MiB) | Decompressed payload byte budget per dispatch transaction, enforced in the fetch pass with truncate-and-carry-over (R8). |
 | `dispatch.drain.max-slice` | `PT1M` | Maximum back-to-back transaction time before the loop returns to a real `poll()`. Always validated `≤ max.poll.interval.ms / 3`, using the tracker consumer's effective `max.poll.interval.ms` (overlay, then `kafka.properties`, else the client default 300000 ms), so membership survives due-storms (§6). |
 | `dispatch.idle-cursor-interval` | `PT30S` | How long a partition may go untouched before its cursor advances in a records-free transaction (§3.5). |
-| `dispatch.cursor.sidecar-max-bytes` | `3072` | Pinned-entry sidecar budget in the offset metadata (§3.5). Checked against broker `offset.metadata.max.bytes` at startup: a larger budget logs a warning and is clamped to the broker cap (never a startup failure). ~200–300 pinned entries. |
+| `dispatch.cursor.sidecar-max-bytes` | `3072` | Pinned-entry sidecar budget in the offset metadata (§3.5), in `[128, 1048576]` (outside is exit 78). Checked against broker `offset.metadata.max.bytes` at startup: a larger budget logs a warning and is clamped to the broker cap (never a startup failure). ~200–300 pinned entries. |
 | `dispatch.fetch.timeout` | `PT30S` | Overall seek-fetch deadline per batch (§7). |
 | `dispatch.fetch.partition-time-floor` | `PT2S` | Minimum per-partition fetch time slice, so one slow partition cannot consume the whole deadline. |
 | `dispatch.fetch.penalty.backoff` | `PT0.05S` | Initial per-source-partition penalty-box backoff after a TRANSIENT fetch outcome (§7.3, D22). |
@@ -228,7 +216,7 @@ not 78: the config schema leaves this map open).
 |---|---|---|
 | `observability.port` | `8081` | HTTP port serving `/metrics`, `/health/live`, `/health/ready`, `/info` (`§9`). Range 1-65535. |
 | `observability.bind-address` | `0.0.0.0` | Interface the HTTP server binds. Must be an IP literal or `localhost` (no DNS lookup). The endpoints are unauthenticated: set `127.0.0.1` for a loopback-only scrape, or network-restrict the port. |
-| `observability.detailed-info` | `false` | When `true`, `/info` also returns `applicationId`, `roles`, store capabilities, and acknowledgments. By default it returns only version, git commit, and store type. |
+| `observability.detailed-info` | `false` | When `true`, `/info` also returns `applicationId`, `roles`, and acknowledgments. By default it returns only version and git commit. |
 
 See [operations.md](operations.md) for the metric inventory and alert rules.
 
@@ -264,8 +252,7 @@ bind); this reference writes them as shown (`DLQ`, `CLAMP`, `DISPATCH`, `BY_KEY`
 
 The schema is strict: any key not in the schema, at any nesting level, from YAML or the env
 overlay, fails startup with exit 78 and names the offending path. The exceptions are the open maps
-(`kafka.*.properties` and `store.properties`), which accept any key; locked Kafka keys are still
-rejected there, and the store validates its own keys.
+(`kafka.*.properties`), which accept any key; locked Kafka keys are still rejected there.
 
 An unknown key gets a did-you-mean hint when it differs from a real key only by case or hyphens
 (`maxEntries` → `max-entries`). Two older top-level spellings are pointed at their real homes:

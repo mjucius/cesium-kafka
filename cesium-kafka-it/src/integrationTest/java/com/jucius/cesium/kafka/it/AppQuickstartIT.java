@@ -363,7 +363,6 @@ class AppQuickstartIT extends KafkaIT {
                 new BuildInfo("integration-test", Optional.empty()),
                 config.applicationId(),
                 List.of("ingest", "dispatch"),
-                config.store().type(),
                 List.of());
     }
 

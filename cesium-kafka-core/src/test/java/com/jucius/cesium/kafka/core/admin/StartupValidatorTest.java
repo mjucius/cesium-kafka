@@ -123,7 +123,6 @@ class StartupValidatorTest {
                     delay,
                     null,
                     null,
-                    null,
                     dispatch,
                     null,
                     startupChecks);

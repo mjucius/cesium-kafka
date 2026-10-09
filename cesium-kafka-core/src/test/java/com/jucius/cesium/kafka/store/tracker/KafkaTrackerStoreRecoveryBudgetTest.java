@@ -10,7 +10,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
-import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -21,20 +20,16 @@ import org.junit.jupiter.api.Test;
  * {@link OutOfMemoryError} crash-loop — while a within-budget recovery is unaffected.
  *
  * <p>The store is configured with a deliberately tiny heap budget so the resident-pending ceiling
- * ({@code heap-budget-bytes / }{@value KafkaTrackerStore#WORST_CASE_BYTES_PER_ENTRY}{@code  B}) is a
+ * ({@code heap budget / }{@value KafkaTrackerStore#WORST_CASE_BYTES_PER_ENTRY}{@code  B}) is a
  * handful of entries — proving the trip without allocating gigabytes (design §5.3/§5.4).
  */
 class KafkaTrackerStoreRecoveryBudgetTest {
 
     private static final long T0 = 1_000_000;
 
-    /** A {@code heap-budget-bytes} of {@code 64 * n} yields a resident-pending ceiling of exactly {@code n}. */
+    /** A heap budget of {@code 64 * n} bytes yields a resident-pending ceiling of exactly {@code n}. */
     private static FixedIdentityStoreContext contextWithCeiling(int ceilingEntries) {
-        long heapBudget = KafkaTrackerStore.WORST_CASE_BYTES_PER_ENTRY * ceilingEntries;
-        return new FixedIdentityStoreContext(
-                1,
-                // Tiny budget => tiny ceiling.
-                Map.of(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, Long.toString(heapBudget)));
+        return FixedIdentityStoreContext.withHeapBudget(KafkaTrackerStore.WORST_CASE_BYTES_PER_ENTRY * ceilingEntries);
     }
 
     private static double overBudgetCount(FixedIdentityStoreContext ctx) {

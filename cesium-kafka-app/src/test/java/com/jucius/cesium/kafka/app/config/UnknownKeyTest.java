@@ -139,9 +139,9 @@ class UnknownKeyTest {
                         kafka:
                           properties:
                             some.exotic.broker.tunable: 42
-                        store:
-                          properties:
-                            anything.goes.here: yes
+                          tracker-consumer:
+                            properties:
+                              anything.goes.here: yes
                         """);
         // Must not throw: map subtrees are the operator's namespace.
         LoaderTestSupport.loader(Map.of()).load(file);

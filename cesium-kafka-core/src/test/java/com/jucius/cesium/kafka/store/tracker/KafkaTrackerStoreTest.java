@@ -18,7 +18,6 @@ import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeaders;
@@ -44,7 +43,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void fullDispatchCycleThroughTheRealWireFormat() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(3);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
 
         feedSchedule(store, 0, new ScheduledRef(0, 100, T0 + 1_000, false));
@@ -97,7 +96,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void encodeCompletionsHandlesArbitrarySubBatchViews() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
         feedSchedule(store, 1, new ScheduledRef(0, 11, T0, false));
@@ -121,7 +120,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void abortRestoresEntriesAndDiscardsTheProposedCursor() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
         feedSchedule(store, 1, new ScheduledRef(0, 11, T0 + 50, true));
@@ -143,7 +142,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void idleCursorAdvancementPromotesTheFloorOnEmptyCommit() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
         feedComplete(store, 0, 1, 10);
@@ -172,7 +171,7 @@ class KafkaTrackerStoreTest {
         // entries are still pending durable truth at commit time and must ride the sidecar (or
         // bound the overflow cut) -- deriving the as-if-complete set from in-flight slot state
         // instead loses them permanently on the first crash after the commit.
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false)); // E1, due
         feedSchedule(store, 1, new ScheduledRef(0, 11, T0, false)); // E2, due
@@ -196,7 +195,7 @@ class KafkaTrackerStoreTest {
         assertEquals(1, store.pendingCount(0), "the carry-over returned to pending");
 
         // Crash before E2 re-dispatches: memory dies, the cursor + log survive.
-        KafkaTrackerStore fresh = startedStore(FixedIdentityStoreContext.withPartitions(1));
+        KafkaTrackerStore fresh = startedStore(FixedIdentityStoreContext.defaults());
         fresh.onPartitionsAssigned(Set.of(0));
         fresh.beginRecovery(0, cursor, 3); // log: ADD@0, ADD@1, tombstone(E1)@2; barrier = 3
         feedComplete(fresh, 0, 2, 10); // replay [2, 3): only E1's tombstone
@@ -214,7 +213,7 @@ class KafkaTrackerStoreTest {
         // R12: a tombstone missing the completion-reason header matches the forged-tombstone
         // shape -- the data-loss primitive section 2.2's count-and-skip posture exists for. The
         // engine's headers-carrying call path must enforce it.
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0 + 100, false));
 
@@ -233,7 +232,7 @@ class KafkaTrackerStoreTest {
         // The M4 decision: an unrecognized reason constant must still settle the entry (a
         // skipped completion re-dispatches a completed key -- a read_committed-visible
         // duplicate); the novelty is surfaced under a dedicated counter, never as Invalid.
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0 + 100, false));
 
@@ -273,7 +272,7 @@ class KafkaTrackerStoreTest {
         assertTrue(capped.endsWith("…"), capped);
 
         // The real onTrackerRecord path still applies the completion (M4) with a CRLF-laden reason.
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0 + 100, false));
         RecordHeaders headers = new RecordHeaders();
@@ -294,7 +293,7 @@ class KafkaTrackerStoreTest {
         // shard, whose plain counters restart at zero -- the monotonic baselines must restart
         // with them, or the new shard's first N anomalies are silently swallowed (exactly the
         // post-incident moment the R1/R16 anomaly canary matters most).
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
         feedSchedule(store, 1, new ScheduledRef(0, 10, T0 + 1, false)); // duplicate -> anomaly
@@ -315,7 +314,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void duplicateAddViaStorePathUpdatesScheduleButKeepsOriginalTrackerOffset() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 100, T0 + 1_000, false));
         feedSchedule(store, 1, new ScheduledRef(0, 100, T0 + 2_000, true)); // anomalous duplicate (R1)
@@ -339,7 +338,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void completeForUnknownOffsetIsASilentNoOp() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 100, T0, false));
 
@@ -357,7 +356,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void invalidRecordsAreCountedSkippedAndStillAdvancePosition() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
 
         store.onTrackerRecord(
@@ -380,7 +379,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void reservedCancelRecordsAreCountedUnsupportedNoOps() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         byte[] cancel = {
             TrackerWireFormat.MAGIC, TrackerWireFormat.VERSION, TrackerWireFormat.TYPE_CANCEL, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -397,7 +396,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void cursorGuardDegradesToTheLastSafeCursorAndRecovers() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
         store.beginRecovery(0, new TrackerCursor(100, ""), 100); // committed floor at offset 100
@@ -438,8 +437,7 @@ class KafkaTrackerStoreTest {
     @Test
     void overflowFallbackCursorAtTheStoreLevel() {
         // Budget admits the header (46 raw for "test-cluster") plus ~2 small entries.
-        FixedIdentityStoreContext ctx =
-                new FixedIdentityStoreContext(1, Map.of(KafkaTrackerStore.SIDECAR_MAX_BYTES_KEY, "128"));
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withSidecarBudget(128);
         KafkaTrackerStore store = activeStore(ctx, 0);
         for (int i = 0; i < 40; i++) {
             feedSchedule(store, i, new ScheduledRef(0, 100 + i, T0 + i, false));
@@ -462,7 +460,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void penalizeSourcePartitionIsDelegatedToTheIndex() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
 
@@ -478,7 +476,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void recoveryGaugesFollowTheShardStateMachine() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = startedStore(ctx);
         store.onPartitionsAssigned(Set.of(0));
         assertEquals(0.0, gauge(ctx, KafkaTrackerStore.SHARD_STATE_METRIC), "ASSIGNED");
@@ -507,7 +505,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void gaugesRegisterOnAssignAndDeregisterOnRevoke() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(2);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
         assertEquals(0.0, gauge(ctx, "cesium.pending.entries"), "published per loop iteration, not read live");
@@ -544,7 +542,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void anomalyCounterIsMonotonicAcrossRevocations() {
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
         KafkaTrackerStore store = activeStore(ctx, 0);
         feedSchedule(store, 0, new ScheduledRef(0, 10, T0, false));
         feedSchedule(store, 1, new ScheduledRef(0, 10, T0 + 1, false)); // duplicate -> shard anomaly
@@ -571,18 +569,7 @@ class KafkaTrackerStoreTest {
 
     @Test
     void lifecycleGuards() {
-        KafkaTrackerStore unconfigured = new KafkaTrackerStore();
-        assertThrows(IllegalStateException.class, unconfigured::validate);
-        assertThrows(IllegalStateException.class, () -> unconfigured.pollDue(0, 1));
-
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
-        KafkaTrackerStore store = new KafkaTrackerStore();
-        store.configure(ctx);
-        assertThrows(IllegalStateException.class, () -> store.configure(ctx), "configure is once-only");
-        assertThrows(IllegalStateException.class, store::start, "start requires successful validate");
-
-        store.validate();
-        store.start();
+        KafkaTrackerStore store = FixedIdentityStoreContext.defaults().newStore();
         assertThrows(IllegalStateException.class, () -> store.beginRecovery(5, new TrackerCursor(0, ""), 0));
         assertThrows(
                 IllegalStateException.class,
@@ -598,30 +585,9 @@ class KafkaTrackerStoreTest {
     }
 
     @Test
-    void validateRejectsBadConfiguration() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> validateWith(Map.of("no-such-key", "1")),
-                "unknown keys are startup errors");
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> validateWith(Map.of(KafkaTrackerStore.SIDECAR_MAX_BYTES_KEY, "64")));
-        // The 1.x store-side footprint cap is gone; setting it is an unknown key (2.0.0).
-        IllegalArgumentException removed = assertThrows(
-                IllegalArgumentException.class, () -> validateWith(Map.of("max-pending-per-partition", "100000")));
-        assertTrue(removed.getMessage().contains("max-pending-per-partition"), removed.getMessage());
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> validateWith(Map.of(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, "-1")));
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> validateWith(Map.of(KafkaTrackerStore.STALE_REBUILD_FLOOR_KEY, "0")));
-    }
-
-    private static void validateWith(Map<String, String> properties) {
-        KafkaTrackerStore store = new KafkaTrackerStore();
-        store.configure(new FixedIdentityStoreContext(3, properties));
-        store.validate();
+    void constructionRejectsASidecarBudgetTheIdentityHeaderCannotFit() {
+        FixedIdentityStoreContext tooSmall = FixedIdentityStoreContext.withSidecarBudget(16);
+        assertThrows(IllegalArgumentException.class, tooSmall::newStore);
     }
 
     /** A read-only sub-range view, mimicking the engine's per-reason grouping views. */

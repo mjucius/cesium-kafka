@@ -2,9 +2,7 @@ package com.jucius.cesium.kafka.store.tracker;
 
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
-import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
@@ -19,9 +17,7 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
-import java.util.TreeSet;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.header.Headers;
 import org.jspecify.annotations.Nullable;
@@ -40,7 +36,7 @@ import org.slf4j.LoggerFactory;
  * cursor (offset + sidecar). The store never creates Kafka clients — its durable writes are bytes
  * the engine produces inside its own transactions (design §4.3).
  *
- * <p><strong>Threading</strong> (per the {@link com.jucius.cesium.kafka.api.store.SchedulerStore}
+ * <p><strong>Threading</strong> (per the {@link TrackerBackedStore}
  * contract): {@link #encodeSchedule} is ingest-thread and pure; everything else runs on the
  * single dispatch thread owning the affected partitions, so no method here locks. All time
  * decisions arrive as {@code nowMs} arguments from the engine's clock; the store keeps no clock
@@ -58,30 +54,6 @@ import org.slf4j.LoggerFactory;
  * the position report can carry the shard across them.
  */
 public final class KafkaTrackerStore implements TrackerBackedStore {
-
-    /** Sidecar byte budget for the committed cursor metadata (Base64 size; §3.5). */
-    public static final String SIDECAR_MAX_BYTES_KEY = "cursor.sidecar-max-bytes";
-
-    /** Default sidecar budget: 3 KiB ≈ 200–300 pinned entries (§8 defaults table). */
-    public static final int DEFAULT_SIDECAR_MAX_BYTES = 3072;
-
-    /** Smallest accepted sidecar budget: room for the identity header plus a few entries. */
-    public static final int MIN_SIDECAR_MAX_BYTES = 128;
-
-    /** Largest accepted sidecar budget (1 MiB). */
-    public static final int MAX_SIDECAR_MAX_BYTES = 1 << 20;
-
-    /**
-     * Heap budget for the H1 recovery resident-pending ceiling; {@code 0}/unset derives ~25% of
-     * {@code Xmx} (§5.3, §5.4).
-     */
-    public static final String HEAP_BUDGET_BYTES_KEY = "heap-budget-bytes";
-
-    /** Stale-heap-entry floor before a maintenance heap rebuild (§5.2 item 2). */
-    public static final String STALE_REBUILD_FLOOR_KEY = "index.stale-rebuild-floor";
-
-    /** Completed-held floor before a maintenance log sweep (§5.3). */
-    public static final String COMPLETED_SWEEP_FLOOR_KEY = "index.completed-sweep-floor";
 
     /**
      * Worst-case planning bytes per pending entry (post-approval revision 1: 64 B typical with
@@ -104,9 +76,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      */
     public static final String REPLAY_REMAINING_METRIC = "cesium.replay.remaining.records";
 
-    private static final Set<String> KNOWN_CONFIG_KEYS =
-            Set.of(SIDECAR_MAX_BYTES_KEY, HEAP_BUDGET_BYTES_KEY, STALE_REBUILD_FLOOR_KEY, COMPLETED_SWEEP_FLOOR_KEY);
-
     private static final Logger log = LoggerFactory.getLogger(KafkaTrackerStore.class);
 
     /**
@@ -115,99 +84,62 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      */
     static final int MAX_LOGGED_REASON_CHARS = 64;
 
-    private @Nullable StoreContext context;
-    private @Nullable Wiring wiring;
-
-    @Override
-    public void configure(StoreContext context) {
-        if (this.context != null) {
-            throw new IllegalStateException("configure() called twice");
-        }
-        this.context = Objects.requireNonNull(context, "context");
-    }
+    private final Wiring wiring;
 
     /**
-     * Store-declared preconditions, from configuration alone (design §4.4 item 7): unknown
-     * {@code store.properties} keys, sidecar-budget sanity (bounds, and the identity header must
-     * fit the Base64 budget), index tuning floors, and the heap budget's sign.
-     *
-     * <p><strong>Validation split (deliberate).</strong> Broker-side checks are the
-     * <em>engine's</em> {@code StartupValidator} job, performed with the engine's admin client —
-     * this store never creates one: source/tracker partition parity (§2.1), the tombstone
-     * retention floor (D14), {@code offset.metadata.max.bytes} vs the sidecar budget (§3.5 risk
-     * 6), topic-id liveness/identity (R11/R17), and compaction settings. The store validates only
-     * what configuration alone can prove.
+     * Builds the store for one route. Broker-side checks (partition parity, the tombstone retention
+     * floor, {@code offset.metadata.max.bytes} vs the sidecar budget, topic identity, compaction
+     * settings) are the engine's {@code StartupValidator} job; the sidecar budget's range is the
+     * config validator's.
      *
      * <p><strong>Recovery ceiling (H1, design §5.3/§5.4).</strong> The engine's process-wide pending
      * cap bounds the <em>steady-state</em> ACTIVE shards against the heap budget; it does
      * <em>not</em> bound recovery, because a RECOVERING shard is never paused (it must replay to
-     * the barrier, I4). The store's {@code effectiveHeapBudget} is therefore divided by
+     * the barrier, I4). {@code heapBudgetBytes} is therefore divided by
      * {@value #WORST_CASE_BYTES_PER_ENTRY} B/entry into a runtime resident-pending ceiling
      * ({@code Wiring.maxResidentEntries}) that the seed/replay paths enforce — so a durable backlog
      * larger than the heap can hold fails fast and attributably ({@link
      * RecoveryHeapBudgetExceededException} + the {@value #RECOVERY_OVER_BUDGET_METRIC} counter)
      * instead of allocating into an {@code OutOfMemoryError} crash-loop.
+     *
+     * @param clusterId the cluster id bound into every committed sidecar (R17)
+     * @param sourceTopicId the source topic id bound into every committed sidecar
+     * @param trackerTopicId the tracker topic id bound into every committed sidecar (R11)
+     * @param sidecarMaxBytes the committed-cursor sidecar budget (Base64 bytes, §3.5)
+     * @param heapBudgetBytes the index heap budget (the engine passes 25% of max heap)
+     * @param registry the meter registry for the store's metrics
+     * @throws IllegalArgumentException when the sidecar identity header does not fit the budget
      */
-    @Override
-    public void validate() {
-        StoreContext ctx = requireContext();
-        var config = ctx.config();
-        Set<String> unknown = new TreeSet<>(config.keys());
-        unknown.removeAll(KNOWN_CONFIG_KEYS);
-        if (!unknown.isEmpty()) {
-            throw new IllegalArgumentException("unknown store.properties keys for kafka-tracker: " + unknown
-                    + " (supported: " + new TreeSet<>(KNOWN_CONFIG_KEYS) + ")");
-        }
-        int sidecarMaxBytes = config.getInt(SIDECAR_MAX_BYTES_KEY, DEFAULT_SIDECAR_MAX_BYTES);
-        long heapBudgetBytes = config.getLong(HEAP_BUDGET_BYTES_KEY, 0L);
-        int staleRebuildFloor = config.getInt(STALE_REBUILD_FLOOR_KEY, PartitionShard.DEFAULT_STALE_REBUILD_FLOOR);
-        int completedSweepFloor =
-                config.getInt(COMPLETED_SWEEP_FLOOR_KEY, PartitionShard.DEFAULT_COMPLETED_SWEEP_FLOOR);
-
-        RouteDescriptor route = ctx.route();
-        Uuid trackerTopicId = route.trackerTopicId();
-        if (sidecarMaxBytes < MIN_SIDECAR_MAX_BYTES || sidecarMaxBytes > MAX_SIDECAR_MAX_BYTES) {
-            throw new IllegalArgumentException(SIDECAR_MAX_BYTES_KEY + " must be in [" + MIN_SIDECAR_MAX_BYTES + ", "
-                    + MAX_SIDECAR_MAX_BYTES + "], got " + sidecarMaxBytes);
-        }
+    public KafkaTrackerStore(
+            String clusterId,
+            Uuid sourceTopicId,
+            Uuid trackerTopicId,
+            int sidecarMaxBytes,
+            long heapBudgetBytes,
+            MeterRegistry registry) {
         // The identity header must fit the budget; the encoder enforces exactly the encode-time rule.
-        SidecarCodec.encoder(route.clusterId(), route.sourceTopicId(), trackerTopicId, sidecarMaxBytes);
-        if (heapBudgetBytes < 0) {
-            throw new IllegalArgumentException(HEAP_BUDGET_BYTES_KEY + " must be >= 0, got " + heapBudgetBytes);
-        }
-        if (staleRebuildFloor <= 0 || completedSweepFloor <= 0) {
-            throw new IllegalArgumentException("index maintenance floors must be positive: " + STALE_REBUILD_FLOOR_KEY
-                    + "=" + staleRebuildFloor + ", " + COMPLETED_SWEEP_FLOOR_KEY + "=" + completedSweepFloor);
-        }
-
-        long effectiveHeapBudget =
-                heapBudgetBytes > 0 ? heapBudgetBytes : Runtime.getRuntime().maxMemory() / 4;
+        SidecarCodec.encoder(clusterId, sourceTopicId, trackerTopicId, sidecarMaxBytes);
         // Runtime recovery ceiling (H1): the most resident pending entries the heap budget can hold
         // at the worst-case per-entry footprint. The seed/replay paths refuse to allocate past it
-        // (controlled fail, not OOM). It counts every owned shard, so with the default budget it equals
-        // the process-wide dispatch.max-pending-total AUTO (25% of Xmx / 64 B). >= 1 so a budget below
-        // one entry still admits the trip rather than silently flooring to zero.
-        long maxResidentEntries = Math.max(1L, effectiveHeapBudget / WORST_CASE_BYTES_PER_ENTRY);
+        // (controlled fail, not OOM). It counts every owned shard, so with the engine's budget it
+        // equals the process-wide dispatch.max-pending-total AUTO (25% of Xmx / 64 B). >= 1 so a
+        // budget below one entry still admits the trip rather than silently flooring to zero.
+        long maxResidentEntries = Math.max(1L, heapBudgetBytes / WORST_CASE_BYTES_PER_ENTRY);
         log.info(
-                "kafka-tracker validated: heap budget {} B; sidecar budget {} B;"
-                        + " recovery resident-pending ceiling {} entries",
-                effectiveHeapBudget,
+                "kafka-tracker store: heap budget {} B; sidecar budget {} B; recovery resident-pending ceiling {}"
+                        + " entries",
+                heapBudgetBytes,
                 sidecarMaxBytes,
                 maxResidentEntries);
-
         this.wiring = new Wiring(
-                route,
+                clusterId,
+                sourceTopicId,
                 trackerTopicId,
-                ctx.meterRegistry(),
+                registry,
                 sidecarMaxBytes,
-                effectiveHeapBudget,
+                heapBudgetBytes,
                 maxResidentEntries,
-                new TrackerIndex(staleRebuildFloor, completedSweepFloor));
-    }
-
-    @Override
-    public void start() {
-        wiring(); // lifecycle order: validate() must have succeeded
+                new TrackerIndex());
     }
 
     // ------------------------------------------------------------------------------------------
@@ -471,8 +403,8 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                     + " before beginRecovery: the cursor position is undefined");
         }
         try {
-            SidecarCodec.Encoder encoder = SidecarCodec.encoder(
-                    w.route.clusterId(), w.route.sourceTopicId(), w.trackerTopicId, w.sidecarMaxBytes);
+            SidecarCodec.Encoder encoder =
+                    SidecarCodec.encoder(w.clusterId, w.sourceTopicId, w.trackerTopicId, w.sidecarMaxBytes);
             PartitionShard shard = w.index.shard(partition);
             LongOpenHashSet settling = settlingOffsets(inFlight, partition);
             w.index.oldestUnsettled(partition, (slotId, sourceOffset, dispatchAtMs, trackerAddOffset) -> {
@@ -668,7 +600,7 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                         + " {} entries already resident across {} owned shard(s) have reached the ceiling of {}"
                         + " entries (heap budget {} B / {} B per entry). The durable tracker backlog exceeds what"
                         + " this heap can hold in memory; nothing has been committed and the durable log is intact."
-                        + " ACTION: raise -Xmx (or store.properties {}) and/or reduce the backlog (lower delay.max,"
+                        + " ACTION: raise -Xmx (the budget is 25% of it) and/or reduce the backlog (lower delay.max,"
                         + " drain the source, or shorten source retention), then restart. This is a controlled"
                         + " fail-fast that replaces an OutOfMemoryError crash-loop (security finding H1, design"
                         + " §5.3/§5.4).",
@@ -678,8 +610,7 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                 w.index.assignedPartitionCount(),
                 w.maxResidentEntries,
                 w.heapBudgetBytes,
-                WORST_CASE_BYTES_PER_ENTRY,
-                HEAP_BUDGET_BYTES_KEY);
+                WORST_CASE_BYTES_PER_ENTRY);
         throw new RecoveryHeapBudgetExceededException("recovery backlog for tracker partition " + partition
                 + " exceeds the heap budget: " + resident + " resident pending entries reached the ceiling of "
                 + w.maxResidentEntries + " (heap budget " + w.heapBudgetBytes + " B / " + WORST_CASE_BYTES_PER_ENTRY
@@ -687,14 +618,13 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     }
 
     private void validateSidecarIdentity(Wiring w, int partition, SidecarCodec.DecodedSidecar decoded) {
-        RouteDescriptor route = w.route;
-        if (!decoded.clusterId().equals(route.clusterId())
-                || !decoded.sourceTopicId().equals(route.sourceTopicId())
+        if (!decoded.clusterId().equals(w.clusterId)
+                || !decoded.sourceTopicId().equals(w.sourceTopicId)
                 || !decoded.trackerTopicId().equals(w.trackerTopicId)) {
             throw new IllegalStateException("cursor sidecar identity mismatch for tracker partition " + partition
                     + ": committed {clusterId='" + decoded.clusterId() + "', sourceTopicId=" + decoded.sourceTopicId()
-                    + ", trackerTopicId=" + decoded.trackerTopicId() + "} vs live {clusterId='" + route.clusterId()
-                    + "', sourceTopicId=" + route.sourceTopicId() + ", trackerTopicId=" + w.trackerTopicId
+                    + ", trackerTopicId=" + decoded.trackerTopicId() + "} vs live {clusterId='" + w.clusterId
+                    + "', sourceTopicId=" + w.sourceTopicId + ", trackerTopicId=" + w.trackerTopicId
                     + "} — a topic was recreated or the cursor belongs to another cluster; failing fast"
                     + " (§3.6, R-9/R-10 runbook: never deliver payloads against a different identity)");
         }
@@ -810,25 +740,14 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         return state;
     }
 
-    private StoreContext requireContext() {
-        StoreContext ctx = context;
-        if (ctx == null) {
-            throw new IllegalStateException("configure() has not been called");
-        }
-        return ctx;
-    }
-
     private Wiring wiring() {
-        Wiring w = wiring;
-        if (w == null) {
-            throw new IllegalStateException("validate() must succeed before the store is used");
-        }
-        return w;
+        return wiring;
     }
 
-    /** Everything built by {@link #validate()}: settings, the index, metrics, partition states. */
+    /** Everything the constructor builds: settings, the index, metrics, partition states. */
     private static final class Wiring {
-        final RouteDescriptor route;
+        final String clusterId;
+        final Uuid sourceTopicId;
         final Uuid trackerTopicId;
         final MeterRegistry registry;
         final int sidecarMaxBytes;
@@ -846,14 +765,16 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         final Counter recoveryOverBudget;
 
         Wiring(
-                RouteDescriptor route,
+                String clusterId,
+                Uuid sourceTopicId,
                 Uuid trackerTopicId,
                 MeterRegistry registry,
                 int sidecarMaxBytes,
                 long heapBudgetBytes,
                 long maxResidentEntries,
                 TrackerIndex index) {
-            this.route = route;
+            this.clusterId = clusterId;
+            this.sourceTopicId = sourceTopicId;
             this.trackerTopicId = trackerTopicId;
             this.registry = registry;
             this.sidecarMaxBytes = sidecarMaxBytes;

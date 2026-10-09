@@ -47,7 +47,6 @@ class ExampleConfigTest {
         assertEquals("orders-delayed", config.route().destination().topic());
         assertTrue(config.route().hasDlq());
         assertEquals("orders-dlq", config.route().dlq().orElseThrow().topic());
-        assertEquals("kafka-tracker", config.store().type());
         assertEquals(Duration.ofHours(1), config.delay().max());
         assertEquals(8081, config.observability().port());
         assertEquals("localhost:9092", config.kafka().properties().get("bootstrap.servers"));

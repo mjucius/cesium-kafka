@@ -1,17 +1,10 @@
 package com.jucius.cesium.kafka.it;
 
-import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.RouteDescriptor;
-import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.SchedulerStoreProvider;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.admin.KafkaClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
-import com.jucius.cesium.kafka.core.admin.TopicFacts;
-import com.jucius.cesium.kafka.core.admin.TopicVisibility;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.CesiumConfigValidator;
 import com.jucius.cesium.kafka.core.config.CheckMode;
@@ -22,7 +15,6 @@ import com.jucius.cesium.kafka.core.config.KafkaConfig;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
 import com.jucius.cesium.kafka.core.config.StartupChecks;
-import com.jucius.cesium.kafka.core.config.StoreConfig;
 import com.jucius.cesium.kafka.core.config.TopicRef;
 import com.jucius.cesium.kafka.core.config.TrackerConfig;
 import com.jucius.cesium.kafka.core.config.ValidationContext;
@@ -51,7 +43,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,8 +56,7 @@ import org.apache.kafka.common.Uuid;
 /**
  * Assembles a real engine instance for integration tests: {@link CesiumConfig} records built
  * directly (no YAML), {@link CesiumConfigValidator} + {@link StartupValidator} (which performs the
- * tracker {@code CREATE} bootstrap), the real {@link KafkaTrackerStore} resolved through the
- * published {@link SchedulerStoreProvider} ServiceLoader hook, and — per the configured
+ * tracker {@code CREATE} bootstrap), the real {@link KafkaTrackerStore}, and — per the configured
  * {@linkplain Role roles} — the {@link IngestLoop} and/or the {@link DispatchLoop} (with its
  * {@link KafkaSeekFetcher} and {@link KafkaDispatchAdmin}) on daemon threads wired through
  * {@link KafkaClientFactory}.
@@ -161,7 +151,7 @@ final class EngineHarness implements AutoCloseable {
     }
 
     /**
-     * Starts (or restarts) the engine: validates, builds the real store from the provider, seeds
+     * Starts (or restarts) the engine: validates, builds the real store, seeds
      * group A's first-run offsets, builds fresh clients and fresh loops for the configured roles,
      * and spawns each loop on a daemon thread.
      */
@@ -176,7 +166,7 @@ final class EngineHarness implements AutoCloseable {
         }
         this.identity = result.identity().orElseThrow();
         closeStoreQuietly(); // the previous incarnation's in-memory state dies with the "process"
-        this.store = buildStore();
+        this.store = buildStore(result);
         KafkaClientFactory clients = new KafkaClientFactory(config);
         Clock clock = Clock.systemUTC();
         if (config.roles().contains(Role.INGEST)) {
@@ -399,60 +389,17 @@ final class EngineHarness implements AutoCloseable {
     }
 
     /**
-     * Builds, configures, validates, and starts the real store: resolved by {@code store.type}
-     * through the published ServiceLoader hook (exactly the production selection path), with a
-     * {@link RouteDescriptor} whose cluster id comes from {@code Admin.describeCluster()} and
-     * whose topic ids come from {@code Admin.describeTopics()}.
+     * Builds the real store the way production does: identity from startup validation, the
+     * configured sidecar budget, and 25% of max heap as the index budget.
      */
-    private TrackerBackedStore buildStore() {
-        TrackerBackedStore created = createStore(config.store().type());
-        created.configure(new HarnessStoreContext(
-                routeDescriptor(), ConfigView.of(config.store().properties()), meterRegistry));
-        created.validate();
-        created.start();
-        return created;
-    }
-
-    private static TrackerBackedStore createStore(String typeId) {
-        for (SchedulerStoreProvider provider : ServiceLoader.load(SchedulerStoreProvider.class)) {
-            if (provider.typeId().equals(typeId)) {
-                SchedulerStore store = provider.create();
-                if (store instanceof TrackerBackedStore trackerBacked) {
-                    return trackerBacked;
-                }
-                throw new AssertionError("store type " + typeId + " is not tracker-backed: " + store.getClass());
-            }
-        }
-        throw new AssertionError("no SchedulerStoreProvider registered for store.type " + typeId);
-    }
-
-    /** The route identity triple + topic facts, from the same admin plane production uses (§3.5). */
-    private RouteDescriptor routeDescriptor() {
-        // Mirrors production (CesiumEngine.buildRouteDescriptor): all three topics were described
-        // successfully during validation, so an unknown-topic answer now is broker metadata lag.
-        TopicVisibility visibility = new TopicVisibility(new KafkaClusterAdmin(admin));
-        TopicFacts source = describeOrFail(visibility, sourceTopic());
-        TopicFacts destination = describeOrFail(visibility, destinationTopic());
-        // The tracker exists here: the CREATE bootstrap ran inside the startup validation.
-        TopicFacts tracker = describeOrFail(visibility, trackerTopic());
-        String dlq = config.route().hasDlq() ? config.route().dlq().get().topic() : null;
-        return new RouteDescriptor(
-                config.applicationId(),
+    private KafkaTrackerStore buildStore(StartupValidationResult result) {
+        return new KafkaTrackerStore(
                 identity.clusterId(),
-                source.name(),
-                source.topicId(),
-                destination.name(),
-                destination.topicId(),
-                tracker.name(),
-                tracker.topicId(),
-                dlq,
-                source.partitionCount());
-    }
-
-    private static TopicFacts describeOrFail(TopicVisibility visibility, String topic) {
-        return visibility
-                .awaitVisible(topic)
-                .orElseThrow(() -> new AssertionError("topic vanished between validation and store build: " + topic));
+                identity.sourceTopicId(),
+                result.trackerTopicId().orElseThrow(),
+                config.dispatch().cursor().sidecarMaxBytes(),
+                DispatchConfig.heapBudgetBytes(Runtime.getRuntime().maxMemory()),
+                meterRegistry);
     }
 
     /**
@@ -560,13 +507,6 @@ final class EngineHarness implements AutoCloseable {
         }
     }
 
-    /**
-     * The production-shaped {@link StoreContext}: real route identity, the {@code store.properties}
-     * subtree, and the harness registry.
-     */
-    private record HarnessStoreContext(RouteDescriptor route, ConfigView config, MeterRegistry meterRegistry)
-            implements StoreContext {}
-
     // ------------------------------------------------------------------ builder
 
     /** Assembles the {@link CesiumConfig} records directly — the §8 defaults fill absent parts. */
@@ -594,7 +534,7 @@ final class EngineHarness implements AutoCloseable {
         private Duration drainMaxSlice;
         private Long batchMaxBytes;
         private final Map<String, String> kafkaProperties = new HashMap<>();
-        private final Map<String, String> storeProperties = new HashMap<>();
+        private Integer sidecarMaxBytes;
         private UnaryOperator<SeekFetcher> seekFetcherDecorator = UnaryOperator.identity();
 
         Builder applicationId(String applicationId) {
@@ -740,9 +680,9 @@ final class EngineHarness implements AutoCloseable {
             return this;
         }
 
-        /** One {@code store.properties} entry (e.g. a tiny sidecar budget for overflow tests). */
-        Builder storeProperty(String key, String value) {
-            this.storeProperties.put(key, value);
+        /** The {@code dispatch.cursor.sidecar-max-bytes} budget (e.g. a tiny one for overflow tests). */
+        Builder sidecarMaxBytes(int sidecarMaxBytes) {
+            this.sidecarMaxBytes = sidecarMaxBytes;
             return this;
         }
 
@@ -789,8 +729,6 @@ final class EngineHarness implements AutoCloseable {
             Objects.requireNonNull(sourceTopic, "source topic");
             Objects.requireNonNull(destinationTopic, "destination topic");
             Objects.requireNonNull(dlqTopic, "dlq topic (the default policies route to it)");
-            Map<String, String> storeProps = new HashMap<>();
-            storeProps.putAll(storeProperties);
             Map<String, String> commonKafkaProps = new HashMap<>(kafkaProperties);
             commonKafkaProps.put(
                     AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
@@ -817,7 +755,6 @@ final class EngineHarness implements AutoCloseable {
                             null),
                     new DelayConfig(delayMax, onOverMax, onMalformedHeader),
                     null,
-                    new StoreConfig(null, storeProps),
                     null,
                     // Small per-partition pending cap; IT loads never approach it (overridable for the
                     // §5.3 backpressure scenario via Builder.maxPendingPerPartition).
@@ -826,7 +763,7 @@ final class EngineHarness implements AutoCloseable {
                             batchMaxBytes == null ? null : new DispatchConfig.Batch(null, batchMaxBytes),
                             drainMaxSlice == null ? null : new DispatchConfig.Drain(drainMaxSlice),
                             idleCursorInterval,
-                            null,
+                            sidecarMaxBytes == null ? null : new DispatchConfig.Cursor(sidecarMaxBytes),
                             null,
                             null,
                             dispatchMaxPendingPerPartition,

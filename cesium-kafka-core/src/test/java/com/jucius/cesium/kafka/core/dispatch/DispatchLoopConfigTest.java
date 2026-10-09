@@ -54,7 +54,6 @@ class DispatchLoopConfigTest {
                 null,
                 null,
                 null,
-                null,
                 dispatch,
                 null,
                 null);

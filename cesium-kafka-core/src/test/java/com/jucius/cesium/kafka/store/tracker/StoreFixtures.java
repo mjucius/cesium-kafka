@@ -39,11 +39,7 @@ final class StoreFixtures {
     private StoreFixtures() {}
 
     static KafkaTrackerStore startedStore(FixedIdentityStoreContext context) {
-        KafkaTrackerStore store = new KafkaTrackerStore();
-        store.configure(context);
-        store.validate();
-        store.start();
-        return store;
+        return context.newStore();
     }
 
     /**

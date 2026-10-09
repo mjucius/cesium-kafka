@@ -3,8 +3,6 @@ package com.jucius.cesium.kafka.core.dispatch;
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
@@ -208,23 +206,7 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
         throw offLimits();
     }
 
-    @Override
-    public void configure(StoreContext context) {
-        throw offLimits();
-    }
-
-    @Override
-    public void validate() {
-        throw offLimits();
-    }
-
-    @Override
-    public void start() {
-        throw offLimits();
-    }
-
     private static UnsupportedOperationException offLimits() {
-        return new UnsupportedOperationException("the dispatch loop must not call lifecycle/ingest-side "
-                + SchedulerStore.class.getSimpleName() + " methods");
+        return new UnsupportedOperationException("the dispatch loop must not call ingest-side store methods");
     }
 }

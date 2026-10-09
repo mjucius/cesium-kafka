@@ -86,12 +86,6 @@ delay:
 headers:
   stamp-provenance: true            # stamp cesium-relayed-at / cesium-source-* on relay
 
-store:
-  # The ServiceLoader-registered scheduler store. kafka-tracker (default) is the
-  # in-memory index durably backed by the tracker topic.
-  type: kafka-tracker
-  # properties: {}     # kafka-tracker keys: docs/configuration.md §7
-
 ingest:
   workers: 1        # ingest threads, each owning a source consumer + txn producer
 
@@ -123,7 +117,7 @@ observability:
   # sidecar scrape (recommended when off-host probes are not required), or keep 0.0.0.0 and apply a k8s
   # NetworkPolicy scoping 8081 to the monitoring namespace (security L1).
   # bind-address: 127.0.0.1
-  # /info is unauthenticated. By default it exposes only version/build + store type. Set to true to
+  # /info is unauthenticated. By default it exposes only version/build. Set to true to
   # also disclose applicationId (the fencing-id seed), roles, and acknowledgments
   # — only behind a network-restricted endpoint (security M3).
   # detailed-info: false
