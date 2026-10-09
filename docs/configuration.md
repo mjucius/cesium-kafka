@@ -173,7 +173,6 @@ the violation is visible and the pipeline stays alive (D3). DLQ policies require
 | Key | Default | Meaning |
 |---|---|---|
 | `headers.stamp-provenance` | `true` | Stamp `cesium-relayed-at`, `cesium-source-*`, and `cesium-scheduled-for` provenance headers on relayed records. |
-| `headers.accept-binary-long-values` | `false` | Accept 8-byte big-endian `long` control-header values instead of canonical ASCII decimal. The two modes are mutually exclusive because a length-8 value is ambiguous (D1). See [header-protocol.md](header-protocol.md). |
 
 ---
 

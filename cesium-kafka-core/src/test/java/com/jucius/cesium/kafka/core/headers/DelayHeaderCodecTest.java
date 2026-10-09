@@ -14,12 +14,11 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.record.TimestampType;
-import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-/** Design §2.3 / §11.1: parse, precedence, regex, range, timestamp base, ASCII vs binary mode. */
+/** Design §2.3 / §11.1: parse, precedence, regex, range, timestamp base. */
 class DelayHeaderCodecTest {
 
     private static final long NOW = 1_700_000_000_000L;
@@ -27,8 +26,7 @@ class DelayHeaderCodecTest {
     private static final Duration MAX = Duration.ofDays(1);
     private static final long MAX_MS = MAX.toMillis();
 
-    private final DelayHeaderCodec ascii = new DelayHeaderCodec(MAX, false);
-    private final DelayHeaderCodec binary = new DelayHeaderCodec(MAX, true);
+    private final DelayHeaderCodec ascii = new DelayHeaderCodec(MAX);
 
     // --- helpers --------------------------------------------------------------------------------
 
@@ -303,78 +301,13 @@ class DelayHeaderCodecTest {
     }
 
     @Test
-    void nullHeaderValue_isMalformed_bothModes() {
+    void nullHeaderValue_isMalformed() {
         Headers nullValue = headers(CesiumHeaders.DELAY_MS, (byte[]) null);
         assertInstanceOf(HeaderParseResult.Malformed.class, ascii.parse(nullValue, TS, TimestampType.CREATE_TIME, NOW));
-        assertInstanceOf(
-                HeaderParseResult.Malformed.class, binary.parse(nullValue, TS, TimestampType.CREATE_TIME, NOW));
-    }
-
-    // --- ASCII vs exclusive binary mode (D1) ------------------------------------------------------
-
-    @Nested
-    class BinaryMode {
-
-        @Test
-        void eightByteBigEndianLong_accepted() {
-            HeaderParseResult result =
-                    binary.parse(headers(CesiumHeaders.DELAY_MS, binary(60_000)), TS, TimestampType.CREATE_TIME, NOW);
-            assertEquals(new HeaderParseResult.Schedule(TS + 60_000, false), result);
-        }
-
-        @Test
-        void deliverAt_eightByteBigEndianLong_accepted() {
-            HeaderParseResult result = binary.parse(
-                    headers(CesiumHeaders.DELIVER_AT, binary(NOW + 60_000)), TS, TimestampType.CREATE_TIME, NOW);
-            assertEquals(new HeaderParseResult.Schedule(NOW + 60_000, false), result);
-        }
-
-        @Test
-        void asciiDecimal_rejected_modesAreExclusive() {
-            HeaderParseResult result =
-                    binary.parse(headers(CesiumHeaders.DELAY_MS, ascii("60000")), TS, TimestampType.CREATE_TIME, NOW);
-            HeaderParseResult.Malformed malformed = assertInstanceOf(HeaderParseResult.Malformed.class, result);
-            assertTrue(malformed.detail().contains("8 bytes"));
-        }
-
-        @Test
-        void eightAsciiDigits_decodeAsBinary_theAmbiguityTheExclusivityExistsFor() {
-            // "12345678" is 8 bytes: in binary mode it is the long 0x3132333435363738
-            // (3,544,952,156,018,063,160 ms), not the number 12345678 — which is why the modes
-            // can never be combined (D1).
-            HeaderParseResult result = binary.parse(
-                    headers(CesiumHeaders.DELAY_MS, ascii("12345678")), TS, TimestampType.CREATE_TIME, NOW);
-            HeaderParseResult.OverMax overMax = assertInstanceOf(HeaderParseResult.OverMax.class, result);
-            assertEquals(TS + 0x3132333435363738L, overMax.requestedDispatchAtMs());
-        }
-
-        @ParameterizedTest
-        @ValueSource(ints = {0, 1, 7, 9, 16})
-        void wrongLength_isMalformed(int length) {
-            HeaderParseResult result =
-                    binary.parse(headers(CesiumHeaders.DELAY_MS, new byte[length]), TS, TimestampType.CREATE_TIME, NOW);
-            assertInstanceOf(HeaderParseResult.Malformed.class, result);
-        }
-
-        @Test
-        void negativeBinaryDelay_isMalformed() {
-            HeaderParseResult result =
-                    binary.parse(headers(CesiumHeaders.DELAY_MS, binary(-1)), TS, TimestampType.CREATE_TIME, NOW);
-            HeaderParseResult.Malformed malformed = assertInstanceOf(HeaderParseResult.Malformed.class, result);
-            assertTrue(malformed.detail().contains("negative"));
-        }
-
-        @Test
-        void negativeBinaryDeliverAt_isPastDueRelay_notAnError() {
-            // deliver-at range is (−∞, now + delay.max]: a negative epoch instant is merely past.
-            HeaderParseResult result =
-                    binary.parse(headers(CesiumHeaders.DELIVER_AT, binary(-1_000)), TS, TimestampType.CREATE_TIME, NOW);
-            assertInstanceOf(HeaderParseResult.RelayImmediately.class, result);
-        }
     }
 
     @Test
-    void asciiMode_eightByteBinary_rejected() {
+    void eightByteBinaryLong_isMalformed() {
         HeaderParseResult result =
                 ascii.parse(headers(CesiumHeaders.DELAY_MS, binary(60_000)), TS, TimestampType.CREATE_TIME, NOW);
         assertInstanceOf(HeaderParseResult.Malformed.class, result);

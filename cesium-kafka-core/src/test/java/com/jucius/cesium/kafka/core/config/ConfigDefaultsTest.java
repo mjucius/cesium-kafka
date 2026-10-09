@@ -90,7 +90,6 @@ class ConfigDefaultsTest {
     void headersDefaults() {
         HeadersConfig headers = allDefaults().headers();
         assertTrue(headers.stampProvenance());
-        assertFalse(headers.acceptBinaryLongValues());
     }
 
     @Test

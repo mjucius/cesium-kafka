@@ -31,13 +31,8 @@ A producer requests a delay by attaching one control header to a record.
   is never wrapped. ASCII decimal is producible from every client ecosystem without helper code.
 - A value **MUST NOT** carry a sign, leading `+`, whitespace, decimal point, or thousands separator.
   Such a value is *malformed* (§4).
-- An 8-byte big-endian `long` binary decode exists only behind the `headers.accept-binary-long-values`
-  configuration flag (default off). When that flag is on, control-header values are decoded as 8-byte
-  big-endian longs instead of ASCII decimal. The two modes are mutually exclusive, because a
-  length-8 value is ambiguous between "8 ASCII digits" and "an 8-byte long". In binary mode a value
-  that is not exactly 8 bytes, or a negative `cesium-delay-ms`, is malformed. A deployment **MUST**
-  choose one mode for the whole route. Unless you have a specific binary-only producer, leave the
-  flag off and produce ASCII decimal.
+- ASCII decimal is the only encoding. An 8-byte big-endian `long` value is malformed. (The
+  `headers.accept-binary-long-values` compatibility flag was removed in 2.0.0, ADR-0021.)
 
 ### 1.2 `cesium-delay-ms` reference instant
 

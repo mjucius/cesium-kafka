@@ -187,7 +187,7 @@ final class EngineHarness implements AutoCloseable {
                     clients.newIngestConsumer(0),
                     () -> clients.newIngestProducer(0),
                     store,
-                    new DelayHeaderCodec(config.delay().max(), config.headers().acceptBinaryLongValues()),
+                    new DelayHeaderCodec(config.delay().max()),
                     new IngestPolicyEngine(
                             config.delay().max(),
                             config.delay().onMalformedHeader(),

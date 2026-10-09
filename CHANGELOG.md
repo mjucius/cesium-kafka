@@ -64,6 +64,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `kafka.transactions.commit-retry` must be at least 1 (exit 78). It counts `commitTransaction`
   attempts, so `0` behaved like `1`; it passed config load and then failed engine construction
   with exit 1.
+- `headers.accept-binary-long-values` is removed (exit 78 if set). ASCII decimal is the only
+  control-header encoding, and an 8-byte big-endian value is malformed. The flag was compatibility
+  with the retired proof-of-concept and was never used outside a unit test.
 - `/health/ready` loop detail loses its `assigned` field, and readiness no longer has an
   "assignment" term. The engine only ever set it alongside the heartbeat, so it never changed the
   verdict.

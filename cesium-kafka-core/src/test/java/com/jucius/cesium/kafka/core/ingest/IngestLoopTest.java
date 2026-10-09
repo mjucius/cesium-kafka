@@ -944,7 +944,7 @@ class IngestLoopTest {
                         return producer;
                     },
                     store,
-                    new DelayHeaderCodec(delayMax, false),
+                    new DelayHeaderCodec(delayMax),
                     new IngestPolicyEngine(delayMax, onMalformed, onOverMax),
                     new RelayRecordFactory(DEST, DLQ, true, RelayTimestampPolicy.DISPATCH, RelayPartitioning.BY_KEY),
                     new IdentityBlob("test-cluster", TOPIC_ID),

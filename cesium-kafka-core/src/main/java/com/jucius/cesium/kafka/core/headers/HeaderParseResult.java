@@ -48,8 +48,7 @@ public sealed interface HeaderParseResult {
 
     /**
      * The winning control header's value failed the grammar: not ASCII decimal
-     * {@code ^[0-9]{1,19}$} (or not exactly 8 bytes in binary mode, or a negative binary delay),
-     * a null value, or a decimal string overflowing a signed 64-bit long. Handled by
+     * {@code ^[0-9]{1,19}$}, a null value, or a decimal string overflowing a signed 64-bit long. Handled by
      * {@code delay.on-malformed-header}.
      *
      * @param detail human-readable diagnostic naming the header and the offending value

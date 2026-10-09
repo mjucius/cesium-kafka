@@ -1,7 +1,6 @@
 package com.jucius.cesium.kafka.core.headers;
 
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Objects;
@@ -19,9 +18,7 @@ import org.jspecify.annotations.Nullable;
  * <p><strong>Encoding (D1).</strong> Canonical UTF-8 ASCII decimal matching
  * {@value CesiumHeaders#ASCII_DECIMAL_VALUE_REGEX}; values passing the regex but overflowing a
  * signed 64-bit long (19 digits reach 10^19−1 &gt; {@link Long#MAX_VALUE}) are malformed — never
- * wrapped. Behind {@code headers.accept-binary-long-values} an exactly-8-byte big-endian long is
- * accepted <em>instead of</em> ASCII: the modes are mutually exclusive because a length-8 value is
- * ambiguous between "8 ASCII digits" and "8-byte long".
+ * wrapped. ASCII decimal is the only encoding (ADR-0021 removed the binary-long compatibility mode).
  *
  * <p><strong>{@code delay-ms} base (D2).</strong> The delay is relative to the <em>source record
  * timestamp</em> whenever one exists ({@code timestampType != NO_TIMESTAMP_TYPE} and
@@ -53,19 +50,14 @@ public final class DelayHeaderCodec {
     private static final int MAX_DETAIL_VALUE_CHARS = 40;
 
     private final long delayMaxMs;
-    private final boolean acceptBinaryLongValues;
 
     /**
      * @param delayMax the configured {@code delay.max} (non-negative); requests beyond it are
      *     {@link HeaderParseResult.OverMax}. A duration whose millisecond rendering exceeds the
      *     {@code long} range saturates to {@link Long#MAX_VALUE}.
-     * @param acceptBinaryLongValues {@code headers.accept-binary-long-values}: when true, control
-     *     header values must be exactly-8-byte big-endian longs and ASCII decimal is rejected
-     *     (exclusive modes, D1)
      */
-    public DelayHeaderCodec(Duration delayMax, boolean acceptBinaryLongValues) {
+    public DelayHeaderCodec(Duration delayMax) {
         this.delayMaxMs = delayMaxMillis(delayMax);
-        this.acceptBinaryLongValues = acceptBinaryLongValues;
     }
 
     /** Convenience overload taking the consumed record directly. */
@@ -133,11 +125,6 @@ public final class DelayHeaderCodec {
         return switch (decode(CesiumHeaders.DELAY_MS, raw)) {
             case DecodedError(String detail) -> new HeaderParseResult.Malformed(detail, conflicted);
             case DecodedValue(long delayMs) -> {
-                // Only reachable in binary mode: the ASCII grammar cannot express a sign.
-                if (delayMs < 0) {
-                    yield new HeaderParseResult.Malformed(
-                            CesiumHeaders.DELAY_MS + ": negative delay: " + delayMs, conflicted);
-                }
                 // D2: source record timestamp when one exists — identical across EOS abort/retry
                 // cycles, so the same record always computes the same dispatch instant; ingest
                 // clock only for timestampless records, where no deterministic base exists.
@@ -172,18 +159,10 @@ public final class DelayHeaderCodec {
         };
     }
 
-    /** Decodes one header value in the configured mode; errors carry the diagnostic detail. */
+    /** Decodes one ASCII-decimal header value; errors carry the diagnostic detail. */
     private Decoded decode(String headerName, byte @Nullable [] raw) {
         if (raw == null) {
             return new DecodedError(headerName + ": null value");
-        }
-        if (acceptBinaryLongValues) {
-            // Exclusive binary mode (D1): exactly 8 bytes, big-endian. ASCII is NOT accepted here —
-            // an 8-byte value would be ambiguous between "8 ASCII digits" and "8-byte long".
-            if (raw.length != 8) {
-                return new DecodedError(headerName + ": binary mode expects exactly 8 bytes, got " + raw.length);
-            }
-            return new DecodedValue(ByteBuffer.wrap(raw).getLong());
         }
         String text = new String(raw, StandardCharsets.UTF_8);
         if (!ASCII_DECIMAL.matcher(text).matches()) {

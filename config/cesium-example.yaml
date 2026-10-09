@@ -85,7 +85,6 @@ delay:
 
 headers:
   stamp-provenance: true            # stamp cesium-relayed-at / cesium-source-* on relay
-  accept-binary-long-values: false  # canonical ASCII-decimal header values (design D1)
 
 store:
   # The ServiceLoader-registered scheduler store. kafka-tracker (default) is the

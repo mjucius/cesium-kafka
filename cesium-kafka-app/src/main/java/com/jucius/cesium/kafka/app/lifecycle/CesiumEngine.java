@@ -500,8 +500,7 @@ public final class CesiumEngine implements AutoCloseable {
                             clients.newIngestConsumer(spec.workerOrdinal()),
                             () -> clients.newIngestProducer(spec.workerOrdinal()),
                             sharedStore,
-                            new DelayHeaderCodec(
-                                    config.delay().max(), config.headers().acceptBinaryLongValues()),
+                            new DelayHeaderCodec(config.delay().max()),
                             new IngestPolicyEngine(
                                     config.delay().max(),
                                     config.delay().onMalformedHeader(),

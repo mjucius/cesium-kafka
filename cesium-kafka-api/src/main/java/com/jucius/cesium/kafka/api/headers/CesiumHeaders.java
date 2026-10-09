@@ -5,9 +5,7 @@ package com.jucius.cesium.kafka.api.headers;
  *
  * <p><strong>Encoding.</strong> All cesium header values are canonical UTF-8 ASCII decimal
  * ({@link #ASCII_DECIMAL_VALUE_REGEX}) so every client ecosystem can produce them without helper
- * code. An 8-byte big-endian {@code long} decode for the control headers exists behind the
- * {@code headers.accept-binary-long-values} compatibility flag (default off); the modes are
- * mutually exclusive because a length-8 value is ambiguous between the two (design D1).
+ * code.
  *
  * <p><strong>Control headers</strong> ({@link #DELAY_MS}, {@link #DELIVER_AT}) are consumed by
  * cesium and are the only headers <em>stripped</em> on relay. If both are present,

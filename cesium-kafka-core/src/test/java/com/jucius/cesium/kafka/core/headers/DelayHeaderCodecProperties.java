@@ -36,7 +36,7 @@ class DelayHeaderCodecProperties {
     /** Every positive long survives the ASCII deliver-at round trip exactly. */
     @Property
     void randomAsciiDeliverAtRoundTrips(@ForAll @LongRange(min = 1, max = Long.MAX_VALUE) long deliverAtMs) {
-        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofMillis(Long.MAX_VALUE), false);
+        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofMillis(Long.MAX_VALUE));
         // now = 0: the limit saturates to Long.MAX_VALUE, so every positive instant is in range
         // and strictly future — the result must be Schedule(deliverAtMs) bit-for-bit.
         HeaderParseResult result = codec.parse(
@@ -47,7 +47,7 @@ class DelayHeaderCodecProperties {
     /** Every in-range delay lands exactly base + delay (or relays when already due). */
     @Property
     void randomAsciiDelaysScheduleRelativeToBase(@ForAll @LongRange(min = 0, max = 86_400_000L) long delayMs) {
-        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1), false);
+        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1));
         HeaderParseResult result =
                 codec.parse(single(CesiumHeaders.DELAY_MS, ascii(delayMs)), TS, TimestampType.CREATE_TIME, NOW);
         long expectedDispatchAt = TS + delayMs;
@@ -58,11 +58,10 @@ class DelayHeaderCodecProperties {
         }
     }
 
-    /** The codec classifies arbitrary bytes in either header and mode; it never throws. */
+    /** The codec classifies arbitrary bytes in either header; it never throws. */
     @Property
-    void arbitraryBytesNeverCrashTheCodec(
-            @ForAll @Size(max = 64) byte[] value, @ForAll boolean binaryMode, @ForAll boolean asDeliverAt) {
-        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1), binaryMode);
+    void arbitraryBytesNeverCrashTheCodec(@ForAll @Size(max = 64) byte[] value, @ForAll boolean asDeliverAt) {
+        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1));
         String header = asDeliverAt ? CesiumHeaders.DELIVER_AT : CesiumHeaders.DELAY_MS;
         assertNotNull(codec.parse(single(header, value), TS, TimestampType.CREATE_TIME, NOW));
     }
@@ -70,10 +69,8 @@ class DelayHeaderCodecProperties {
     /** Even both headers populated with arbitrary bytes never crash. */
     @Property
     void arbitraryBytePairsNeverCrashTheCodec(
-            @ForAll @Size(max = 16) byte[] delayValue,
-            @ForAll @Size(max = 16) byte[] deliverAtValue,
-            @ForAll boolean binaryMode) {
-        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1), binaryMode);
+            @ForAll @Size(max = 16) byte[] delayValue, @ForAll @Size(max = 16) byte[] deliverAtValue) {
+        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1));
         RecordHeaders headers = new RecordHeaders();
         headers.add(CesiumHeaders.DELAY_MS, delayValue);
         headers.add(CesiumHeaders.DELIVER_AT, deliverAtValue);
@@ -87,12 +84,9 @@ class DelayHeaderCodecProperties {
      * whatever the delay-ms value, valid or garbage — except the conflicted flag.
      */
     @Property
-    void deliverAtPrecedenceLaw(
-            @ForAll long deliverAtMs, @ForAll @Size(max = 24) byte[] delayValue, @ForAll boolean binaryMode) {
-        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1), binaryMode);
-        byte[] deliverAtBytes = binaryMode
-                ? java.nio.ByteBuffer.allocate(8).putLong(deliverAtMs).array()
-                : ascii(deliverAtMs);
+    void deliverAtPrecedenceLaw(@ForAll long deliverAtMs, @ForAll @Size(max = 24) byte[] delayValue) {
+        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1));
+        byte[] deliverAtBytes = ascii(deliverAtMs);
         RecordHeaders both = new RecordHeaders();
         both.add(CesiumHeaders.DELAY_MS, delayValue);
         both.add(CesiumHeaders.DELIVER_AT, deliverAtBytes);
@@ -112,7 +106,7 @@ class DelayHeaderCodecProperties {
         // future. The instant may land exactly on the saturation ceiling (Long.MAX), which the
         // absolute-range check (VULN-003) treats as over-max — so accept either Schedule or OverMax and
         // assert the saturation arithmetic on whichever dispatch instant the result carries.
-        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofMillis(Long.MAX_VALUE), false);
+        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofMillis(Long.MAX_VALUE));
         HeaderParseResult result =
                 codec.parse(single(CesiumHeaders.DELAY_MS, ascii(delayMs)), baseMs, TimestampType.CREATE_TIME, -1);
         long dispatchAt =
@@ -140,7 +134,7 @@ class DelayHeaderCodecProperties {
     /** Valid schedules never exceed now + delay.max — the clamping/range law. */
     @Property
     void schedulesNeverExceedTheLimit(@ForAll long deliverAtMs, @ForAll @LongRange(min = 0) long nowMs) {
-        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1), false);
+        DelayHeaderCodec codec = new DelayHeaderCodec(Duration.ofDays(1));
         byte[] value = deliverAtMs >= 0 ? ascii(deliverAtMs) : "x".getBytes(StandardCharsets.US_ASCII);
         HeaderParseResult result =
                 codec.parse(single(CesiumHeaders.DELIVER_AT, value), TS, TimestampType.CREATE_TIME, nowMs);

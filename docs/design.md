@@ -242,7 +242,7 @@ Replaces the PoC's unversioned sign-negation hack. Unknown flags are ignored; un
 | `cesium-delay-ms` | ASCII decimal `^[0-9]{1,19}$` | Relay N ms after the source record timestamp (deterministic across EOS retries); falls back to ingest wall clock if `NO_TIMESTAMP`. |
 | `cesium-deliver-at` | ASCII decimal epoch-millis UTC | Relay at the absolute instant. |
 
-- **Encoding:** canonical UTF-8 ASCII decimal. An 8-byte big-endian long decode exists behind `headers.accept-binary-long-values: true` (default off; modes are exclusive because length==8 is ambiguous). PoC's unprefixed `delay-by`/`delay-until` are not honored (clean break; migration doc).
+- **Encoding:** canonical UTF-8 ASCII decimal (revision 5 removed the 8-byte binary-long compatibility flag, `headers.accept-binary-long-values`). PoC's unprefixed `delay-by`/`delay-until` are not honored (clean break; migration doc).
 - **Precedence:** if both present, `cesium-deliver-at` wins; `cesium_header_errors_total{type="conflict"}` increments and a WARN logs. Multiple values for one header: `lastHeader` wins, counted as a conflict.
 - **Validation:** regex + range. `cesium-delay-ms ∈ [0, delay.max]`; `cesium-deliver-at ∈ (−∞, now + delay.max]`. Past or zero values relay immediately (past-due); a past deliver-at is not an error.
 - **Policies** (independent, applied inside the ingest transaction, validated at startup):
@@ -945,7 +945,7 @@ Why multi-module: the SPI must be consumable without the engine; the testkit mus
 - Index edge cases: chunk growth/ring wrap/first-chunk geometry, intrusive free list, lazy-delete rebuild and ring-sweep thresholds, binary-search-with-completed-slots, slot-reuse invariant (slots freed only on ring exit), cursor monotonic guard, duplicate-ADD keeps original `trackerAddOffset`.
 - **Sidecar codec:** encode/decode round-trip, greedy cut selection at budget boundaries, overflow fallback equals min-pending watermark, identity-blob validation, unknown-version rejection, Base64 size accounting vs `offset.metadata.max.bytes`.
 - **Pre-compacted-log replay** (broker-independent backstop for the compaction IT): synthetic tracker logs with ADDs removed/tombstones present and vice versa, asserting R1/R2 convergence. Keeps coverage if the broker compaction IT is quarantined (R21).
-- Header codec: parse/precedence/regex/range, ASCII vs exclusive binary mode, timestamp-base determinism, property tests.
+- Header codec: parse/precedence/regex/range, timestamp-base determinism, property tests.
 - Policy decision tables: every `(input, policy)` cell of malformed/over-max/unfetchable.
 - Tracker wire format round-trip; unknown flags ignored, unknown version rejected; invalid records skipped + counted.
 - Config: YAML→records binding, env precedence, unknown-key failure, locked-Kafka-key rejection (incl. `isolation.level`, `auto.offset.reset`), aggregate error reporting, heap-budget validation (`max-pending × partitions` vs Xmx).
