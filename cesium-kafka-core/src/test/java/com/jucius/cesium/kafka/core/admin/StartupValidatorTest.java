@@ -180,7 +180,7 @@ class StartupValidatorTest {
     @Test
     void healthyClusterPassesAndCapturesIdentity() {
         // The healthy baseline already has the R12 tracker write ACL in force and acl-principal set to
-        // the cesium principal, so the default FAIL ACL verification adds no finding.
+        // the cesium principal, so the ACL verification adds no finding.
         givenHealthyCluster();
 
         StartupValidationResult result = validator.validate(defaultConfig());

@@ -784,8 +784,8 @@ public final class StartupValidator {
             return;
         }
         if (principal.isEmpty()) {
-            // L3(c): the normative R12 control is not configured. Under the default FAIL this blocks
-            // startup; WARN surfaces it without blocking (the escape hatch for out-of-band enforcement).
+            // L3(c): the normative R12 control is not configured. Under FAIL this blocks startup; the
+            // default WARN surfaces it without blocking (the escape hatch for out-of-band enforcement).
             String liveState = writePrincipals.isEmpty()
                     ? "no ALLOW WRITE ACL is present on the topic, so on a permissive authorizer any principal can"
                             + " forge tracker records"
