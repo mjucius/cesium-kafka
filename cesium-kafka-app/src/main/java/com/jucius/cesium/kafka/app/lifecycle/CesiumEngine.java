@@ -1,11 +1,9 @@
 package com.jucius.cesium.kafka.app.lifecycle;
 
 import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.OwnershipEpoch;
 import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.SchedulerStore;
 import com.jucius.cesium.kafka.api.store.SchedulerStoreProvider;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
 import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.health.EngineHealth;
@@ -160,8 +158,6 @@ public final class CesiumEngine implements AutoCloseable {
 
     private volatile @Nullable Admin admin;
     private volatile @Nullable TrackerBackedStore store;
-    /** Group-B ownership per tracker partition, kept current by the dispatch workers (epoch()). */
-    private final Map<Integer, OwnershipEpoch> ownership = new ConcurrentHashMap<>();
 
     private volatile @Nullable ScheduledExecutorService healthSampler;
     private volatile @Nullable ScheduledExecutorService adminExecutor;
@@ -170,7 +166,6 @@ public final class CesiumEngine implements AutoCloseable {
     private volatile @Nullable String revalidationCause;
     // cesium-admin thread only: the last round's warnings, so a standing warning is logged once.
     private Set<String> lastRevalidationWarnings = Set.of();
-    private volatile @Nullable StoreCapabilities storeCapabilities;
 
     /**
      * The running loop handles, published as an immutable snapshot once {@link #spawnLoops} has
@@ -205,11 +200,6 @@ public final class CesiumEngine implements AutoCloseable {
     /** The engine-written health signals the observability layer reads (design §9). */
     public EngineHealth health() {
         return health;
-    }
-
-    /** The resolved store's self-declared capabilities, present once {@link #start()} has resolved it. */
-    public Optional<StoreCapabilities> storeCapabilities() {
-        return Optional.ofNullable(storeCapabilities);
     }
 
     /**
@@ -260,7 +250,6 @@ public final class CesiumEngine implements AutoCloseable {
             RouteDescriptor route = buildRouteDescriptor(clusterAdmin, config, identity, partitionCount);
             resolved.configure(new EngineStoreContext(
                     route, ConfigView.of(storeProperties(config, validation.offsetMetadataMaxBytes()))));
-            this.storeCapabilities = resolved.capabilities();
             resolved.validate();
             resolved.start();
 
@@ -575,8 +564,7 @@ public final class CesiumEngine implements AutoCloseable {
                             relay,
                             dispatchAdmin,
                             registry,
-                            clock,
-                            ownership);
+                            clock);
                     dispatchHandles.add(spawn(
                             spec,
                             clients.dispatchTransactionalId(spec.workerOrdinal()),
@@ -1037,15 +1025,10 @@ public final class CesiumEngine implements AutoCloseable {
     }
 
     /**
-     * The production {@link StoreContext}: real route identity, the {@code store.properties} subtree,
-     * the engine's shared clock, the shared registry, and the dispatch group's (group B) current
-     * ownership epoch per partition as the dispatch workers last observed it — {@code (-1, "")} for
-     * a partition this instance does not own (design §4.4 item 4).
+     * The production {@link StoreContext}: real route identity, the {@code store.properties} subtree
+     * and the shared registry.
      */
     private final class EngineStoreContext implements StoreContext {
-        /** The consumer's own pre-join identity: no generation, no member id. */
-        private static final OwnershipEpoch UNOWNED = new OwnershipEpoch(-1, "");
-
         private final RouteDescriptor route;
         private final ConfigView configView;
 
@@ -1065,18 +1048,8 @@ public final class CesiumEngine implements AutoCloseable {
         }
 
         @Override
-        public Clock clock() {
-            return clock;
-        }
-
-        @Override
         public MeterRegistry meterRegistry() {
             return registry;
-        }
-
-        @Override
-        public OwnershipEpoch epoch(int partition) {
-            return ownership.getOrDefault(partition, UNOWNED);
         }
     }
 }

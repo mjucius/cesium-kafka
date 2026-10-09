@@ -14,7 +14,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
 import java.nio.charset.StandardCharsets;
@@ -41,16 +40,6 @@ class KafkaTrackerStoreTest {
         // First run: no committed cursor, empty tracker — barrier 0 promotes immediately.
         store.beginRecovery(partition, new TrackerCursor(0, ""), 0);
         return store;
-    }
-
-    @Test
-    void capabilitiesDeclareTheTrackerArchetype() {
-        KafkaTrackerStore store = new KafkaTrackerStore();
-        StoreCapabilities capabilities = store.capabilities();
-        assertEquals(StoreCapabilities.TransactionAffinity.KAFKA_TRANSACTIONAL, capabilities.affinity());
-        assertEquals(StoreCapabilities.DispatchGuarantee.EXACTLY_ONCE, capabilities.dispatchGuarantee());
-        assertTrue(capabilities.requiresTrackerTopic());
-        assertFalse(capabilities.supportsCancellation());
     }
 
     @Test
@@ -165,7 +154,12 @@ class KafkaTrackerStoreTest {
         store.onBatchCommitted(EMPTY_BATCH); // records-free idle-advancement transaction
 
         // The promoted floor now guards: a (bug-injected) position regression degrades safely.
-        store.onTrackerRecord(0, 0, TrackerWireFormat.encodeKey(99), TrackerWireFormat.encodeAddValue(T0, false));
+        store.onTrackerRecord(
+                0,
+                0,
+                TrackerWireFormat.encodeKey(99),
+                TrackerWireFormat.encodeAddValue(T0, false),
+                new RecordHeaders());
         TrackerCursor degraded = store.committedCursor(0, EMPTY_BATCH);
         assertEquals(2, degraded.offset(), "the promoted floor is authoritative");
     }
@@ -295,23 +289,6 @@ class KafkaTrackerStoreTest {
     }
 
     @Test
-    void headersBlindTombstonesKeepTheLenientApplyPosture() {
-        // The legacy 4-arg overload cannot see headers, so it cannot distinguish a forged
-        // reason-less tombstone from a legitimate one whose headers were simply not plumbed: it
-        // fails safe toward applying (skipping would be the duplicate vector). The engine's
-        // call path is the 5-arg variant, where R12 is enforced.
-        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
-        KafkaTrackerStore store = activeStore(ctx, 0);
-        feedSchedule(store, 0, new ScheduledRef(0, 10, T0 + 100, false));
-
-        store.onTrackerRecord(0, 1, TrackerWireFormat.encodeKey(10), null);
-        assertEquals(0, store.pendingCount(0), "the headers-blind path applies valid tombstones");
-        assertEquals(
-                0.0,
-                ctx.registry().get("cesium.tracker.invalid.records").counter().count());
-    }
-
-    @Test
     void anomalyCounterIsMonotonicAcrossInPlaceReRecovery() {
         // Regression (M3 review, minor): beginRecovery's idempotent-reset branch replaces the
         // shard, whose plain counters restart at zero -- the monotonic baselines must restart
@@ -383,8 +360,15 @@ class KafkaTrackerStoreTest {
         FixedIdentityStoreContext ctx = FixedIdentityStoreContext.withPartitions(1);
         KafkaTrackerStore store = activeStore(ctx, 0);
 
-        store.onTrackerRecord(0, 7, TrackerWireFormat.encodeKey(5), new byte[] {1, 2, 3}); // bad magic
-        store.onTrackerRecord(0, 8, new byte[] {1, 2}, null); // tombstone with a bad key length
+        store.onTrackerRecord(
+                0, 7, TrackerWireFormat.encodeKey(5), new byte[] {1, 2, 3}, new RecordHeaders()); // bad magic
+        store.onTrackerRecord( // tombstone with a bad key length (and a valid reason header)
+                0,
+                8,
+                new byte[] {1, 2},
+                null,
+                TrackerWireFormat.encodeCompletion(5, CompletionReason.DISPATCHED)
+                        .headers());
         assertEquals(0, store.pendingCount(0));
         assertEquals(
                 2.0,
@@ -401,7 +385,7 @@ class KafkaTrackerStoreTest {
         byte[] cancel = {
             TrackerWireFormat.MAGIC, TrackerWireFormat.VERSION, TrackerWireFormat.TYPE_CANCEL, 0, 0, 0, 0, 0, 0, 0, 0, 0
         };
-        store.onTrackerRecord(0, 0, TrackerWireFormat.encodeKey(5), cancel);
+        store.onTrackerRecord(0, 0, TrackerWireFormat.encodeKey(5), cancel, new RecordHeaders());
         assertEquals(0, store.pendingCount(0));
         assertEquals(
                 1.0,
@@ -420,7 +404,12 @@ class KafkaTrackerStoreTest {
 
         // Bug injection: the engine misfeeds a record BELOW the committed cursor; position
         // regresses to 51 and the computed cursor would violate monotonicity.
-        store.onTrackerRecord(0, 50, TrackerWireFormat.encodeKey(10), TrackerWireFormat.encodeAddValue(T0, false));
+        store.onTrackerRecord(
+                0,
+                50,
+                TrackerWireFormat.encodeKey(10),
+                TrackerWireFormat.encodeAddValue(T0, false),
+                new RecordHeaders());
         TrackerCursor degraded = store.committedCursor(0, EMPTY_BATCH);
         assertEquals(100, degraded.offset(), "the last safe cursor is returned, never a corrupted one");
         assertEquals("", degraded.metadata());
@@ -430,7 +419,12 @@ class KafkaTrackerStoreTest {
 
         // Once position passes the floor again, normal cursors resume; the stray pending entry
         // rides in the sidecar (I5 holds: in the sidecar OR >= cursor offset).
-        store.onTrackerRecord(0, 150, TrackerWireFormat.encodeKey(20), TrackerWireFormat.encodeAddValue(T0, false));
+        store.onTrackerRecord(
+                0,
+                150,
+                TrackerWireFormat.encodeKey(20),
+                TrackerWireFormat.encodeAddValue(T0, false),
+                new RecordHeaders());
         TrackerCursor recovered = store.committedCursor(0, EMPTY_BATCH);
         assertEquals(151, recovered.offset());
         SidecarCodec.DecodedSidecar sidecar = SidecarCodec.decode(recovered.metadata());
@@ -591,7 +585,8 @@ class KafkaTrackerStoreTest {
         store.start();
         assertThrows(IllegalStateException.class, () -> store.beginRecovery(5, new TrackerCursor(0, ""), 0));
         assertThrows(
-                IllegalStateException.class, () -> store.onTrackerRecord(5, 0, TrackerWireFormat.encodeKey(1), null));
+                IllegalStateException.class,
+                () -> store.onTrackerRecord(5, 0, TrackerWireFormat.encodeKey(1), null, new RecordHeaders()));
 
         store.onPartitionsAssigned(Set.of(0));
         assertThrows(
@@ -621,11 +616,6 @@ class KafkaTrackerStoreTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> validateWith(Map.of(KafkaTrackerStore.STALE_REBUILD_FLOOR_KEY, "0")));
-
-        // The tracker topic is required (requiresTrackerTopic = true).
-        KafkaTrackerStore noTracker = new KafkaTrackerStore();
-        noTracker.configure(FixedIdentityStoreContext.withoutTrackerTopicId(3));
-        assertThrows(IllegalArgumentException.class, noTracker::validate);
     }
 
     @Test

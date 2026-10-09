@@ -28,10 +28,8 @@ import org.jspecify.annotations.Nullable;
  * @param destinationTopic name of the user-owned destination topic records are relayed to
  * @param destinationTopicId Kafka topic id of the destination topic at configure time
  * @param trackerTopic name of the cesium-owned tracker topic (default
- *     {@code cesium.<applicationId>.tracker}); meaningful only for stores whose
- *     {@link StoreCapabilities#requiresTrackerTopic()} is {@code true}
- * @param trackerTopicId Kafka topic id of the tracker topic, or {@code null} when the route has no
- *     tracker topic (external stores with {@code requiresTrackerTopic() == false})
+ *     {@code cesium.<applicationId>.tracker})
+ * @param trackerTopicId Kafka topic id of the tracker topic
  * @param dlqTopic name of the dead-letter topic receiving policy and loss-notice records, or
  *     {@code null} when no DLQ is configured
  * @param partitionCount partition count of the source topic — and therefore of the tracker topic,
@@ -45,7 +43,7 @@ public record RouteDescriptor(
         String destinationTopic,
         Uuid destinationTopicId,
         String trackerTopic,
-        @Nullable Uuid trackerTopicId,
+        Uuid trackerTopicId,
         @Nullable String dlqTopic,
         int partitionCount) {
 

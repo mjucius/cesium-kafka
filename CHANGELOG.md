@@ -20,12 +20,21 @@ HTTP bodies are the same JSON, though an escaped control character there would n
    worker-0 `group.instance.id`s are unchanged, so 1.1.5 and 2.0.0 instances can run side by side.
 3. Expect runtime re-validation (every `startup-checks.revalidation-interval`, default PT5M) to set
    `/health` degraded for conditions 1.x only checked at startup; see operations.md §14.5.
-4. Store implementers: replace `FakeStoreContext.MapConfigView` with `ConfigView.of(Map)`. External
-   stores must keep `cursorToCommit` free of side effects (the new I9 contract tests check this).
+4. Store implementers: there is no store SPI any more (ADR-0021); the store is part of the engine.
 
 ### Breaking changes
-- The release is 2.0.0, and `cesium-kafka-api`/`cesium-kafka-store-testkit` are semver-stable from
-  2.0.0 (ADR-0019). `cesium-kafka-core` stays internal.
+- The release is 2.0.0 (ADR-0019). Every Java module is internal, with no compatibility promise:
+  the pluggable store SPI is retired and `KafkaTrackerStore` is the only store (ADR-0021).
+- SPI: `ExternalSchedulerStore`, its contract kit (`ExternalSchedulerStoreContract`,
+  `ExternalStoreHarness`) and the testkit's `InMemoryExternalSchedulerStore` are removed. The engine
+  never had a dispatch loop for the external archetype and rejected such a store at startup.
+- SPI: `StoreCapabilities` and `SchedulerStore.capabilities()` are removed. The engine never branched
+  on them. `/info` (with `observability.detailed-info: true`) loses its `store.capabilities` object.
+- SPI: `OwnershipEpoch`, `StoreContext.epoch()` and `StoreContext.clock()` are removed; no store read
+  them. The testkit's `MutableClock` is removed with them.
+- SPI: the headers-blind `TrackerBackedStore.onTrackerRecord(int, long, byte[], byte[])` overload is
+  removed. The engine always called the headers variant, and the overload applied reason-less
+  tombstones that the engine's path counts and skips (R12).
 - `dispatch.workers` must be 1; any other value fails validation (exit 78). Every dispatch loop in
   a process shared one single-threaded store, and `drainDue` did not filter by owned partition, so
   a second worker raced the first. Scale dispatch by running more instances.
@@ -53,10 +62,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
 - `store.type: class:<FQCN>` is removed from the `SchedulerStoreProvider` contract. It was never
   implemented, and such a value still fails startup as an unknown typeId.
-- Testkit and SPI: `ExternalSchedulerStoreContract` gains two I9 in-doubt tests, run in both modes.
-  `ExternalSchedulerStore.cursorToCommit` may not change reconciliation state, its cursor counts as
-  committed only from `onBatchCommitted`, and `markDispatched` runs after `onBatchCommitted`. A store
-  whose `cursorToCommit` advances state that later cursors build on fails the new tests.
 - Logs: JSON lines from the loop threads (`cesium-ingest-N`, `cesium-dispatch-N`) now carry an
   `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main, `cesium-shutdown`
   and `cesium-admin` threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
@@ -95,8 +100,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - Metrics `cesium_shard_state{partition}` (0 = ASSIGNED, 1 = RECOVERING, 2 = ACTIVE) and
   `cesium_replay_remaining_records{partition}` (barrier − position while recovering), previously
   listed as "not yet emitted".
-- Testkit: `ExternalStoreHarness.inDoubtCommit(batch, brokerCommitted)` models an ambiguous
-  `commitTransaction` (I9) for external stores.
 
 ### Fixed
 - `dispatch.cursor.sidecar-max-bytes` had no effect. It is now passed to the `kafka-tracker`
@@ -111,10 +114,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `/health/ready` always reported `"recovery": []`. The per-shard recovery detail (state,
   records remaining, ETA) is now fed from the store's shard-state gauges. Recovery still never affects
   readiness (D21).
-- `StoreContext.epoch(p)` always returned `(0, "cesium-engine")`. It now reports the dispatch
-  group's real generation/member epoch and member id for partitions this instance owns, and `(-1, "")`
-  otherwise; it never throws. The epoch fences dispatch-side writes only (documented in
-  `store-spi.md` and ADR-0003). No shipped store calls it.
 - `cesium_pinned_entries`, `cesium_cursor_sidecar_bytes` and `cesium_pending_entries` raced the
   dispatch thread. Scrapes read the store's unsynchronized per-partition map and the index directly,
   so a scrape during a rebalance could report a wrong value or NaN. The gauges now read volatile
@@ -143,12 +142,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `cesium_dlq_records_total` counted only ingest-side DLQ writes. The dispatch loop's
   `payload-expired` loss notices and its `unrelayable` DLQ copies are now counted too, once per
   committed transaction (an aborted attempt counts nothing).
-- The testkit's reference `InMemoryExternalSchedulerStore` advanced its reconciliation high-water
-  inside `cursorToCommit`, before the commit outcome was known. After an aborted or in-doubt
-  transaction, a later, smaller batch committed a cursor that covered entries never dispatched, and
-  recovery reconciled them as delivered: silent loss. The high-water now advances only in
-  `onBatchCommitted`, and `ExternalSchedulerStoreContract` covers in-doubt commits (ADR-0014 said it
-  did; it had no such test).
 - The documented log MDC keys (`applicationId`, `loop`, `txn`) were never set, so JSON lines had no
   `mdc` object and plain lines no context. The engine now sets them once per loop thread, and
   `applicationId` on the main and shutdown threads.
@@ -166,6 +159,10 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `store.properties.max-pending-per-partition` and the store's duplicate footprint check (see
   Breaking changes).
 - The documented but unimplemented `store.type: class:<FQCN>` store selection (see Breaking changes).
+- `ExternalSchedulerStore` and its contract kit, `StoreCapabilities`, `OwnershipEpoch`,
+  `StoreContext.epoch()`/`clock()`, the testkit's `MutableClock`, and the headers-blind
+  `onTrackerRecord` overload (see Breaking changes).
+- `docs/store-spi.md`: there is no store SPI to implement against (ADR-0021).
 - From the spec (never emitted): `cesium_retention_margin_seconds` and its earliest-age probe, the
   periodic tracker-size monitor, and `cesium_tracker_cursor_lag` /
   `cesium_tracker_cursor_age_seconds`. Watch tracker size and source earliest-record age with

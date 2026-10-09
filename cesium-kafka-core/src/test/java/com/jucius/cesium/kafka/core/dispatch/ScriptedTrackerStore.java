@@ -4,7 +4,6 @@ import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
 import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
 import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
@@ -143,15 +142,9 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
     }
 
     @Override
-    public void onTrackerRecord(int partition, long trackerOffset, byte[] key, byte @Nullable [] value) {
-        appliedRecords.add(new long[] {partition, trackerOffset});
-    }
-
-    @Override
     public void onTrackerRecord(
             int partition, long trackerOffset, byte[] key, byte @Nullable [] value, Headers headers) {
-        // The engine must call this headers-carrying variant; record through one path.
-        onTrackerRecord(partition, trackerOffset, key, value);
+        appliedRecords.add(new long[] {partition, trackerOffset});
         events.add("record:" + partition + ":" + trackerOffset);
     }
 
@@ -217,11 +210,6 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
 
     @Override
     public void configure(StoreContext context) {
-        throw offLimits();
-    }
-
-    @Override
-    public StoreCapabilities capabilities() {
         throw offLimits();
     }
 

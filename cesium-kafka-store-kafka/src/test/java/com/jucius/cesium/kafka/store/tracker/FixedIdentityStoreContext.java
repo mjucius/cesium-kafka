@@ -1,14 +1,10 @@
 package com.jucius.cesium.kafka.store.tracker;
 
 import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.OwnershipEpoch;
 import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.StoreContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.time.Clock;
-import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.kafka.common.Uuid;
@@ -22,9 +18,8 @@ import org.apache.kafka.common.Uuid;
  * whose identity is <em>random per build</em> — the right default for contract tests, where
  * independently built contexts must model different clusters. These unit tests instead need
  * byte-exact, name-addressable identity constants (sidecar identity headers are asserted against
- * them, and forged/foreign sidecars are constructed from them), plus the
- * {@link #withoutTrackerTopicId no-tracker-topic-id} {@code validate()} case the testkit builder
- * deliberately does not expose. The distinct name keeps the two fixtures from being confused —
+ * them, and forged/foreign sidecars are constructed from them). The distinct name keeps the two
+ * fixtures from being confused —
  * importing the testkit fake here would silently change what "foreign identity" means in a test.
  */
 final class FixedIdentityStoreContext implements StoreContext {
@@ -37,7 +32,6 @@ final class FixedIdentityStoreContext implements StoreContext {
     private final RouteDescriptor route;
     private final ConfigView config;
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    private final Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000_000), ZoneOffset.UTC);
 
     FixedIdentityStoreContext(int partitionCount, Map<String, String> properties) {
         this(partitionCount, properties, TRACKER_TOPIC_ID);
@@ -66,10 +60,6 @@ final class FixedIdentityStoreContext implements StoreContext {
         return new FixedIdentityStoreContext(partitionCount, Map.of());
     }
 
-    static FixedIdentityStoreContext withoutTrackerTopicId(int partitionCount) {
-        return new FixedIdentityStoreContext(partitionCount, Map.of(), null);
-    }
-
     @Override
     public RouteDescriptor route() {
         return route;
@@ -81,18 +71,8 @@ final class FixedIdentityStoreContext implements StoreContext {
     }
 
     @Override
-    public Clock clock() {
-        return clock;
-    }
-
-    @Override
     public MeterRegistry meterRegistry() {
         return registry;
-    }
-
-    @Override
-    public OwnershipEpoch epoch(int partition) {
-        return new OwnershipEpoch(1, "test-member");
     }
 
     SimpleMeterRegistry registry() {

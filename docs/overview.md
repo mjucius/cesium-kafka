@@ -193,10 +193,8 @@ Each waiting entry is small:
 So the default implementation scales to large pending counts: memory grows with the number of
 small pointers, not with the size of user payloads.
 
-The scheduler store is also pluggable. The default `kafka-tracker` store is the supported store
-and is exactly-once when destination consumers use `read_committed`. The public store SPI allows
-other implementations, such as database-backed stores, but their delivery guarantees depend on the
-store archetype they implement. See [store-spi.md](store-spi.md) for implementer details.
+There is one scheduler store. It is exactly-once when destination consumers use `read_committed`,
+because its writes are tracker records produced inside cesium's own transactions.
 
 ### Source retention is part of the contract
 

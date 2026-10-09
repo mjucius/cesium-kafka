@@ -31,23 +31,6 @@ class FakeStoreContextTest {
     }
 
     @Test
-    void clockIsTheMutableClock() {
-        MutableClock clock = MutableClock.at(123);
-        FakeStoreContext ctx = FakeStoreContext.builder().clock(clock).build();
-        assertSame(clock, ctx.clock());
-        assertSame(clock, ctx.mutableClock());
-        clock.advanceMillis(1);
-        assertEquals(124, ctx.clock().millis());
-    }
-
-    @Test
-    void epochIsStable() {
-        FakeStoreContext ctx = FakeStoreContext.builder().build();
-        assertEquals(1, ctx.epoch(0).groupGenerationId());
-        assertEquals("testkit-member", ctx.epoch(7).memberId());
-    }
-
-    @Test
     void configParsesLikeTheEngine() {
         ConfigView config = FakeStoreContext.builder()
                 .property("flag", " TRUE ")

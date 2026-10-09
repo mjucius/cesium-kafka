@@ -8,9 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities.DispatchGuarantee;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities.TransactionAffinity;
 import com.jucius.cesium.kafka.app.health.HealthAssessor;
 import com.jucius.cesium.kafka.app.health.ShardRecovery;
 import com.jucius.cesium.kafka.core.config.ObservabilityConfig;
@@ -252,7 +249,6 @@ class ObservabilityServerTest {
         assertFalse(body.has("applicationId"), body.toString());
         assertFalse(body.has("roles"), body.toString());
         assertFalse(body.has("acknowledgments"), body.toString());
-        assertFalse(body.get("store").has("capabilities"), body.toString());
     }
 
     @Test
@@ -267,9 +263,6 @@ class ObservabilityServerTest {
         assertEquals("abc1234", body.get("gitCommit").asText());
         assertEquals("orders-delay", body.get("applicationId").asText());
         assertEquals("kafka-tracker", body.get("store").get("type").asText());
-        assertEquals(
-                "KAFKA_TRANSACTIONAL",
-                body.get("store").get("capabilities").get("affinity").asText());
         assertEquals(List.of("ingest", "dispatch"), readStrings(body.get("roles")));
         assertEquals(List.of("size-based-retention"), readStrings(body.get("acknowledgments")));
     }
@@ -354,8 +347,6 @@ class ObservabilityServerTest {
                 "orders-delay",
                 List.of("ingest", "dispatch"),
                 "kafka-tracker",
-                Optional.of(new StoreCapabilities(
-                        TransactionAffinity.KAFKA_TRANSACTIONAL, DispatchGuarantee.EXACTLY_ONCE, true, false)),
                 List.of("size-based-retention"));
     }
 }

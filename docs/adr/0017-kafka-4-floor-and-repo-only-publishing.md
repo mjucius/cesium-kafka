@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-06
-- **Amended by:** [ADR-0019](0019-2-0-stability-baseline.md) (2.0 stability baseline)
+- **Amended by:** [ADR-0019](0019-2-0-stability-baseline.md) (2.0 stability baseline),
+  [ADR-0021](0021-store-spi-folded-into-core.md) (store SPI folded into core)
 - **Design reference:** [`../design.md`](../design.md) §13 (post-approval revision 2; supersedes the
   release-workflow wording of §13 and Open Questions #1, #2, #4)
 

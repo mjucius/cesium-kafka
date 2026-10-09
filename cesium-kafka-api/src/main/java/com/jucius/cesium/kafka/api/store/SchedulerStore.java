@@ -5,46 +5,37 @@ import java.util.Set;
 /**
  * Root SPI for scheduler-state stores (design §4.2).
  *
- * <p><strong>Sealed by design (D7).</strong> The two permitted archetypes are the only
- * transaction-participation models the engine knows how to orchestrate, and the engine wires its
- * dispatch loop with an exhaustive Java 21 {@code switch} over them. Concrete stores implement
- * exactly one of {@link TrackerBackedStore} (durable writes enlisted in the engine's Kafka
- * transactions — exactly-once) or {@link ExternalSchedulerStore} (ordered out-of-band writes to an
- * external system).
+ * <p><strong>Sealed (D7).</strong> {@link TrackerBackedStore} is the only permitted archetype: its
+ * durable writes are tracker records the engine produces inside its Kafka transactions, which is
+ * what makes dispatch exactly-once. The engine orchestrates no other transaction-participation
+ * model.
  *
  * <p><strong>Thread-confinement contract (design §4.1 force 3).</strong> Lifecycle methods
- * ({@link #configure}, {@link #capabilities}, {@link #validate}, {@link #start}) are called from
+ * ({@link #configure}, {@link #validate}, {@link #start}) are called from
  * the engine's startup thread before any loop runs. Partition-lifecycle callbacks and every
  * hot-path method — {@link #pollDue}, {@link #nextDeadlineMs}, {@link #pendingCount},
  * {@link #penalizeSourcePartition}, {@link #onBatchCommitted}, {@link #onBatchAborted},
- * {@link #maintenance}, and the archetypes' index-maintenance methods — are confined to the
+ * {@link #maintenance}, and the archetype's index-maintenance methods — are confined to the
  * single dispatch thread owning the affected
  * partitions. A conforming engine never calls them concurrently, so a store needs no locking on
- * these paths; archetype-specific ingest-side methods are confined to the ingest thread and
+ * these paths; the archetype's ingest-side methods are confined to the ingest thread and
  * documented on the archetype.
  *
- * <p><strong>Lifecycle order:</strong> {@code configure → capabilities → validate → start →
+ * <p><strong>Lifecycle order:</strong> {@code configure → validate → start →
  * (partition callbacks / hot path)* → close}.
  */
-public sealed interface SchedulerStore extends AutoCloseable permits TrackerBackedStore, ExternalSchedulerStore {
+public sealed interface SchedulerStore extends AutoCloseable permits TrackerBackedStore {
 
     /**
-     * Injects the engine-provided context (route identity, typed config, clock, metrics,
-     * ownership epochs). Called exactly once, before any other method.
+     * Injects the engine-provided context (route identity, typed config, metrics). Called exactly
+     * once, before any other method.
      */
     void configure(StoreContext context);
 
     /**
-     * Declares the store's transaction affinity and guarantees. Must be constant for the life of
-     * the instance and consistent with the implemented archetype; the engine selects its
-     * orchestration from this declaration (design §4.3).
-     */
-    StoreCapabilities capabilities();
-
-    /**
      * Store-declared preconditions, checked at startup: partition parity, the tombstone-retention
-     * floor, broker {@code offset.metadata.max.bytes} vs the cursor sidecar budget, external schema
-     * presence, unknown config keys — whatever this store needs to be safe (design §4.4 item 7).
+     * floor, broker {@code offset.metadata.max.bytes} vs the cursor sidecar budget, unknown config
+     * keys — whatever this store needs to be safe (design §4.4 item 7).
      * The worst-case index footprint vs the heap budget is the engine's check
      * ({@code startup-checks.heap-budget}), not a store duty.
      *
@@ -57,8 +48,8 @@ public sealed interface SchedulerStore extends AutoCloseable permits TrackerBack
     void start();
 
     /**
-     * Partitions granted to this instance by the engine's coordination source (consumer group B
-     * for tracker-backed stores; per {@link ExternalSchedulerStore#coordination()} otherwise).
+     * Partitions granted to this instance by the engine's coordination source (consumer group B,
+     * which subscribes to the tracker topic).
      *
      * <p>Must be <em>idempotent</em> and tolerate <em>incremental</em> delivery: under
      * cooperative/KIP-848 protocols an assignment epoch may surface as several calls, each with a
@@ -70,7 +61,7 @@ public sealed interface SchedulerStore extends AutoCloseable permits TrackerBack
 
     /**
      * Partitions cooperatively revoked. Drop all in-memory state for each partition in O(1) —
-     * pending entries are durable (in the tracker topic or the external system); memory is a
+     * pending entries are durable in the tracker topic; memory is a
      * cache. Never flush, never write: the new owner rebuilds from durable state, and a revoked
      * owner writing afterward is exactly the zombie the fencing design excludes.
      */

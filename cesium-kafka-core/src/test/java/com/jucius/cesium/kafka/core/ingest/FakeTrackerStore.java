@@ -4,7 +4,6 @@ import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
 import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
 import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
@@ -13,7 +12,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Ingest-side stand-in for the tracker store: {@link #encodeSchedule} records the refs the loop
@@ -49,11 +50,6 @@ final class FakeTrackerStore implements TrackerBackedStore {
 
     @Override
     public void configure(StoreContext context) {
-        throw offLimits();
-    }
-
-    @Override
-    public StoreCapabilities capabilities() {
         throw offLimits();
     }
 
@@ -123,7 +119,8 @@ final class FakeTrackerStore implements TrackerBackedStore {
     }
 
     @Override
-    public void onTrackerRecord(int partition, long trackerOffset, byte[] recordKey, byte[] recordValue) {
+    public void onTrackerRecord(
+            int partition, long trackerOffset, byte[] recordKey, byte @Nullable [] recordValue, Headers headers) {
         throw offLimits();
     }
 

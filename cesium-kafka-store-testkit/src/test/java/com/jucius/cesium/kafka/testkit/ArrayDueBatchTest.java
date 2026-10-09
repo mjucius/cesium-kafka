@@ -19,7 +19,7 @@ class ArrayDueBatchTest {
     @Test
     void clampedDefaultsToFalseOnNonOverridingImplementations() {
         // Pins the M3 additive SPI evolution: DueBatch.clamped(i) must default to false so
-        // implementations predating the method (external stores, engine views) stay
+        // implementations predating the method (engine views) stay
         // behavior-compatible.
         DueBatch legacy = new DueBatch() {
             @Override

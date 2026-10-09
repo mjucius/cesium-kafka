@@ -186,7 +186,7 @@ The observability HTTP server (default `observability.port: 8081`, serving `/met
 `/health/live`, `/health/ready`) is read-only but **completely unauthenticated**: no token, no mTLS,
 no source-IP gate. `/metrics` discloses per-partition operational gauges. `/info` returns only the
 build version, git commit, and store type by default; `observability.detailed-info: true` (default
-`false`) adds the `application-id` (which seeds the M3 fencing ids), roles, store capabilities, and
+`false`) adds the `application-id` (which seeds the M3 fencing ids), roles, and
 acknowledgments, so leave it off on any port you cannot restrict.
 
 The listener binds all interfaces by default (`observability.bind-address: 0.0.0.0`) so k8s probes

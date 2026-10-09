@@ -1163,7 +1163,7 @@ public abstract class TrackerBackedStoreContract {
             for (int i = 0; i < entries; i++) {
                 ScheduledRef ref = new ScheduledRef(0, i, T0 + (i % 86_400_000), (i & 7) == 0);
                 TrackerRecordData data = store.encodeSchedule(ref);
-                store.onTrackerRecord(0, i, data.key(), data.value());
+                store.onTrackerRecord(0, i, data.key(), data.value(), data.headers());
             }
             long retained = usedHeapAfterGc() - before;
             assertEquals(entries, store.pendingCount(0));

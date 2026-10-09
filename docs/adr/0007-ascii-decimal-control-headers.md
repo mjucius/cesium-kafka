@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-06
+- **Amended by:** [ADR-0021](0021-store-spi-folded-into-core.md) (the binary decode flag is removed)
 - **Design reference:** [`../design.md`](../design.md) §2.3–2.4 (D1, D2)
 
 ## Context

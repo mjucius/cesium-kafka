@@ -1,9 +1,9 @@
 # cesium-kafka implementation design
 
-A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exactly-once via Kafka transactions (KIP-447/KIP-890 era), pointer-only payload re-seek, and one production scheduler store (an in-memory index durably backed by a Kafka tracker topic) behind a pluggable SPI. This document is the implementation specification.
+A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exactly-once via Kafka transactions (KIP-447/KIP-890 era), pointer-only payload re-seek, and one scheduler store (an in-memory index durably backed by a Kafka tracker topic). This document is the implementation specification; post-approval revision 5 (ADR-0021) removed the pluggable store SPI, so the §4 SPI text below is historical.
 
-> Changes made after approval (revisions 1–3 on 2026-06-05, revision 4 on 2026-10-07; project-owner
-> decisions). Later sections cite these as post-approval revisions 1–4.
+> Changes made after approval (revisions 1–3 on 2026-06-05, revision 4 on 2026-10-07, revision 5 on
+> 2026-10-08; project-owner decisions). Later sections cite these as post-approval revisions 1–5.
 > 1. Index backing uses fastutil instead of hand-rolled chunked arrays. §5's structures are built
 >    from fastutil primitive collections (`fastutil-core`, store-kafka module only): parallel
 >    `LongBigArrayBigList`s for the entry pool with an `IntArrayList` free-slot stack;
@@ -56,6 +56,15 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 >    the engine; every other error degrades and alerts while dispatch continues. That reverses D14's
 >    "refuse rather than alert" and R-7's runtime fail-fast. The `cesium_retention_margin_seconds`
 >    probe, the tracker-size monitor and the cursor lag/age gauges are dropped from the spec.
+> 5. 2.0.0 simplification (ADR-0021, supersedes ADR-0003). The store SPI is folded into core:
+>    `KafkaTrackerStore` is the only store, the api/store-kafka/testkit modules merge into
+>    `cesium-kafka-core`, and `ExternalSchedulerStore`, `StoreCapabilities`, `OwnershipEpoch`,
+>    `StoreContext`, `ConfigView`, `RouteDescriptor`, the ServiceLoader provider, `store.type` and
+>    `store.properties` are removed (§4, §4.5, §10 and the `ExternalSchedulerStoreContract` note in
+>    revision 4 are historical). Each process runs at most one ingest and one dispatch loop
+>    (`*.workers` removed). The startup heap-budget check, `headers.accept-binary-long-values`, the
+>    `-Dcesium.*` overlay, the tracker ACL grant on CREATE and `ingest.max-batch` are removed. Wire
+>    formats are unchanged.
 
 ## Design revisions
 
@@ -438,6 +447,13 @@ Legend: ✔ = no loss, no duplicate under `read_committed` destination consumers
 
 ## 4. Store SPI (module `cesium-kafka-api`, package `com.jucius.cesium.kafka.api.store`)
 
+> **Historical (post-approval revision 5, ADR-0021).** The pluggable SPI described in this section
+> was folded into core in 2.0.0. `KafkaTrackerStore` is the only store; the loops reach it through
+> the engine-internal `TrackerBackedStore` interface. The external archetype, capabilities,
+> ownership epochs, `StoreContext` and ServiceLoader discovery no longer exist. The tracker-backed
+> transaction mapping (§4.3, left column) and the correctness checklist (§4.4) still describe how
+> `KafkaTrackerStore` works.
+
 ### 4.1 Boundary and design forces
 
 The engine owns consumer groups and ownership, transactions and fencing (I1–I9), dispatch timing, policies, and the barrier gate. The store owns durable recording of scheduler-state mutations, recovery enumeration, the in-memory index, and (tracker archetype) the per-partition recovery cursor: the offset and sidecar metadata that the engine commits as the group-B offset+metadata. Forces: (1) stores must either enlist writes in the engine's Kafka transaction (EOS) or explicitly opt out with ordered out-of-band writes. The engine must know which, so the root is sealed with two `non-sealed` archetypes and exhaustive Java 21 `switch` wiring; (2) hot-path types must not box, so batches are primitive-accessor views; (3) the thread contract is explicit (dispatch-side methods confined to the dispatch thread), so the v1 store needs no locking.
@@ -613,7 +629,7 @@ DispatchLoop loop = switch (store) {
 > Because the hierarchy is sealed (ADR-0003), this switch becomes the wiring on the day the second
 > archetype ships: exhaustive, with no `instanceof` chain.
 
-### 4.3 Archetype-to-transaction mapping (normative; goes in store-spi.md)
+### 4.3 Archetype-to-transaction mapping (normative)
 
 | Phase | TrackerBackedStore (EOS) | ExternalSchedulerStore |
 |---|---|---|
@@ -999,7 +1015,7 @@ The ~190 k rec/s dispatch figure is a best-case burst and is not a sustained SLA
 - **[docs/delivery-semantics.md](delivery-semantics.md)**: invariants I1–I9, the full failure matrix, the barrier proof and snapshot-ordering scenario (§3.6), in-doubt commit semantics, store-archetype guarantee table (§4.3), read_committed requirement, the guarantee's dependence on committed-offset retention (broker `offsets.retention.minutes`, KIP-211, `auto.offset.reset=none` rationale, group B's correct-but-slow replay-from-zero), "at-or-after requested time" semantics.
 - **[docs/header-protocol.md](header-protocol.md)**: normative, RFC 2119, versioned (§2.3–2.4 incl. DLQ JSON contract).
 - **[docs/operations.md](operations.md)**: topic bootstrap/sizing worksheet with the corrected tracker formula `tracker_bytes ≈ pending × ~70 B + completion_rate × delete.retention.ms × ~64 B + uncleaned tail`, worked examples at 1k/10k/100k msg/s (showing why `delay.max` drives disk through the tombstone floor and why the default is P1D); why `delete.retention.ms` matters for correctness, and the runbook for *lowering* `delay.max` (drain first); tracker ACL requirement; tracker disaster-recovery runbook (recreation/truncation); offsets-retention vs outage tolerance; scaling roles; partition-growth procedure (tracker first); K8s rollout recipe (static membership, zero-movement rolling restarts, HPA warning) with manifests and probes; JVM/GC flags (§5.4); broker IOPS budgeting for seek-fetch; alert rules per §9 metric incl. replay-ETA, pinned-entry overflow, penalty-box dwell, pending-collapse; runbooks for every fail-fast exit.
-- **[docs/store-spi.md](store-spi.md)**: implementers' guide: archetype flowchart, ordering contracts, cursor/sidecar contract, correctness checklist (§4.4), testkit usage, ServiceLoader packaging.
+- **docs/store-spi.md** (removed in 2.0.0 with the store SPI, ADR-0021): implementers' guide: archetype flowchart, ordering contracts, cursor/sidecar contract, correctness checklist (§4.4), testkit usage, ServiceLoader packaging.
 - **[docs/configuration.md](configuration.md)**: full key reference incl. locked keys with rationale, env-mapping grammar. **[docs/performance.md](performance.md)**: measured numbers (M8), the replay-cost formula, sizing & tuning.
 - **[docs/migration-from-poc.md](migration-from-poc.md)**: header renames, tracker format break, behavioral diffs.
 - **SECURITY.md**: tracker write-ACL requirement (without it, tracker writes can inject duplicates or lose data), principal/credential guidance, reserved HMAC option, vulnerability reporting.

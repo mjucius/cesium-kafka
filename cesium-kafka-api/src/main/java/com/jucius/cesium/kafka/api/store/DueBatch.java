@@ -37,8 +37,7 @@ public interface DueBatch {
      * the per-entry recovery position a {@link TrackerBackedStore} needs to compute a sound
      * committed cursor (invariant I5; design §4.4 item 2).
      *
-     * @return the tracker ADD offset, or {@code -1} for {@link ExternalSchedulerStore external}
-     *     stores, which have no tracker topic
+     * @return the tracker ADD offset
      */
     long trackerOffset(int i);
 
@@ -53,9 +52,7 @@ public interface DueBatch {
      * ingest → store → recovery → dispatch round trip, so the marker must surface here for the
      * engine's relay-record factory to consume.
      *
-     * <p><strong>API evolution note (M3, additive).</strong> Defaults to {@code false} so
-     * existing implementations — external stores have no CLAMP path of their own, and engine
-     * sub-batch views can delegate — remain source- and behavior-compatible.
+     * <p>Defaults to {@code false}.
      *
      * @param i entry index in {@code [0, size())}
      * @return {@code true} when the entry's schedule was produced by the CLAMP policy

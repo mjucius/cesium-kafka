@@ -1,6 +1,8 @@
 # ADR-0019: 2.0 stability baseline
 
 - **Status:** Accepted
+- **Amended by:** [ADR-0021](0021-store-spi-folded-into-core.md) (the api and testkit modules fold into
+  core, so their stability clause no longer applies)
 - **Date:** 2026-10-07
 - **Design reference:** [`../design.md`](../design.md) post-approval revision 4 (2.0.0); amends
   [ADR-0003](0003-sealed-two-archetype-store-spi.md) and

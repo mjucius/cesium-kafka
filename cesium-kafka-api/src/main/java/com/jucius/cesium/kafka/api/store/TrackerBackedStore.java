@@ -103,9 +103,10 @@ public non-sealed interface TrackerBackedStore extends SchedulerStore {
      * {@link #onTrackerPosition} (which is how recovery reaches a barrier whose preceding offsets
      * are control records).
      *
-     * <p>The engine calls the {@link #onTrackerRecord(int, long, byte[], byte[], Headers)
-     * headers-carrying variant}; this overload exists as the delegation target for stores that do
-     * not consult record headers.
+     * <p>Record headers are part of the store-owned wire format (the v1 format carries the
+     * completion reason in a header, D15): without them a legitimate completion tombstone cannot be
+     * told apart from the R12 forged-tombstone shape (a reason-less tombstone, the data-loss
+     * primitive §2.2's count-and-skip posture exists for).
      *
      * <p>The store applies the replay rules (design §3.5, invariant I7):
      *
@@ -131,37 +132,14 @@ public non-sealed interface TrackerBackedStore extends SchedulerStore {
      * @param key the record key (store-owned wire format; for the v1 format, the big-endian source
      *     offset)
      * @param value the record value, or {@code null} for a completion tombstone
-     */
-    void onTrackerRecord(int partition, long trackerOffset, byte[] key, byte @Nullable [] value);
-
-    /**
-     * Applies one tracker record <em>with its headers</em> (dispatch thread). This is the variant
-     * the engine calls: record headers are part of the store-owned wire format (the v1 format
-     * carries the completion reason in a header, D15), and a headers-blind callback cannot
-     * distinguish a legitimate completion tombstone from the R12 forged-tombstone shape (a
-     * reason-less tombstone — the data-loss primitive §2.2's count-and-skip posture exists for).
-     *
-     * <p>The default delegates to the {@linkplain #onTrackerRecord(int, long, byte[], byte[])
-     * headers-blind overload} so stores written against that signature keep working unchanged
-     * (additive SPI evolution, design §4.5). Stores that enforce header-dependent validation
-     * override this variant.
-     *
-     * @param partition the tracker partition the record arrived on
-     * @param trackerOffset the record's own tracker offset (not dense — see the headers-blind
-     *     overload)
-     * @param key the record key (store-owned wire format)
-     * @param value the record value, or {@code null} for a completion tombstone
      * @param headers the record's headers, as delivered by the engine's tracker consumer
      */
-    default void onTrackerRecord(
-            int partition, long trackerOffset, byte[] key, byte @Nullable [] value, Headers headers) {
-        onTrackerRecord(partition, trackerOffset, key, value);
-    }
+    void onTrackerRecord(int partition, long trackerOffset, byte[] key, byte @Nullable [] value, Headers headers);
 
     /**
      * Reports the engine's tracker-consumer position for {@code partition} (dispatch thread).
      *
-     * <p>Tracker offsets are not dense (see {@link #onTrackerRecord(int, long, byte[], byte[])}):
+     * <p>Tracker offsets are not dense (see {@link #onTrackerRecord}):
      * the offsets immediately below the §3.6 replay barrier are almost always the previous
      * transaction's commit marker, which is never delivered as a record. A store that derived its
      * replay position from delivered records alone would therefore stall strictly below the

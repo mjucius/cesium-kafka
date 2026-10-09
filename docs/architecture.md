@@ -2,8 +2,8 @@
 
 Read this if you are evaluating cesium-kafka or onboarding to the codebase. Proofs, the decision log,
 and the failure matrix are in [`design.md`](design.md); the correctness contract is in
-[`delivery-semantics.md`](delivery-semantics.md); implementing a store is covered in
-[`store-spi.md`](store-spi.md); measured numbers are in [`performance.md`](performance.md).
+[`delivery-semantics.md`](delivery-semantics.md); measured numbers are in
+[`performance.md`](performance.md).
 
 ---
 
@@ -328,17 +328,15 @@ in-doubt commit → never restore the batch (I9); retry exhaustion → park-and-
 
 | Module | Contents | Surface |
 |---|---|---|
-| `cesium-kafka-api` | The store SPI (§ [store-spi](store-spi.md)), header constants, `ScheduledRef`/`DueBatch`/`TrackerCursor`/`ConfigView` | Published, semver-stable from 2.0.0 |
+| `cesium-kafka-api` | The store interfaces, header constants, `ScheduledRef`/`DueBatch`/`TrackerCursor`/`ConfigView` | Internal (ADR-0021) |
 | `cesium-kafka-core` | The engine: ingest & dispatch loops, transaction manager + error taxonomy, cursor/barrier orchestration, policies, header codec, penalty box, admin validation, shard state machine | Internal, no compatibility promise (ADR-0019) |
-| `cesium-kafka-store-kafka` | `KafkaTrackerStore`: tracker wire format, sidecar codec, the fastutil packed index (§6) | Published store impl |
-| `cesium-kafka-store-testkit` | The SPI contract kit + fixtures (`TrackerBackedStoreContract`, `FakeStoreContext`, `MutableClock`, `TrackerEventScript`) | Published for store implementers |
+| `cesium-kafka-store-kafka` | `KafkaTrackerStore`: tracker wire format, sidecar codec, the fastutil packed index (§6) | Internal (ADR-0021) |
+| `cesium-kafka-store-testkit` | The store contract kit + fixtures (`TrackerBackedStoreContract`, `FakeStoreContext`, `TrackerEventScript`) | Test support |
 | `cesium-kafka-app` | `main()`, YAML config, lifecycle, health/metrics HTTP, distribution archives, Dockerfile | The supported product surface |
 | `cesium-kafka-it` | Testcontainers integration suite (in-JVM multi-instance kill and fencing tests, EOS/LSO/barrier-ordering scenarios, soak, macro perf) | Tests |
 | `cesium-kafka-benchmarks` | JMH micro-benchmarks (the JOL footprint test, `ShardFootprintTest`, lives in `cesium-kafka-store-kafka`) | Tests |
 
-`KafkaTrackerStore` lives in its own module and is tested through the same published contract kit a
-third party would use. The runnable app is the supported product; the store SPI + testkit are the
-stable surface for store implementers.
+The runnable app is the supported product; every Java module is internal (ADR-0021).
 
 ---
 
@@ -346,7 +344,6 @@ stable surface for store implementers.
 
 - [`delivery-semantics.md`](delivery-semantics.md): the correctness contract, including invariants
   I1–I9, the barrier proof, in-doubt commits, and the conditions the guarantee depends on.
-- [`store-spi.md`](store-spi.md): implementing a scheduler store against the stable SPI.
 - [`design.md`](design.md): the full implementation-ready design, decision log, and failure matrix.
 - [`performance.md`](performance.md): measured benchmarks, the replay-cost formula, sizing & tuning.
 - [`failure-matrix-coverage.md`](failure-matrix-coverage.md): which test covers each failure-matrix row.

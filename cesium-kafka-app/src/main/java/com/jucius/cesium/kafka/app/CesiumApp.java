@@ -128,7 +128,7 @@ public final class CesiumApp {
                 config.observability().detailedInfo(),
                 registry::scrape,
                 new HealthAssessor(engine.health(), clock, LIVENESS_STALE_AFTER),
-                serviceInfoSupplier(config, engine));
+                serviceInfoSupplier(config));
         try {
             startObservability(observability, config.observability().port());
             String applicationId = config.applicationId();
@@ -195,10 +195,9 @@ public final class CesiumApp {
 
     /**
      * The {@code /info} supplier: build provenance + applicationId + lower-cased roles + store type
-     * and (once the store is up) its capabilities + the named startup acknowledgments. Re-evaluated
-     * per request so capabilities appear as soon as the engine resolves the store.
+     * + the named startup acknowledgments.
      */
-    private static Supplier<ServiceInfo> serviceInfoSupplier(CesiumConfig config, CesiumEngine engine) {
+    private static Supplier<ServiceInfo> serviceInfoSupplier(CesiumConfig config) {
         BuildInfo build = BuildInfo.load();
         List<String> roles = config.roles().stream()
                 .map(role -> role.name().toLowerCase(Locale.ROOT))
@@ -208,10 +207,9 @@ public final class CesiumApp {
         if (config.startupChecks().sizeBasedRetention() == StartupChecks.SizeBasedRetention.ACKNOWLEDGED) {
             acknowledgments.add("size-based-retention");
         }
-        String storeType = config.store().type();
-        String applicationId = config.applicationId();
-        return () ->
-                new ServiceInfo(build, applicationId, roles, storeType, engine.storeCapabilities(), acknowledgments);
+        ServiceInfo info = new ServiceInfo(
+                build, config.applicationId(), roles, config.store().type(), acknowledgments);
+        return () -> info;
     }
 
     /** Starts the HTTP server before the engine so probes answer during startup; a bind failure is fatal. */

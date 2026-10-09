@@ -364,7 +364,6 @@ class AppQuickstartIT extends KafkaIT {
                 config.applicationId(),
                 List.of("ingest", "dispatch"),
                 config.store().type(),
-                engine.storeCapabilities(),
                 List.of());
     }
 

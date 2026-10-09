@@ -1,7 +1,6 @@
 package com.jucius.cesium.kafka.it;
 
 import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.OwnershipEpoch;
 import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.SchedulerStore;
 import com.jucius.cesium.kafka.api.store.SchedulerStoreProvider;
@@ -54,7 +53,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
@@ -215,8 +213,7 @@ final class EngineHarness implements AutoCloseable {
                     relayFactory(),
                     new KafkaDispatchAdmin(admin, trackerTopic(), dispatchGroupId()),
                     meterRegistry,
-                    clock,
-                    new ConcurrentHashMap<>());
+                    clock);
             dispatch = spawn("it-dispatch-", loop, loop::stop);
         }
     }
@@ -565,23 +562,10 @@ final class EngineHarness implements AutoCloseable {
 
     /**
      * The production-shaped {@link StoreContext}: real route identity, the {@code store.properties}
-     * subtree, the system clock (the store keeps no clock state; due decisions arrive as
-     * {@code nowMs} from the engine), and a placeholder epoch (tracker-backed stores ride the
-     * engine's transactions and never consult it).
+     * subtree, and the harness registry.
      */
     private record HarnessStoreContext(RouteDescriptor route, ConfigView config, MeterRegistry meterRegistry)
-            implements StoreContext {
-
-        @Override
-        public Clock clock() {
-            return Clock.systemUTC();
-        }
-
-        @Override
-        public OwnershipEpoch epoch(int partition) {
-            return new OwnershipEpoch(0, "it-harness");
-        }
-    }
+            implements StoreContext {}
 
     // ------------------------------------------------------------------ builder
 

@@ -8,13 +8,10 @@
  * in-memory time index, and — for the tracker archetype — the per-partition recovery cursor the
  * engine commits as the group-B offset+metadata.
  *
- * <p>The root {@link com.jucius.cesium.kafka.api.store.SchedulerStore} is sealed with exactly two
- * {@code non-sealed} archetypes, because the engine must know a store's transaction-participation
- * model to orchestrate correctly (exhaustive Java 21 {@code switch} wiring, no instanceof chains):
- * {@link com.jucius.cesium.kafka.api.store.TrackerBackedStore} enlists its writes in the engine's
- * Kafka transactions (exactly-once), while {@link
- * com.jucius.cesium.kafka.api.store.ExternalSchedulerStore} performs ordered out-of-band writes under
- * explicit ordering contracts. Hot-path types are primitive-accessor views ({@link
+ * <p>The root {@link com.jucius.cesium.kafka.api.store.SchedulerStore} is sealed with one {@code
+ * non-sealed} archetype, {@link com.jucius.cesium.kafka.api.store.TrackerBackedStore}, which enlists
+ * its writes in the engine's Kafka transactions (exactly-once). Hot-path types are primitive-accessor
+ * views ({@link
  * com.jucius.cesium.kafka.api.store.DueBatch}) so the steady state allocates nothing per entry, and
  * the thread-confinement contract is explicit so the shipped store needs no locking.
  *

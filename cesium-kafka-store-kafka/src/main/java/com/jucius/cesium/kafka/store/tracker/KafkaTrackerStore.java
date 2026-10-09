@@ -4,7 +4,6 @@ import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
 import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
@@ -25,7 +24,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.header.Headers;
-import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -109,12 +107,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     private static final Set<String> KNOWN_CONFIG_KEYS =
             Set.of(SIDECAR_MAX_BYTES_KEY, HEAP_BUDGET_BYTES_KEY, STALE_REBUILD_FLOOR_KEY, COMPLETED_SWEEP_FLOOR_KEY);
 
-    private static final StoreCapabilities CAPABILITIES = new StoreCapabilities(
-            StoreCapabilities.TransactionAffinity.KAFKA_TRANSACTIONAL,
-            StoreCapabilities.DispatchGuarantee.EXACTLY_ONCE,
-            /* requiresTrackerTopic= */ true,
-            /* supportsCancellation= */ false);
-
     private static final Logger log = LoggerFactory.getLogger(KafkaTrackerStore.class);
 
     /**
@@ -122,9 +114,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      * echoed into a log line — comfortably above any real reason-constant name.
      */
     static final int MAX_LOGGED_REASON_CHARS = 64;
-
-    /** Shared empty headers for the headers-blind legacy {@code onTrackerRecord} overload. */
-    private static final RecordHeaders NO_HEADERS = new RecordHeaders();
 
     private @Nullable StoreContext context;
     private @Nullable Wiring wiring;
@@ -135,11 +124,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
             throw new IllegalStateException("configure() called twice");
         }
         this.context = Objects.requireNonNull(context, "context");
-    }
-
-    @Override
-    public StoreCapabilities capabilities() {
-        return CAPABILITIES;
     }
 
     /**
@@ -186,11 +170,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
 
         RouteDescriptor route = ctx.route();
         Uuid trackerTopicId = route.trackerTopicId();
-        if (trackerTopicId == null) {
-            throw new IllegalArgumentException("kafka-tracker requires the tracker topic, but the route carries no"
-                    + " tracker topic id (requiresTrackerTopic=true; the engine bootstraps the topic before"
-                    + " configuring the store)");
-        }
         if (sidecarMaxBytes < MIN_SIDECAR_MAX_BYTES || sidecarMaxBytes > MAX_SIDECAR_MAX_BYTES) {
             throw new IllegalArgumentException(SIDECAR_MAX_BYTES_KEY + " must be in [" + MIN_SIDECAR_MAX_BYTES + ", "
                     + MAX_SIDECAR_MAX_BYTES + "], got " + sidecarMaxBytes);
@@ -361,37 +340,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         state.lastCommittedMetadata = metadata;
         state.hasProposal = false;
         maybePromote(w, partition, state); // barrier <= cursor: nothing to replay, immediately ACTIVE
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * <p>The headers-blind legacy overload: tombstone headers are unavailable, so the R12
-     * forged-tombstone posture (a reason-less tombstone is counted + skipped) cannot be enforced
-     * here — every structurally valid tombstone applies the completion. Engines must call the
-     * {@linkplain #onTrackerRecord(int, long, byte[], byte[], Headers) headers-carrying variant},
-     * where the full §2.2 posture is enforced; this overload exists so headers-blind callers
-     * (older harnesses, fixtures) fail safe toward applying completions — skipping a legitimate
-     * completion would be a duplicate-dispatch vector, the worse failure mode.
-     */
-    @Override
-    public void onTrackerRecord(int partition, long trackerOffset, byte[] key, byte @Nullable [] value) {
-        if (value == null) {
-            Wiring w = wiring();
-            PartitionState state = requireState(w, partition);
-            if (key.length != TrackerWireFormat.KEY_LENGTH) {
-                recordInvalid(
-                        w,
-                        partition,
-                        trackerOffset,
-                        "tombstone key length " + key.length + " (expected " + TrackerWireFormat.KEY_LENGTH + ")");
-            } else {
-                w.index.applyComplete(partition, TrackerWireFormat.decodeKey(key)); // R2: absent = silent no-op
-            }
-            advancePosition(w, partition, state, trackerOffset);
-            return;
-        }
-        onTrackerRecord(partition, trackerOffset, key, value, NO_HEADERS);
     }
 
     /**

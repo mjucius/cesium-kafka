@@ -17,7 +17,7 @@ failure matrix need a corresponding test and an ADR.
 |---|---|---|---|
 | [0001](0001-two-consumer-group-architecture.md) | Two-consumer-group architecture | Accepted | §1.2–1.3 |
 | [0002](0002-pointer-only-payloads-and-retention-validation.md) | Pointer-only payloads + source-retention validation | Accepted | §1.1, §7.6, R5/R13 |
-| [0003](0003-sealed-two-archetype-store-spi.md) | Sealed two-archetype store SPI | Accepted | D7, §4 |
+| [0003](0003-sealed-two-archetype-store-spi.md) | Sealed two-archetype store SPI | Superseded by 0021 | D7, §4 |
 | [0004](0004-one-route-per-process.md) | One route per process | Accepted | §10, §1.1 |
 | [0005](0005-tracker-format-compaction-only-and-tombstone-retention-floor.md) | Tracker format, compaction-only, tombstone-retention floor | Accepted | D4, D14, D15, §2.1–2.2, §3.7 |
 | [0006](0006-classic-protocol-default-and-kip-848-promotion.md) | Classic protocol default + KIP-848 promotion criteria | Accepted | D12, §3.4.5 |
@@ -35,6 +35,7 @@ failure matrix need a corresponding test and an ADR.
 | [0018](0018-bounded-wait-for-proven-topic-metadata.md) | Bounded wait for proven-existing topic metadata | Accepted | §2.1, §7.6 |
 | [0019](0019-2-0-stability-baseline.md) | 2.0 stability baseline | Accepted | Post-approval rev 4 |
 | [0020](0020-runtime-revalidation.md) | Runtime re-validation | Accepted | D23, D14, R-7, R-11, R17 |
+| [0021](0021-store-spi-folded-into-core.md) | Store SPI folded into core; config surface trimmed | Accepted | Post-approval rev 5 |
 
 ADRs 0001–0015 are the set planned in design §12. 0016 and 0017 record three later project-owner
 decisions: the fastutil index backing, and the bundle of Kafka 4.0 broker floor, repo-only
@@ -42,4 +43,5 @@ publishing, and app as product surface. The design records them in the revision 
 [`../design.md`](../design.md), and they supersede the affected design text. 0018 records a later
 fix: a bounded wait for metadata of topics whose existence startup has already proven. 0019 records
 the move to 2.0.0 and the stability promise that starts there. 0020 records runtime re-validation
-and the degrade-not-stop policy for its findings.
+and the degrade-not-stop policy for its findings. 0021 folds the unused store SPI into core and trims
+the config keys the 2.0 review found had no real use; it supersedes 0003.

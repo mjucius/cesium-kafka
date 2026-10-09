@@ -1,8 +1,8 @@
 # Delivery semantics
 
 This is cesium-kafka's correctness contract: the guarantee, the invariants the engine enforces, the
-proof that the replay barrier closes the duplicate window, how ambiguous commits are handled, what
-each store archetype guarantees, and the conditions the guarantee depends on. The architecture is in
+proof that the replay barrier closes the duplicate window, how ambiguous commits are handled, how
+the store's writes join the engine's transactions, and the conditions the guarantee depends on. The architecture is in
 [`architecture.md`](architecture.md); the full proofs, decision log, and complete failure matrix are
 in [`design.md`](design.md); [`failure-matrix-coverage.md`](failure-matrix-coverage.md) lists which
 test backs each failure-matrix row.
@@ -170,8 +170,8 @@ committed-cursor age)`) guarantees the tombstones a replay might need are still 
 bound replay cost; cursor v2 does that (see
 [architecture § cursor v2](architecture.md#5-cursor-v2--sidecar-recovery-model)). In overflow mode the
 residual cost is `replay_records ≈ completion_rate(p) × age(cut) + pending(p)`, observable before it
-bites and tunable by raising the sidecar budget. The published contract kit makes I5 observable; see
-[store-spi § the cursor contract](store-spi.md#6-the-cursorsidecar-contract).
+bites and tunable by raising the sidecar budget. The store's contract tests
+(`TrackerBackedStoreContract`) check I5 on every cursor the store proposes.
 
 ---
 
@@ -214,7 +214,8 @@ instead of exiting and replaying every cycle.
 
 The contract kit proves a store survives this: an in-doubt commit drives neither `onBatchCommitted`
 nor `onBatchAborted`. The partitions are dropped and re-recovered, and the store must converge from
-durable state alone (see [store-spi](store-spi.md#7-the-correctness-checklist)).
+durable state alone (see the
+[correctness checklist](design.md#44-correctness-checklist-every-store-must-satisfy-enforced-by-the-testkit)).
 
 ---
 
@@ -303,27 +304,18 @@ non-goal). See [`performance.md`](performance.md) for the measured `dispatch_lag
 
 ---
 
-## 10. Store-archetype guarantees
+## 10. Store writes ride the engine's transactions
 
-The delivery guarantee depends on which store archetype is in use. The flagship `KafkaTrackerStore`
-is exactly-once; the external archetype is at-least-once by default, upgradeable to effectively-once.
-Each store declares this via `capabilities()` and the app surfaces it on `/info`, so it is known
-before the store reaches production.
+The store's durable writes are tracker records that the engine produces inside its own
+transactions, so settlement has no window between "delivered" and "recorded as delivered":
 
-| Phase | `TrackerBackedStore` (EXACTLY_ONCE) | `ExternalSchedulerStore` (AT_LEAST_ONCE → effectively-once) |
-|---|---|---|
-| Ingest: schedule | `encodeSchedule` bytes produced inside the ingest txn | `upsertScheduled` before the txn commit; idempotent on retry |
-| Ingest crash | txn aborts ⇒ nothing visible anywhere | aborted txn ⇒ row already upserted; re-poll re-upserts (no-op) |
-| Dispatch: settle | `encodeCompletions` tombstones inside the dispatch txn; cursor (offset + sidecar) committed via `sendOffsetsToTransaction` | `markDispatched` after commit (at-least-once), or a cursor in the offset metadata committed atomically (effectively-once) |
-| Dispatch crash | atomic: redispatch cleanly or fully settled, so exactly-once; in-doubt resolved by replay, never by restore (I9) | window between commit and `markDispatched` ⇒ possible duplicate, surfaced via `capabilities()`; eliminated by `cursorToCommit` reconciliation |
-| Recovery | engine seeds the sidecar, replays cursor → barrier; store rebuilds the index | `scanPending` per partition, reconciled against the committed cursor if present |
-
-A tracker-backed store's completion facts share Kafka's transactional atomicity (tombstones + cursor
-inside the dispatch transaction), so there is no window. An external store cannot enlist its writes
-in the Kafka transaction, so it relies on ordering contracts (idempotent upsert before ingest commit;
-mark-dispatched after dispatch commit). That gives at-least-once, closable to effectively-once by
-committing a reconciliation cursor in the offset-metadata channel. See
-[store-spi § archetypes](store-spi.md#2-pick-an-archetype).
+| Phase | What happens |
+|---|---|
+| Ingest: schedule | `encodeSchedule` bytes produced inside the ingest txn |
+| Ingest crash | txn aborts ⇒ nothing visible anywhere |
+| Dispatch: settle | `encodeCompletions` tombstones inside the dispatch txn; cursor (offset + sidecar) committed via `sendOffsetsToTransaction` |
+| Dispatch crash | atomic: redispatch cleanly or fully settled, so exactly-once; in-doubt resolved by replay, never by restore (I9) |
+| Recovery | engine seeds the sidecar, replays cursor → barrier; store rebuilds the index |
 
 ---
 
@@ -352,7 +344,5 @@ section states the guarantee they establish together and links to the authoritat
 ## See also
 
 - [`architecture.md`](architecture.md): topology, shard state machine, cursor v2, threading.
-- [`store-spi.md`](store-spi.md): the archetype ordering contracts and correctness checklist a store
-  must satisfy to preserve these semantics.
 - [`design.md`](design.md): the full proofs (§3.4–§3.8), decision log, and risks.
 - [`performance.md`](performance.md): measured `dispatch_lag`, the replay-cost formula.

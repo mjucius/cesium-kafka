@@ -130,7 +130,7 @@ observability:
   # NetworkPolicy scoping 8081 to the monitoring namespace (security L1).
   # bind-address: 127.0.0.1
   # /info is unauthenticated. By default it exposes only version/build + store type. Set to true to
-  # also disclose applicationId (the fencing-id seed), roles, store capabilities, and acknowledgments
+  # also disclose applicationId (the fencing-id seed), roles, and acknowledgments
   # — only behind a network-restricted endpoint (security M3).
   # detailed-info: false
 

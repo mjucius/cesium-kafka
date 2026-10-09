@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
-import com.jucius.cesium.kafka.api.store.OwnershipEpoch;
 import com.jucius.cesium.kafka.core.fetch.FetchOutcome;
 import com.jucius.cesium.kafka.core.fetch.FetchResult;
 import com.jucius.cesium.kafka.core.fetch.SeekFetcher;
@@ -34,7 +33,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 import java.util.function.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
@@ -103,25 +101,6 @@ class DispatchLoopTest {
         assertEquals(4L, h.consumer.position(tracker(0)), "consumer seeked to the cursor offset");
         assertTrue(h.store.isRecovering(0), "barrier above the cursor gates the shard (I4)");
         assertFalse(h.consumer.paused().contains(tracker(0)), "intake resumes once recovery begins");
-    }
-
-    @Test
-    void ownershipEpochTracksAssignmentGenerationAndRevocation() {
-        Harness h = new Harness();
-        h.start(0, 1);
-        h.loop.runOnce();
-        assertEquals(new OwnershipEpoch(1, "1"), h.ownership.get(0), "assignment publishes group-B ownership");
-        assertEquals(new OwnershipEpoch(1, "1"), h.ownership.get(1));
-
-        h.consumer.generation = 7; // a new epoch with no assignment callback (KIP-848)
-        h.loop.runOnce();
-        assertEquals(new OwnershipEpoch(7, "1"), h.ownership.get(0), "a generation bump is republished");
-        assertEquals(new OwnershipEpoch(7, "1"), h.ownership.get(1));
-
-        h.consumer.rebalance(List.of(tracker(1))); // cooperative revoke of partition 0
-        h.loop.runOnce();
-        assertFalse(h.ownership.containsKey(0), "a revoked partition has no owner epoch");
-        assertEquals(new OwnershipEpoch(7, "1"), h.ownership.get(1));
     }
 
     @Test
@@ -959,7 +938,6 @@ class DispatchLoopTest {
         final SimpleMeterRegistry registry = new SimpleMeterRegistry();
         final MutableClock clock = new MutableClock(NOW);
         final FakeFetcher fetcher = new FakeFetcher(clock);
-        final Map<Integer, OwnershipEpoch> ownership = new ConcurrentHashMap<>();
         final DispatchLoop loop;
 
         /** While positive, each factory-built producer's initTransactions fails once (transient). */
@@ -987,8 +965,7 @@ class DispatchLoopTest {
                     new RelayRecordFactory(DEST, DLQ, true, RelayTimestampPolicy.DISPATCH, RelayPartitioning.BY_KEY),
                     admin,
                     registry,
-                    clock,
-                    ownership);
+                    clock);
         }
 
         private final Map<TopicPartition, OffsetAndMetadata> seededOffsets = new HashMap<>();
@@ -1064,19 +1041,9 @@ class DispatchLoopTest {
     private static final class RecordingConsumer extends MockConsumer<byte[], byte[]> {
         private final List<String> events;
 
-        /** Group generation reported by {@link #groupMetadata()}; tests bump it to model a new epoch. */
-        int generation = 1;
-
         RecordingConsumer(List<String> events) {
             super("none");
             this.events = events;
-        }
-
-        @SuppressWarnings("removal") // MockConsumer offers no other way to vary the generation
-        @Override
-        public synchronized ConsumerGroupMetadata groupMetadata() {
-            ConsumerGroupMetadata base = super.groupMetadata();
-            return new ConsumerGroupMetadata(base.groupId(), generation, base.memberId(), base.groupInstanceId());
         }
 
         @Override

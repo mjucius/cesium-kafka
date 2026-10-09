@@ -3,7 +3,6 @@ package com.jucius.cesium.kafka.testkit;
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
 import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
@@ -12,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.jspecify.annotations.Nullable;
 
@@ -52,11 +52,6 @@ final class StubTrackerStore implements TrackerBackedStore {
 
     @Override
     public void configure(StoreContext context) {
-        throw new UnsupportedOperationException("codec stub");
-    }
-
-    @Override
-    public StoreCapabilities capabilities() {
         throw new UnsupportedOperationException("codec stub");
     }
 
@@ -126,7 +121,8 @@ final class StubTrackerStore implements TrackerBackedStore {
     }
 
     @Override
-    public void onTrackerRecord(int partition, long trackerOffset, byte[] key, byte @Nullable [] value) {
+    public void onTrackerRecord(
+            int partition, long trackerOffset, byte[] key, byte @Nullable [] value, Headers headers) {
         throw new UnsupportedOperationException("codec stub");
     }
 

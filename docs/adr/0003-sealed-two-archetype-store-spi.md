@@ -1,6 +1,6 @@
 # ADR-0003: Sealed two-archetype store SPI
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0021](0021-store-spi-folded-into-core.md)
 - **Date:** 2026-06-06
 - **Amended by:** [ADR-0019](0019-2-0-stability-baseline.md) (2.0 stability baseline)
 - **Design reference:** [`../design.md`](../design.md) §4 (D7), §4.5

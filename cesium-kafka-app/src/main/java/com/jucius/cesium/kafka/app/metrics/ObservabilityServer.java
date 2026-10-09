@@ -109,7 +109,7 @@ public final class ObservabilityServer implements AutoCloseable {
      * @param port the listen port ({@code observability.port}, default 8081; {@code 0} binds an
      *     ephemeral port — used by tests, read back via {@link #port()})
      * @param detailedInfo whether {@code /info} discloses the sensitive fields (applicationId, roles,
-     *     store capabilities, acknowledgments); default {@code false} (security M3)
+     *     acknowledgments); default {@code false} (security M3)
      * @param metricsScrape renders the {@code /metrics} body (typically the engine's {@code
      *     PrometheusMeterRegistry::scrape})
      * @param health the assessor that derives the liveness/readiness verdicts from the engine's

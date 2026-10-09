@@ -1,12 +1,10 @@
 package com.jucius.cesium.kafka.testkit;
 
 import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.OwnershipEpoch;
 import com.jucius.cesium.kafka.api.store.RouteDescriptor;
 import com.jucius.cesium.kafka.api.store.StoreContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.time.Clock;
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.kafka.common.Uuid;
@@ -16,8 +14,7 @@ import org.jspecify.annotations.Nullable;
  * Deterministic {@link StoreContext} for contract tests: a {@link RouteDescriptor} with random
  * topic ids (each {@link Builder#build()} mints a fresh identity unless an explicit
  * {@linkplain Builder#route(RouteDescriptor) route} is supplied), a {@link ConfigView#of(Map)}
- * view that parses exactly as the engine does, a {@link SimpleMeterRegistry}, and a
- * {@link MutableClock}.
+ * view that parses exactly as the engine does, and a {@link SimpleMeterRegistry}.
  *
  * <p>Random ids per build are deliberate: identity material (cluster id + topic ids) must be
  * bound into committed cursor metadata (design §3.5/R17), so two contexts built independently
@@ -29,17 +26,15 @@ public final class FakeStoreContext implements StoreContext {
 
     private final RouteDescriptor route;
     private final ConfigView config;
-    private final MutableClock clock;
     private final MeterRegistry registry;
 
-    private FakeStoreContext(RouteDescriptor route, ConfigView config, MutableClock clock, MeterRegistry registry) {
+    private FakeStoreContext(RouteDescriptor route, ConfigView config, MeterRegistry registry) {
         this.route = route;
         this.config = config;
-        this.clock = clock;
         this.registry = registry;
     }
 
-    /** A fresh builder seeded with the conventional default route, clock, and meter registry. */
+    /** A fresh builder seeded with the conventional default route and meter registry. */
     public static Builder builder() {
         return new Builder();
     }
@@ -55,23 +50,8 @@ public final class FakeStoreContext implements StoreContext {
     }
 
     @Override
-    public Clock clock() {
-        return clock;
-    }
-
-    /** The same clock as {@link #clock()}, typed for test-side advancement. */
-    public MutableClock mutableClock() {
-        return clock;
-    }
-
-    @Override
     public MeterRegistry meterRegistry() {
         return registry;
-    }
-
-    @Override
-    public OwnershipEpoch epoch(int partition) {
-        return new OwnershipEpoch(1, "testkit-member");
     }
 
     /** Builder; every unset aspect has a deterministic default (random Uuids excepted). */
@@ -82,7 +62,6 @@ public final class FakeStoreContext implements StoreContext {
         private String clusterId = "testkit-cluster";
         private @Nullable RouteDescriptor route;
         private final Map<String, String> properties = new HashMap<>();
-        private MutableClock clock = MutableClock.at(0);
         private MeterRegistry registry = new SimpleMeterRegistry();
 
         private Builder() {}
@@ -126,12 +105,6 @@ public final class FakeStoreContext implements StoreContext {
             return this;
         }
 
-        /** Sets the injectable clock the store reads for due/now decisions. */
-        public Builder clock(MutableClock clock) {
-            this.clock = clock;
-            return this;
-        }
-
         /** Sets the meter registry the store records into (a {@code SimpleMeterRegistry} by default). */
         public Builder meterRegistry(MeterRegistry registry) {
             this.registry = registry;
@@ -153,7 +126,7 @@ public final class FakeStoreContext implements StoreContext {
                             Uuid.randomUuid(),
                             "dlq",
                             partitions);
-            return new FakeStoreContext(resolved, ConfigView.of(properties), clock, registry);
+            return new FakeStoreContext(resolved, ConfigView.of(properties), registry);
         }
     }
 }

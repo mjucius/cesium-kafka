@@ -30,10 +30,9 @@ What is supported, and how stable:
   [GitHub Release](https://github.com/mjucius/cesium-kafka/releases). There is no Maven Central
   artifact or published container image; build the image from the included `Dockerfile`. See
   [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md).
-- The store SPI (`cesium-kafka-api`) and its contract test kit (`cesium-kafka-store-testkit`) are
-  stable and semver-governed from 2.0.0 for store implementers. Start at [docs/store-spi.md](docs/store-spi.md).
-- The engine's programmatic API (`cesium-kafka-core`) is internal, with no compatibility promise
-  ([ADR-0019](docs/adr/0019-2-0-stability-baseline.md)).
+- The Java modules are internal, with no compatibility promise. There is no pluggable store SPI:
+  the one scheduler store is part of the engine
+  ([ADR-0021](docs/adr/0021-store-spi-folded-into-core.md)).
 
 ## Design highlights
 
@@ -196,7 +195,7 @@ part of it.
 | Doc | What it covers |
 |---|---|
 | [Architecture](docs/architecture.md) | Topology, the two-group rationale, the shard state machine, cursor v2, diagrams |
-| [Delivery semantics](docs/delivery-semantics.md) | Invariants I1–I9, the replay-barrier proof, the `read_committed` requirement, store-archetype guarantees |
+| [Delivery semantics](docs/delivery-semantics.md) | Invariants I1–I9, the replay-barrier proof, the `read_committed` requirement, how store writes join the transactions |
 | [Performance](docs/performance.md) | Measured hot-path/throughput/latency numbers, the replay-cost formula, sizing & tuning |
 | [Failure-matrix coverage](docs/failure-matrix-coverage.md) | Each failure-matrix scenario mapped to the test that proves it |
 
@@ -204,7 +203,6 @@ part of it.
 
 | Doc | What it covers |
 |---|---|
-| [Store SPI guide](docs/store-spi.md) | Implementers' guide: archetype flowchart, ordering/cursor contracts, the contract test kit, packaging |
 | [Architecture Decision Records](docs/adr/) | ADRs 0001–0018: the main design decisions, in Status/Context/Decision/Consequences form |
 | [Design document](docs/design.md) | The full design: invariants, the complete failure matrix, the proofs |
 
