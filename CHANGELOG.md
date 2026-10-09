@@ -13,10 +13,14 @@ Wire formats are unchanged, so a mixed 1.1.5/2.0.0 rolling restart is safe.
 HTTP bodies are the same JSON, though an escaped control character there would now use uppercase hex.
 
 ### Upgrading from 1.x
-1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce` and the whole `store` block
+[docs/whats-new-in-2.0.md](docs/whats-new-in-2.0.md) walks through these steps, plus dashboards and
+rollback.
+1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce`,
+   `startup-checks.heap-budget`, `headers.accept-binary-long-values`, and the whole `store` block
    (`store.type`, `store.properties`). Move a `store.properties.cursor.sidecar-max-bytes` value to
-   `dispatch.cursor.sidecar-max-bytes`. Remove `ingest.workers` and `dispatch.workers` (the whole
-   `ingest` block); scale either loop by adding instances.
+   `dispatch.cursor.sidecar-max-bytes`. Remove `ingest.workers`, `ingest.max-batch` and
+   `dispatch.workers` (the whole `ingest` block); scale either loop by adding instances. Move any
+   `-Dcesium.*` JVM properties to `CESIUM_*` environment variables; 2.0.0 ignores them.
 2. Roll instances one at a time. The tracker wire format, committed-cursor offset metadata and
    worker-0 `group.instance.id`s are unchanged, so 1.1.5 and 2.0.0 instances can run side by side.
 3. Expect runtime re-validation (every `startup-checks.revalidation-interval`, default PT5M) to set

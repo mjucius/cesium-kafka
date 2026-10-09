@@ -188,6 +188,7 @@ part of it.
 | [Configuration](docs/configuration.md) | Full key reference, locked keys + rationale, the env-mapping grammar |
 | [Operations](docs/operations.md) | Topic bootstrap/sizing worksheet, the tracker disk formula, ACLs, K8s rollout, JVM/GC, alert rules, runbooks |
 | [Header protocol](docs/header-protocol.md) | Normative (RFC 2119) producer/consumer header contract incl. the DLQ JSON shape |
+| [What's new in 2.0](docs/whats-new-in-2.0.md) | The 2.0 changes at a glance and the step-by-step upgrade (and rollback) from 1.x |
 | [Migration from the PoC](docs/migration-from-poc.md) | Header renames, tracker-format break, behavioral diffs from the old proof-of-concept |
 
 **Understand the guarantees**
@@ -203,7 +204,7 @@ part of it.
 
 | Doc | What it covers |
 |---|---|
-| [Architecture Decision Records](docs/adr/) | ADRs 0001–0018: the main design decisions, in Status/Context/Decision/Consequences form |
+| [Architecture Decision Records](docs/adr/) | ADRs 0001–0021: the main design decisions, in Status/Context/Decision/Consequences form |
 | [Design document](docs/design.md) | The full design: invariants, the complete failure matrix, the proofs |
 
 ## Building

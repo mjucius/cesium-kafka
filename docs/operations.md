@@ -236,7 +236,7 @@ Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the
 | Seek consumer (group-less) | `Topic` *source* | READ (**no `Group` ACL**) |
 | Ingest txn producer | `TransactionalId` `cesium.<app>.ingest.*` (prefixed); `Topic` *tracker* / *destination* / *DLQ*; `Group` `cesium.<app>.ingest` | WRITE; WRITE; READ |
 | Dispatch txn producer | `TransactionalId` `cesium.<app>.dispatch.*` (prefixed); `Topic` *destination* / *tracker* / *DLQ*; `Group` `cesium.<app>.dispatch` | WRITE; WRITE; READ |
-| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: identity check, first-run probe, the dispatch group's cursor-age read); **`CREATE` bootstrap only:** `Cluster` CREATE + ALTER. The checks run at startup and every `startup-checks.revalidation-interval`; re-validation needs no extra grant (`listOffsets` by timestamp needs only Topic DESCRIBE) | per cell |
+| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: identity check, first-run probe, the dispatch group's cursor-age read); **`CREATE` bootstrap only:** `Cluster` CREATE. The checks run at startup and every `startup-checks.revalidation-interval`; re-validation needs no extra grant (`listOffsets` by timestamp needs only Topic DESCRIBE) | per cell |
 
 > **The `TransactionalId` and `Group` ACLs are required (M3).** cesium's transactional ids
 > (`cesium.<app>.<role>.<instance>.0`) and `group.instance.id`s
