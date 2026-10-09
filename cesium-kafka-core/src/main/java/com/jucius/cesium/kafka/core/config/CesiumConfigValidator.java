@@ -151,11 +151,11 @@ public final class CesiumConfigValidator {
                 findings,
                 "kafka.transactions.timeout",
                 config.kafka().transactions().timeout());
-        if (config.kafka().transactions().commitRetry() < 0) {
-            findings.add(Finding.error(
-                    "kafka.transactions.commit-retry",
-                    "must be >= 0, got " + config.kafka().transactions().commitRetry() + "."));
-        }
+        atLeast(
+                findings,
+                "kafka.transactions.commit-retry",
+                config.kafka().transactions().commitRetry(),
+                1);
         if (config.dispatch().maxPendingTotal() < 0) {
             findings.add(Finding.error(
                     "dispatch.max-pending-total",

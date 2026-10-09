@@ -123,7 +123,6 @@ class ObservabilityServerTest {
         // Both started roles are reported in the per-loop detail.
         assertTrue(body.get("loops").has("ingest"));
         assertTrue(body.get("loops").has("dispatch"));
-        assertTrue(body.get("loops").get("dispatch").get("assigned").asBoolean());
     }
 
     @Test
@@ -176,16 +175,6 @@ class ObservabilityServerTest {
         JsonNode ingest = JSON.readTree(live.body()).get("loops").get("ingest");
         assertTrue(ingest.get("alive").asBoolean());
         assertFalse(ingest.get("fresh").asBoolean());
-    }
-
-    @Test
-    void readyFailsWhenConsumerUnassigned() throws Exception {
-        health.consumerAssigned = false;
-        startServer();
-
-        assertEquals(503, get("/health/ready").statusCode());
-        // Still alive: assignment gates readiness, not liveness.
-        assertEquals(200, get("/health/live").statusCode());
     }
 
     @Test

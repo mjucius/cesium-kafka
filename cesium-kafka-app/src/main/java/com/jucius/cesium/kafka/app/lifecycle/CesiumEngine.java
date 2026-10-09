@@ -878,7 +878,6 @@ public final class CesiumEngine implements AutoCloseable {
                     if (previous == null || heartbeat > previous) {
                         lastHeartbeatSeconds.put(role, heartbeat);
                         health.heartbeat(role);
-                        health.consumerAssigned(role, true);
                     }
                 }
             }

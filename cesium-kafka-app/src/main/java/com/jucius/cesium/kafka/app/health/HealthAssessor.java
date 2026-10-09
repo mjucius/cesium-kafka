@@ -18,7 +18,7 @@ import java.util.Locale;
  * fresh (the loop is iterating, not wedged).
  *
  * <p><strong>Readiness</strong> = startup checks passed, not shutting down, and every started loop
- * is alive, holds a consumer assignment, and has a fresh heartbeat (a recent poll). <strong>Shard
+ * is alive and has a fresh heartbeat (a recent poll). <strong>Shard
  * recovery and the degraded flag are detail only</strong> (D21, §3.8): a recovering or degraded
  * instance is still ready. Readiness flips false the moment shutdown is signalled, before clients
  * close, so a preStop hook drains traffic first.
@@ -68,13 +68,9 @@ public final class HealthAssessor {
         ObjectNode loops = JsonNodeFactory.instance.objectNode();
         for (Role role : startedRoles()) {
             boolean alive = health.loopAlive(role);
-            boolean assigned = health.consumerAssigned(role);
             boolean fresh = heartbeatFresh(role);
-            ok &= alive && assigned && fresh;
-            loops.putObject(roleKey(role))
-                    .put("alive", alive)
-                    .put("assigned", assigned)
-                    .put("fresh", fresh);
+            ok &= alive && fresh;
+            loops.putObject(roleKey(role)).put("alive", alive).put("fresh", fresh);
         }
         ArrayNode recovery = JsonNodeFactory.instance.arrayNode();
         for (ShardRecovery shard : health.recoveringShards()) {

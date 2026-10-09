@@ -80,7 +80,7 @@ System-property overlay uses dotted paths: `-Dcesium.route.source.topic=orders`,
 | `kafka.group-protocol` | `classic` | `classic` or `consumer`. `consumer` is KIP-848; it is continuously tested (D12) but not the default. This typed key wins over a raw `group.protocol` in any `properties` map. Under `consumer`, cesium strips the classic-only `partition.assignment.strategy`, `session.timeout.ms`, and `heartbeat.interval.ms` from the group consumers. |
 | `kafka.properties` | `{}` | Common client passthrough applied to every cesium client (consumers, producers, admin). This is where `bootstrap.servers`, security, and SASL settings go. Locked keys (below) are rejected here. |
 | `kafka.transactions.timeout` | `PT30S` | `transaction.timeout.ms` (wins over a raw `transaction.timeout.ms` in a `properties` map). Bounds the LSO-stall / barrier-gating window after a crash (D9). Raising it proportionally lengthens failover gating. |
-| `kafka.transactions.commit-retry` | `5` | Bounded retries before an in-doubt `commitTransaction` resolves through the I9 procedure or the loop parks-and-degrades (§3.8). |
+| `kafka.transactions.commit-retry` | `5` | Attempts at a timed-out `commitTransaction` (at least 1) before the outcome is declared in-doubt and resolved through the I9 procedure (§3.8). |
 | `kafka.ingest-consumer.properties` | `{}` | Overlay for the group-A source consumer, layered over `kafka.properties`. |
 | `kafka.tracker-consumer.properties` | `{}` | Overlay for the group-B tracker consumer. |
 | `kafka.seek-consumer.properties` | `{}` | Overlay for the group-less payload seek-fetch consumer (`§7`). |

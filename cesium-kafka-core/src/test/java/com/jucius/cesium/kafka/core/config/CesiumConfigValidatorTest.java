@@ -467,6 +467,14 @@ class CesiumConfigValidatorTest {
     }
 
     @Test
+    void commitRetryCountsAttemptsSoZeroIsRejected() {
+        // The loops count commitTransaction attempts, so 0 behaved like 1; it is now a config error (exit 78).
+        KafkaConfig kafka =
+                new KafkaConfig(null, null, new KafkaConfig.Transactions(null, 0), null, null, null, null, null, null);
+        assertTrue(errorPaths(validate(TestConfigs.withKafka(kafka))).contains("kafka.transactions.commit-retry"));
+    }
+
+    @Test
     void observabilityPortRangeIsEnforced() {
         assertTrue(errorPaths(validate(withObservability(new ObservabilityConfig(70000, null, null))))
                 .contains("observability.port"));

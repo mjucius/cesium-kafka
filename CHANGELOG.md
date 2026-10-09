@@ -61,6 +61,12 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   is now a warning instead of an error. The store's own repeat of the check is gone too.
 - `store.properties.heap-budget-bytes` keeps its name but now feeds only the store's H1 recovery
   resident-pending ceiling.
+- `kafka.transactions.commit-retry` must be at least 1 (exit 78). It counts `commitTransaction`
+  attempts, so `0` behaved like `1`; it passed config load and then failed engine construction
+  with exit 1.
+- `/health/ready` loop detail loses its `assigned` field, and readiness no longer has an
+  "assignment" term. The engine only ever set it alongside the heartbeat, so it never changed the
+  verdict.
 - `dispatch.max-pending-total` is now process-wide. Each dispatch worker enforces
   cap ÷ `dispatch.workers` (minimum 1); with `dispatch.workers` fixed at 1 that is the whole cap.
 - `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now

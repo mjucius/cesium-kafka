@@ -621,7 +621,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 
 - **`/health/live`**: loop heartbeat freshness + thread liveness. A failing liveness means a loop
   stalled and the process should be restarted.
-- **`/health/ready`**: startup checks passed, loops alive, consumers assigned, recent poll.
+- **`/health/ready`**: startup checks passed, loops alive, recent poll.
   Recovery state is not part of readiness, so a replaying instance is ready. The
   detail payload lists each non-ACTIVE shard (`partition`, `state`, `recordsRemaining`,
   `etaMillis`; `-1` until two 1 s samples show the backlog shrinking); a `degraded` flag (with cause) surfaces

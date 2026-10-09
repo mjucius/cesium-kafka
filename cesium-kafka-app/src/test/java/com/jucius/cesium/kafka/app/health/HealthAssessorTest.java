@@ -70,7 +70,7 @@ class HealthAssessorTest {
     }
 
     @Test
-    void readinessRequiresStartupAssignmentAndFreshPoll() throws Exception {
+    void readinessRequiresStartupAndFreshPoll() throws Exception {
         MutableEngineHealth health = healthyBothRoles();
         HealthAssessor assessor = new HealthAssessor(health, ENGINE_CLOCK, STALE_AFTER);
 
@@ -79,12 +79,6 @@ class HealthAssessorTest {
 
         health.markStartupComplete();
         assertTrue(assessor.readiness().ok());
-
-        // Losing an assignment mid-rebalance fails readiness.
-        health.consumerAssigned(Role.DISPATCH, false);
-        HealthSnapshot ready = assessor.readiness();
-        assertFalse(ready.ok());
-        assertEquals("NOT_READY", JSON.readTree(ready.json()).get("status").asText());
     }
 
     @Test
@@ -128,7 +122,6 @@ class HealthAssessorTest {
         for (Role role : Role.values()) {
             health.registerLoop(role, () -> true);
             health.heartbeat(role);
-            health.consumerAssigned(role, true);
         }
         return health;
     }

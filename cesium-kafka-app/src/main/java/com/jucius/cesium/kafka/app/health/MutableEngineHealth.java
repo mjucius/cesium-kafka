@@ -24,7 +24,6 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@link #registerLoop(Role, BooleanSupplier) registers} each started loop once, supplying a
  *       liveness probe (typically {@code thread::isAlive});
  *   <li>{@link #heartbeat(Role) heartbeats} once per loop iteration;
- *   <li>updates {@link #consumerAssigned(Role, boolean) assignment} from the rebalance callbacks;
  *   <li>{@link #markStartupComplete() marks startup complete} once the startup checks pass;
  *   <li>{@link #beginShutdown() signals shutdown} at the very start of graceful stop, before any
  *       client closes;
@@ -62,14 +61,6 @@ public final class MutableEngineHealth implements EngineHealth {
         Loop loop = loops.get(role);
         if (loop != null) {
             loop.heartbeatMillis.set(clock.millis());
-        }
-    }
-
-    /** Records whether {@code role}'s consumer currently holds an assignment. No-op if unregistered. */
-    public void consumerAssigned(Role role, boolean assigned) {
-        Loop loop = loops.get(role);
-        if (loop != null) {
-            loop.assigned.set(assigned);
         }
     }
 
@@ -115,12 +106,6 @@ public final class MutableEngineHealth implements EngineHealth {
     }
 
     @Override
-    public boolean consumerAssigned(Role role) {
-        Loop loop = loops.get(role);
-        return loop != null && loop.assigned.get();
-    }
-
-    @Override
     public boolean startupComplete() {
         return startupComplete.get();
     }
@@ -148,7 +133,6 @@ public final class MutableEngineHealth implements EngineHealth {
     private static final class Loop {
         final BooleanSupplier aliveProbe;
         final AtomicLong heartbeatMillis = new AtomicLong(Long.MIN_VALUE);
-        final AtomicBoolean assigned = new AtomicBoolean();
 
         Loop(BooleanSupplier aliveProbe) {
             this.aliveProbe = aliveProbe;
