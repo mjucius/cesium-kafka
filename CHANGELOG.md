@@ -20,7 +20,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
    worker-0 `group.instance.id`s are unchanged, so 1.1.5 and 2.0.0 instances can run side by side.
 3. Expect runtime re-validation (every `startup-checks.revalidation-interval`, default PT5M) to set
    `/health` degraded for conditions 1.x only checked at startup; see operations.md §14.5.
-4. Store implementers: there is no store SPI any more (ADR-0021); the store is part of the engine.
+4. `CREATE` bootstrap no longer grants the tracker write ACL. A tracker 1.x created keeps its ACL;
+   for new deployments, create it yourself first (operations.md, "Tracker write ACL").
+5. Store implementers: there is no store SPI any more (ADR-0021); the store is part of the engine.
 
 ### Breaking changes
 - The release is 2.0.0 (ADR-0019). Every Java module is internal, with no compatibility promise:
@@ -72,6 +74,10 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   (`-Dcesium.instance-id=x` becomes `CESIUM_INSTANCE_ID=x`) or YAML. `-Dcesium.*` properties are now
   ignored rather than rejected. This also removes the clash between the overlay prefix and the
   test-only `cesium.testing.crashpoints` switch, which an app JVM would have rejected as an unknown key.
+- `route.tracker.bootstrap: CREATE` no longer grants the tracker write ACL to
+  `route.tracker.acl-principal`. Create the ACL yourself; a literal ACL can exist before the topic.
+  `startup-checks.tracker-acl` still verifies it at startup and on every re-validation round, and
+  the cesium principal no longer needs `Cluster:ALTER`. A failed grant can no longer fail startup.
 - `/health/ready` loop detail loses its `assigned` field, and readiness no longer has an
   "assignment" term. The engine only ever set it alongside the heartbeat, so it never changed the
   verdict.

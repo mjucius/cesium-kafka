@@ -84,7 +84,7 @@ privilege means granting that one principal exactly the ACLs below and nothing e
 | 6 | **Admin client** | `Cluster` | DESCRIBE, DESCRIBE_CONFIGS | `describeCluster`, broker-config validation, `describeAcls` (tracker ACL check) |
 |   |  | `Topic` · *source*, *destination*, *tracker*, *DLQ* | DESCRIBE, DESCRIBE_CONFIGS | topic-config validation at startup and every `startup-checks.revalidation-interval`; `listOffsets` by timestamp (re-validation cursor-age and retention checks) |
 |   |  | `Group` · `cesium.<app>.ingest`, `cesium.<app>.dispatch` | DESCRIBE | `listConsumerGroupOffsets`: startup source-identity check (ingest group), first-run probe and re-validation cursor-age check (dispatch group) |
-|   |  | `Cluster` (`CREATE` bootstrap only) | CREATE, ALTER | `createTopics` (tracker) + `createAcls` (apply the tracker ACL) |
+|   |  | `Cluster` (`CREATE` bootstrap only) | CREATE | `createTopics` (tracker). cesium never calls `createAcls`, so it needs no ALTER |
 
 Row 6's checks run at startup and again every `startup-checks.revalidation-interval` (default 5 min,
 ADR-0020). Re-validation needs no grant beyond these: `listOffsets` by timestamp needs only Topic
@@ -103,9 +103,10 @@ DESCRIBE, and it never creates topics or applies ACLs.
 > consumer `Group`s is the companion control. **Do not stop at the tracker topic ACL**; this
 > matrix closes that historical gap.
 >
-> If your security model forbids granting `Cluster:CREATE`/`Cluster:ALTER` to a long-lived relay,
-> run `route.tracker.bootstrap: FAIL`, pre-provision the tracker topic and its write ACL out of band,
-> and drop row 6's `CREATE`/`ALTER` grants entirely. The running cesium principal then needs only
+> cesium never grants ACLs: create the tracker write ACL yourself (it can be created before the topic
+> exists). If your security model forbids granting `Cluster:CREATE` to a long-lived relay, run
+> `route.tracker.bootstrap: FAIL`, pre-provision the tracker topic out of band, and drop row 6's
+> `CREATE` grant entirely. The running cesium principal then needs only
 > rows 1–5 plus the admin DESCRIBE grants.
 
 ### 3. Who may produce to source / read destination, DLQ, and tracker

@@ -70,11 +70,6 @@ final class LaggingClusterAdmin implements ClusterAdmin {
     }
 
     @Override
-    public void grantTrackerWriteAcl(String topic, String principal) {
-        throw new UnsupportedOperationException("buildRouteDescriptor must not grant ACLs");
-    }
-
-    @Override
     public Set<String> describeTrackerWritePrincipals(String topic) {
         throw new UnsupportedOperationException("buildRouteDescriptor must not read ACLs");
     }

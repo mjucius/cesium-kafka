@@ -523,10 +523,13 @@ class StartupValidatorTest {
         }
 
         @Test
-        void createModeAppliesAclWhenPrincipalConfigured() {
+        void createModeLeavesTheAclToTheOperator() {
+            // cesium creates the tracker but never grants ACLs (ADR-0021): with no operator-created
+            // grant, the default-WARN verification reports the missing R12 restriction.
             givenHealthyCluster();
             admin.topics.remove(TRACKER);
             admin.topicConfigs.remove(TRACKER);
+            admin.trackerWriteAcls.remove(TRACKER);
             ConfigBuilder builder = new ConfigBuilder();
             builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
             builder.aclPrincipal = "User:cesium";
@@ -534,7 +537,8 @@ class StartupValidatorTest {
             StartupValidationResult result = validator.validate(builder.build());
 
             assertNoErrors(result);
-            assertEquals(List.of(new FakeClusterAdmin.AclGrant(TRACKER, "User:cesium")), admin.aclGrants);
+            assertEquals(1, admin.created.size());
+            assertWarningContains(result, "route.tracker.acl-principal", "no matching ALLOW WRITE ACL");
         }
 
         @Test
@@ -542,39 +546,22 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.topics.remove(TRACKER);
             admin.topicConfigs.remove(TRACKER);
-            admin.aclFailure =
-                    new ClusterAdminException("createAcls failed", new SecurityDisabledException("no authorizer"));
-            // A cluster with no authorizer also fails the every-startup DESCRIBE (L3), so the ACL
-            // verification downgrades to a WARN just like the apply path.
+            // A cluster with no authorizer fails the every-startup DESCRIBE (L3), so the ACL
+            // verification downgrades to a WARN.
             admin.describeAclsFailure =
                     new ClusterAdminException("describeAcls failed", new SecurityDisabledException("no authorizer"));
             ConfigBuilder builder = new ConfigBuilder();
             builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
             builder.aclPrincipal = "User:cesium";
-            // Default tracker-acl is WARN, so both the ACL *apply* failure and the every-startup
-            // verification surface as warnings here — startup is not blocked on an authorizerless
-            // cluster. (FAIL-mode enforcement is covered in the TrackerAcl nested class.)
+            // Default tracker-acl is WARN, so the verification surfaces as a warning here — startup
+            // is not blocked on an authorizerless cluster. (FAIL-mode enforcement is covered in the
+            // TrackerAcl nested class.)
 
             StartupValidationResult result = validator.validate(builder.build());
 
             assertNoErrors(result);
             assertWarningContains(result, "route.tracker.acl-principal", "no authorizer");
             assertWarningContains(result, "route.tracker.acl-principal", "R12");
-        }
-
-        @Test
-        void aclFailureForOtherReasonsIsAnError() {
-            givenHealthyCluster();
-            admin.topics.remove(TRACKER);
-            admin.topicConfigs.remove(TRACKER);
-            admin.aclFailure = new ClusterAdminException("createAcls failed", new RuntimeException("denied"));
-            ConfigBuilder builder = new ConfigBuilder();
-            builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
-            builder.aclPrincipal = "User:cesium";
-
-            StartupValidationResult result = validator.validate(builder.build());
-
-            assertErrorContains(result, "route.tracker.acl-principal", "failed to apply the tracker write ACL");
         }
 
         @Test
@@ -588,7 +575,6 @@ class StartupValidatorTest {
             StartupValidationResult result = validator.validate(builder.build());
 
             assertTrue(admin.created.isEmpty());
-            assertTrue(admin.aclGrants.isEmpty());
             assertErrorContains(result, "route.tracker", "D14");
         }
 
@@ -717,15 +703,13 @@ class StartupValidatorTest {
 
         @Test
         void missingConfiguredGrantWarnsByDefault() {
-            // The every-startup DESCRIBE (L3) surfaces a missing R12 grant. No grant is ever applied
-            // on the FAIL-bootstrap validate path.
+            // The every-startup DESCRIBE (L3) surfaces a missing R12 grant.
             givenHealthyCluster();
             admin.trackerWriteAcls.remove(TRACKER);
 
             StartupValidationResult result =
                     validator.validate(withPrincipal("User:cesium").build());
 
-            assertTrue(admin.aclGrants.isEmpty(), "verification never applies an ACL");
             assertNoErrors(result);
             assertWarningContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
         }
@@ -1326,7 +1310,6 @@ class StartupValidatorTest {
             assertTrue(result.identityChange().isEmpty());
             assertTrue(errorsAt(result, "route.tracker").contains("existed at startup"), result.report()::render);
             assertEquals(List.of(), admin.created, "re-validation must never create a topic");
-            assertEquals(List.of(), admin.aclGrants, "re-validation must never apply an ACL");
         }
 
         @Test

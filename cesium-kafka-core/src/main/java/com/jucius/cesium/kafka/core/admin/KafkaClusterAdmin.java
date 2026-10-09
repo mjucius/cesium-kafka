@@ -36,7 +36,6 @@ import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.resource.PatternType;
-import org.apache.kafka.common.resource.ResourcePattern;
 import org.apache.kafka.common.resource.ResourcePatternFilter;
 import org.apache.kafka.common.resource.ResourceType;
 import org.slf4j.Logger;
@@ -169,20 +168,6 @@ public final class KafkaClusterAdmin implements ClusterAdmin {
                 throw e;
             }
         }
-    }
-
-    @Override
-    public void grantTrackerWriteAcl(String topic, String principal) {
-        ResourcePattern pattern = new ResourcePattern(ResourceType.TOPIC, topic, PatternType.LITERAL);
-        List<AclBinding> bindings = List.of(
-                new AclBinding(
-                        pattern, new AccessControlEntry(principal, "*", AclOperation.WRITE, AclPermissionType.ALLOW)),
-                new AclBinding(
-                        pattern, new AccessControlEntry(principal, "*", AclOperation.READ, AclPermissionType.ALLOW)),
-                new AclBinding(
-                        pattern,
-                        new AccessControlEntry(principal, "*", AclOperation.DESCRIBE, AclPermissionType.ALLOW)));
-        await(admin.createAcls(bindings).all(), "createAcls(" + topic + ")");
     }
 
     @Override

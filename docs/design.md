@@ -818,7 +818,7 @@ Key defaults (durations ISO-8601):
 | `application-id` | required | Namespaces groups, txn ids, default topic names |
 | `instance-id` | required (or explicit `random`) | Txn-id stability (D10) + default `group.instance.id` (D21) |
 | `roles` | `[ingest, dispatch]` | Independent scaling |
-| `route.tracker.bootstrap` | `CREATE` | `CREATE \| FAIL`; CREATE applies §2.1 configs + ACL (when `acl-principal` set), partitions mirrored from source |
+| `route.tracker.bootstrap` | `CREATE` | `CREATE \| FAIL`; CREATE applies §2.1 configs, partitions mirrored from source (revision 5: it no longer grants the ACL) |
 | `delay.max` | `P1D` | Lowered from P7D: drives the tombstone-retention floor and tracker disk (§12 worksheet); raising it is an explicit, worksheet-reviewed decision |
 | `delay.on-malformed-header` / `on-over-max` | `DLQ` / `DLQ` | D3 |
 | `dispatch.on-unfetchable-payload` | `DLQ` | §7 |

@@ -3,7 +3,7 @@ package com.jucius.cesium.kafka.core.admin;
 /**
  * A {@link ClusterAdmin} operation failed (transport error, timeout, broker-side error). The
  * original broker exception, when one exists, is preserved in the cause chain so callers can
- * classify (e.g. {@link StartupValidator} downgrades ACL application to a warning when the chain
+ * classify (e.g. {@link StartupValidator} downgrades the ACL check to a warning when the chain
  * contains {@code SecurityDisabledException} — the cluster simply has no authorizer).
  */
 public class ClusterAdminException extends RuntimeException {

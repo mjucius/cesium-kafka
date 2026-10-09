@@ -54,9 +54,9 @@ import org.jspecify.annotations.Nullable;
  *       {@code remote.storage.enable=true} — those require the explicit, named
  *       {@code startup-checks.size-based-retention: ACKNOWLEDGED} acceptance.
  *   <li><strong>Tracker</strong> (§2.1, D4, D14, R-7/R-8): {@code CREATE} bootstrap creates the
- *       topic when absent with the §2.1 configs ({@link #trackerCreateConfigs}) and applies the
- *       R12 write ACL when {@code acl-principal} is configured; {@code FAIL} requires it to
- *       pre-exist. Either way the live topic is validated: partition parity with {@code P} (R-7
+ *       topic when absent with the §2.1 configs ({@link #trackerCreateConfigs}); {@code FAIL}
+ *       requires it to pre-exist. cesium never grants ACLs: the R12 write ACL is the operator's to
+ *       create (it can be created before the topic exists), and is only verified here. Either way the live topic is validated: partition parity with {@code P} (R-7
  *       runbook: grow the tracker first), {@code cleanup.policy} exactly {@code compact} (D4),
  *       and {@code delete.retention.ms} at or above the startup-validatable D14 floor
  *       {@code 2 × delay.max}.
@@ -595,7 +595,7 @@ public final class StartupValidator {
         }
     }
 
-    /** §2.1 {@code CREATE} bootstrap: create with the spec configs, then apply the R12 ACL. */
+    /** §2.1 {@code CREATE} bootstrap: create with the spec configs. */
     private Optional<TopicFacts> bootstrapTracker(
             CesiumConfig config, @Nullable TopicFacts source, String topic, List<Finding> findings) {
         if (source == null) {
@@ -612,7 +612,6 @@ public final class StartupValidator {
                 "route.tracker",
                 "created tracker topic '" + topic + "' with " + source.partitionCount()
                         + " partition(s) (mirroring the source) and the §2.1 configs " + configs + "."));
-        applyTrackerAcl(config, topic, findings);
         // The topic provably exists — CreateTopics was acknowledged by the controller above. A broker
         // still serving a metadata image from before that record answers UNKNOWN_TOPIC_OR_PARTITION,
         // which describeTopic necessarily reports as empty; wait that window out rather than calling a
@@ -646,37 +645,6 @@ public final class StartupValidator {
                                 + " loaded or degrading cluster — investigate before it crosses the"
                                 + " startup budget.")
                 : Finding.info("route.tracker", message);
-    }
-
-    private void applyTrackerAcl(CesiumConfig config, String topic, List<Finding> findings) {
-        Optional<String> principal = config.route().tracker().aclPrincipal();
-        if (principal.isEmpty() || principal.get().isBlank()) {
-            return;
-        }
-        try {
-            admin.grantTrackerWriteAcl(topic, principal.get());
-            findings.add(Finding.info(
-                    "route.tracker.acl-principal",
-                    "granted tracker write/read/describe on '" + topic + "' to principal '" + principal.get()
-                            + "' (R12: tracker write access restricted to the cesium principal is a normative"
-                            + " deployment requirement)."));
-        } catch (ClusterAdminException e) {
-            if (e.hasCause(SecurityDisabledException.class) || e.hasCause(UnsupportedVersionException.class)) {
-                findings.add(Finding.warning(
-                        "route.tracker.acl-principal",
-                        "the cluster has no authorizer, so the tracker write ACL could not be applied ("
-                                + e.getMessage() + "). R12: tracker write access restricted to the cesium principal"
-                                + " is a normative deployment requirement — a forged ADD is a duplicate-injection"
-                                + " primitive and a forged tombstone is a data-loss primitive; enable an authorizer"
-                                + " or enforce the restriction by other means."));
-            } else {
-                findings.add(Finding.error(
-                        "route.tracker.acl-principal",
-                        "failed to apply the tracker write ACL on '" + topic + "': " + e.getMessage()
-                                + " — R12 requires tracker write access restricted to the cesium principal; fix the"
-                                + " ACL permissions or apply it manually, then retry."));
-            }
-        }
     }
 
     /**
@@ -765,8 +733,8 @@ public final class StartupValidator {
 
     /**
      * R12 tracker write-ACL verification, run on <em>every</em> startup once the topic exists — for
-     * both bootstrap modes. Kafka enforces ACLs continuously regardless of whether cesium re-applies
-     * them, so cesium DESCRIBEs the live grant and, at the {@code startup-checks.tracker-acl}
+     * both bootstrap modes. cesium never grants the ACL (the operator creates it), so it DESCRIBEs
+     * the live grant and, at the {@code startup-checks.tracker-acl}
      * strictness, reports when the configured principal's exclusive WRITE grant is missing, when a
      * foreign principal holds WRITE, when {@code acl-principal} is unset entirely, or when the cluster
      * has no authorizer to verify against. The default {@code WARN} surfaces any of these on every
@@ -821,7 +789,7 @@ public final class StartupValidator {
             findings.add(finding(
                     mode,
                     "route.tracker.acl-principal",
-                    "route.tracker.acl-principal is unset, so cesium neither applies nor verifies the R12 tracker"
+                    "route.tracker.acl-principal is unset, so cesium cannot verify the R12 tracker"
                             + " write restriction — " + liveState
                             + ". Set route.tracker.acl-principal to the cesium principal (a forged ADD is a"
                             + " duplicate-injection primitive and a forged tombstone is a data-loss primitive), or"

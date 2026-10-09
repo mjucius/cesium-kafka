@@ -41,14 +41,14 @@ an optional DLQ.
 | `route.source.topic` | you | Create it yourself. Must not be compacted (offsets must stay fetchable); checked at startup. |
 | `route.destination.topic` | you | Create it yourself. Consumers must use `read_committed`. |
 | `route.tracker.topic` | cesium | Provisioned by bootstrap (below). Default name `cesium.<application-id>.tracker`. |
-| `route.dlq.topic` | you / cesium | Required whenever any policy routes to DLQ (the defaults do). |
+| `route.dlq.topic` | you | Required whenever any policy routes to DLQ (the defaults do). cesium validates it but never creates it. |
 
 ### Tracker bootstrap modes (`route.tracker.bootstrap`)
 
 - **`CREATE`** (default): cesium creates the tracker topic if absent, with the `§2.1` configs
   (compaction-only cleanup, the tombstone-retention floor, the compaction-lag floor, ~1 h
-  `segment.ms`, `LogAppendTime`), mirroring the source partition count, and applies the write ACL
-  when `route.tracker.acl-principal` is set. After creating it, cesium waits (bounded, up to 10 s) for
+  `segment.ms`, `LogAppendTime`), mirroring the source partition count. It never grants ACLs (see
+  the tracker write ACL below). After creating it, cesium waits (bounded, up to 10 s) for
   the topic to become describable: `createTopics` is acknowledged by the KRaft controller, but the
   broker that answers the next describe publishes that metadata asynchronously, so a freshly created
   topic can be briefly invisible on a healthy cluster. A wait above 1 s is logged as a startup
@@ -246,8 +246,9 @@ Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the
 > `cesium.<app>.*` to the cesium principal, any authenticated co-tenant can open a producer with
 > cesium's transactional id and fence it into a `ProducerFencedException` → fatal exit → restart →
 > re-fence crash-loop (and likewise `FencedInstanceIdException` via the static group id). The tracker
-> topic ACL alone is not enough. Under `route.tracker.bootstrap: FAIL` the cesium principal does not
-> need `Cluster` CREATE/ALTER; provision the tracker topic and its write ACL out of band.
+> topic ACL alone is not enough. cesium never grants ACLs, so it never needs `Cluster` ALTER; under
+> `route.tracker.bootstrap: FAIL` it does not need `Cluster` CREATE either (provision the tracker
+> topic out of band).
 
 **Topic ownership** (restrict `WRITE` accordingly): your upstream producers write the source
 (cesium only reads it); cesium writes the destination (downstream consumers read it with
@@ -264,11 +265,12 @@ Restricting tracker write access to the cesium principal is a normative deployme
 
 Actions:
 
-- Set `route.tracker.acl-principal: User:<cesium-principal>`. With `route.tracker.bootstrap: CREATE`
-  and a cluster authorizer present, cesium grants that principal write/read/describe on the tracker
-  topic at bootstrap. (If the cluster has no authorizer, cesium logs that the ACL could not be
-  applied; provision it yourself. Under `FAIL` bootstrap mode cesium does not apply the ACL;
-  provision it out of band.)
+- Grant the cesium principal write/read/describe on the tracker topic yourself, for example
+  `kafka-acls.sh --add --allow-principal User:<cesium-principal> --operation Write --operation Read
+  --operation Describe --topic cesium.<application-id>.tracker`. A literal ACL can be created before
+  the topic exists, so do it before the first start. cesium never grants ACLs (2.0.0, ADR-0021).
+- Set `route.tracker.acl-principal: User:<cesium-principal>` so startup and every re-validation round
+  verify the grant (`startup-checks.tracker-acl`).
 - Ensure no other principal has write access to the tracker topic.
 
 **The invalid-records counter is not a forgery detector.** cesium counts structurally malformed or
@@ -703,7 +705,6 @@ Discovered after config binds, against the live cluster:
 | Broker `offsets.retention.minutes` < `max-tolerated-outage` (`outage-check: FAIL`) | Raise broker `offsets.retention.minutes`, lower `max-tolerated-outage`, or set the check to `WARN` ([§7](#7-offsets-retention-vs-outage-tolerance)). |
 | `SOURCE_PARTITION` relay but destination partition count ≠ source | Grow the destination to match, or use `BY_KEY`. |
 | Tracker write ACL not verifiably in force (`startup-checks.tracker-acl: FAIL`): no matching grant, a foreign writer, `route.tracker.acl-principal` unset, or no authorizer | Grant the cesium principal exclusive write and revoke foreign writers ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix)), set `route.tracker.acl-principal`, or set the check to `WARN`/`SKIP` if you enforce it out of band. |
-| Applying the tracker write ACL failed in `CREATE` mode (an error other than "no authorizer") | Give the admin client `Cluster` ALTER, or apply the ACL by hand and retry. |
 | **Source topic identity mismatch** (recreated under the same name) | The source was deleted and recreated (new topic id), so delivering old-offset payloads would be wrong (R-10/R17). Reset the tracker (accept loss) or restore the original source, as an explicit decision. |
 | Tracker topic created but never became describable within the metadata-propagation budget | cesium created the tracker, then waited out normal KRaft propagation (10 s) and still could not get any broker to describe it with its full partition count. The ordinary sub-millisecond window is already absorbed by that wait. Retry startup; if it recurs, investigate broker metadata lag (a stalled metadata publisher) or controller availability. A `WARNING` naming a propagation wait over 1 s on a startup that *succeeded* is the early form of the same problem ([ADR-0018](adr/0018-bounded-wait-for-proven-topic-metadata.md)). |
 | `dispatch.cursor.sidecar-max-bytes` > broker `offset.metadata.max.bytes` (warning only, no exit; the budget is clamped to the broker cap) | Raise the broker setting to keep the configured budget, or lower the sidecar budget to silence the warning. |

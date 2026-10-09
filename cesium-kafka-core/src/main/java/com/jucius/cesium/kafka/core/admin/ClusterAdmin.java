@@ -53,24 +53,14 @@ public interface ClusterAdmin {
     void createTopic(String topic, int partitions, Map<String, String> configs);
 
     /**
-     * Grants the cesium principal write (plus read/describe) on the tracker topic — the R12
-     * normative deployment requirement the {@code CREATE} bootstrap applies when
-     * {@code route.tracker.acl-principal} is configured. Throws {@link ClusterAdminException}
-     * whose cause chain carries {@code SecurityDisabledException} when the cluster has no
-     * authorizer.
-     */
-    void grantTrackerWriteAcl(String topic, String principal);
-
-    /**
      * The principals that currently hold an {@code ALLOW WRITE} (or {@code ALLOW ALL}) ACL
      * reaching the tracker topic ({@code Admin.describeAcls}, LITERAL/wildcard/prefixed patterns
      * that match the name) — the live state of the R12 write restriction, read on
-     * <em>every</em> startup so {@link StartupValidator} can verify it rather than assume the
-     * {@code CREATE}-time grant is still intact, detect a foreign writer, or warn when no
-     * principal is configured. Throws {@link ClusterAdminException} whose cause chain carries
-     * {@code SecurityDisabledException} (or {@code UnsupportedVersionException}) when the cluster
-     * has no authorizer — the verification is then downgraded to a WARN, mirroring the
-     * ACL-apply path.
+     * <em>every</em> startup so {@link StartupValidator} can verify the operator-created grant,
+     * detect a foreign writer, or warn when no principal is configured. Throws
+     * {@link ClusterAdminException} whose cause chain carries {@code SecurityDisabledException} (or
+     * {@code UnsupportedVersionException}) when the cluster has no authorizer — the verification is
+     * then downgraded to a WARN.
      */
     Set<String> describeTrackerWritePrincipals(String topic);
 

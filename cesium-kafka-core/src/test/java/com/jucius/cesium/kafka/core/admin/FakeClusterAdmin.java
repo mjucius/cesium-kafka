@@ -22,8 +22,6 @@ final class FakeClusterAdmin implements ClusterAdmin {
 
     record CreatedTopic(String name, int partitions, Map<String, String> configs) {}
 
-    record AclGrant(String topic, String principal) {}
-
     /** One {@code offsetsAtOrAfter} call, recorded so tests can assert the cutoff arithmetic. */
     record OffsetQuery(String topic, long timestampMs) {}
 
@@ -36,11 +34,9 @@ final class FakeClusterAdmin implements ClusterAdmin {
     final Map<String, String> brokerConfigs = new HashMap<>();
     final Map<String, Map<TopicPartition, OffsetAndMetadata>> groupOffsets = new HashMap<>();
     final List<CreatedTopic> created = new ArrayList<>();
-    final List<AclGrant> aclGrants = new ArrayList<>();
     final Map<String, Set<String>> trackerWriteAcls = new HashMap<>();
     final Map<TopicPartition, FakeLog> logs = new HashMap<>();
     final List<OffsetQuery> offsetQueries = new ArrayList<>();
-    ClusterAdminException aclFailure;
     ClusterAdminException describeFailure;
     ClusterAdminException describeAclsFailure;
     ClusterAdminException groupOffsetsFailure;
@@ -176,15 +172,6 @@ final class FakeClusterAdmin implements ClusterAdmin {
         // matter are the ones after this point — not the existence pre-check that preceded it.
         describeCalls.remove(topic);
         topicConfigCalls.remove(topic);
-    }
-
-    @Override
-    public void grantTrackerWriteAcl(String topic, String principal) {
-        if (aclFailure != null) {
-            throw aclFailure;
-        }
-        aclGrants.add(new AclGrant(topic, principal));
-        putTrackerWriteAcl(topic, principal);
     }
 
     @Override
