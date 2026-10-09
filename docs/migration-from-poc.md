@@ -107,7 +107,7 @@ see [operations.md](operations.md)), and the group never silently resets after a
 ### 3.6 Memory and the event loop (informational)
 
 cesium-kafka stores `(partition, offset, dispatchAtMs)` pointers in a packed primitive index
-(~40–46 B/entry measured; the heap-budget check provisions 64 B/entry) instead of the PoC's
+(~40–46 B/entry measured; the heap-derived caps provision 64 B/entry) instead of the PoC's
 `DelayQueue<DelayEntry>` (~64–80 B/entry of pointer-chasing objects plus O(n) scans), and replaces
 the PoC's busy-polling and coarse read/write lock with single-threaded event loops (one per dispatch
 worker, over per-partition index shards). Producers and consumers see no difference;

@@ -83,7 +83,7 @@ public final class CesiumConfigLoader {
      * @param environment the environment map (tests inject; production passes
      *     {@code System.getenv()})
      * @param systemProperties the {@code -D} overlay source (highest precedence)
-     * @param validationContext heap/partition facts for the §5.3 heap-budget check
+     * @param validationContext the heap ceiling the §5.3 index-cap finding is computed from
      */
     public CesiumConfigLoader(
             Map<String, String> environment, Properties systemProperties, ValidationContext validationContext) {
@@ -95,8 +95,8 @@ public final class CesiumConfigLoader {
     /**
      * A successful load: the frozen config plus the full validation report. The report stays
      * visible to the caller because a clean load still carries operator-facing findings — the
-     * always-present INFO worst-case index footprint (§5.3 prints it at startup) and any WARNING
-     * findings (e.g. a heap-budget breach downgraded by {@code startup-checks.heap-budget: WARN}).
+     * always-present INFO index cap (§5.3 prints it at startup) and any WARNING findings (e.g. an
+     * explicit {@code dispatch.max-pending-total} over the heap budget).
      *
      * @param config the frozen, validated configuration
      * @param report the aggregate report; never contains {@code ERROR} findings (those throw)

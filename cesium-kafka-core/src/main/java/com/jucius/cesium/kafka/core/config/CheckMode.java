@@ -2,7 +2,7 @@ package com.jucius.cesium.kafka.core.config;
 
 /**
  * Strictness of a startup check (design §7.6, §8). Not every check accepts every mode — e.g. the
- * heap-budget and offsets-retention checks are FAIL/WARN only (the validator rejects SKIP there).
+ * offsets-retention check is FAIL/WARN only (the validator rejects SKIP there).
  */
 public enum CheckMode {
     /** A violated check refuses startup. */

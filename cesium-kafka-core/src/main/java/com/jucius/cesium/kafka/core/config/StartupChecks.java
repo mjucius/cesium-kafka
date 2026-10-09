@@ -18,8 +18,6 @@ import java.util.Objects;
  * @param outageCheck strictness of the {@code maxToleratedOutage} vs broker offsets-retention
  *     check — the "WARN/FAIL configurable" knob of the §8 defaults table; FAIL or WARN only;
  *     default FAIL
- * @param heapBudget strictness of the worst-case index-footprint vs heap-budget check (§5.3,
- *     R7/R18) — "fails (or warns, configurable)"; FAIL or WARN only; default FAIL
  * @param trackerAcl strictness of the R12 tracker write-ACL verification: the normative requirement
  *     that tracker write access is restricted to the cesium principal (a forged ADD is a
  *     duplicate-injection primitive and a forged tombstone is a data-loss primitive). FAIL refuses
@@ -36,7 +34,6 @@ public record StartupChecks(
         SizeBasedRetention sizeBasedRetention,
         Duration maxToleratedOutage,
         CheckMode outageCheck,
-        CheckMode heapBudget,
         CheckMode trackerAcl,
         Duration revalidationInterval) {
 
@@ -60,7 +57,6 @@ public record StartupChecks(
         sizeBasedRetention = Objects.requireNonNullElse(sizeBasedRetention, SizeBasedRetention.FAIL);
         maxToleratedOutage = Objects.requireNonNullElse(maxToleratedOutage, DEFAULT_MAX_TOLERATED_OUTAGE);
         outageCheck = Objects.requireNonNullElse(outageCheck, CheckMode.FAIL);
-        heapBudget = Objects.requireNonNullElse(heapBudget, CheckMode.FAIL);
         // Default WARN (not FAIL): surface the unenforced R12 control on every boot without blocking
         // clusters that have no authorizer; operators opt into FAIL to refuse an unverified ACL.
         trackerAcl = Objects.requireNonNullElse(trackerAcl, CheckMode.WARN);
@@ -68,14 +64,8 @@ public record StartupChecks(
     }
 
     /** Returns a {@code StartupChecks} populated entirely from the §8 defaults table. */
+    @SuppressWarnings("NullAway") // the compact constructor materializes every null
     public static StartupChecks defaults() {
-        return new StartupChecks(
-                CheckMode.FAIL,
-                SizeBasedRetention.FAIL,
-                DEFAULT_MAX_TOLERATED_OUTAGE,
-                CheckMode.FAIL,
-                CheckMode.FAIL,
-                CheckMode.WARN,
-                DEFAULT_REVALIDATION_INTERVAL);
+        return new StartupChecks(null, null, null, null, null, null);
     }
 }

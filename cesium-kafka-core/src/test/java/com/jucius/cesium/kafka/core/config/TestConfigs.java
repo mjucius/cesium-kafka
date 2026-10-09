@@ -11,7 +11,7 @@ import java.util.Optional;
 final class TestConfigs {
 
     /** A heap context generous enough that default configs pass the budget check. */
-    static final ValidationContext ROOMY_CONTEXT = new ValidationContext(4L * 1024 * 1024 * 1024, 1);
+    static final ValidationContext ROOMY_CONTEXT = new ValidationContext(4L * 1024 * 1024 * 1024);
 
     private TestConfigs() {}
 

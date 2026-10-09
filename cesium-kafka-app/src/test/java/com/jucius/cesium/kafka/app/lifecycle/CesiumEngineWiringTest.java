@@ -50,13 +50,9 @@ import org.junit.jupiter.api.Test;
 /**
  * The config-to-engine wiring decisions that do not need a broker (design §6, §10): role selection
  * and worker counts ({@link CesiumEngine#planLoops}), store resolution by {@code store.type}
- * ({@link CesiumEngine#resolveStore}), and the M5-obligation-#10 partition-aware heap re-validation
- * ({@link CesiumEngine#heapBudgetReport}).
+ * ({@link CesiumEngine#resolveStore}).
  */
 class CesiumEngineWiringTest {
-
-    private static final long FOUR_GIB = 4L * 1024 * 1024 * 1024;
-    private static final long SIXTY_FOUR_MIB = 64L * 1024 * 1024;
 
     // ------------------------------------------------------------------ role selection / workers
 
@@ -108,28 +104,6 @@ class CesiumEngineWiringTest {
         EngineStartupException failure =
                 assertThrows(EngineStartupException.class, () -> CesiumEngine.resolveStore("does-not-exist"));
         assertTrue(failure.getMessage().contains("does-not-exist"), failure::getMessage);
-    }
-
-    // ------------------------------------------------------------------ heap re-validation (M5 #10)
-
-    @Test
-    void heapBudgetPassesAtASinglePartitionOnAGenerousHeap() {
-        ValidationReport report = CesiumEngine.heapBudgetReport(config(Set.of(Role.DISPATCH), 1, 1), 1, FOUR_GIB);
-        assertFalse(report.hasErrors(), report::render);
-    }
-
-    @Test
-    void heapBudgetBreachesAtTheRealPartitionCount() {
-        // 100k partitions x 2,000,000 default entries x 64 B/entry far exceeds the 16 MiB budget
-        // (64 MiB heap / 4): the estimate-of-1 load passed, the real partition count must fail (#10).
-        ValidationReport report =
-                CesiumEngine.heapBudgetReport(config(Set.of(Role.DISPATCH), 1, 1), 100_000, SIXTY_FOUR_MIB);
-        assertTrue(report.hasErrors(), report::render);
-        assertTrue(
-                report.errors().stream()
-                        .anyMatch(f -> f.path().equals("dispatch.max-pending-per-partition")
-                                && f.message().contains("exceeds the heap budget")),
-                report::render);
     }
 
     // ------------------------------------------------------------------ route descriptor

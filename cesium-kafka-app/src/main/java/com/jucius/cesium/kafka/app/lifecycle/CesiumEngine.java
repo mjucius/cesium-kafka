@@ -18,9 +18,7 @@ import com.jucius.cesium.kafka.core.admin.StartupValidator.Revalidation;
 import com.jucius.cesium.kafka.core.admin.TopicFacts;
 import com.jucius.cesium.kafka.core.admin.TopicVisibility;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
-import com.jucius.cesium.kafka.core.config.CesiumConfigValidator;
 import com.jucius.cesium.kafka.core.config.Role;
-import com.jucius.cesium.kafka.core.config.ValidationContext;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.core.dispatch.DispatchLoop;
 import com.jucius.cesium.kafka.core.dispatch.DispatchLoopConfig;
@@ -81,8 +79,6 @@ import org.slf4j.MDC;
  *       parity, retention, identity) and fail-fasts on errors;
  *   <li>captures the cluster id + topic ids and builds the {@link RouteDescriptor} +
  *       {@link StoreContext};
- *   <li>re-runs the §5.3 heap-budget check with the <em>real</em> source partition count (M5
- *       obligation #10 — config-load only had an estimate of 1);
  *   <li>resolves the {@link SchedulerStore} through the published {@link SchedulerStoreProvider}
  *       ServiceLoader hook by {@code store.type} and drives {@code configure → validate → start};
  *   <li>per {@linkplain Role role}, spawns {@code ingest.workers} {@link IngestLoop}s and
@@ -242,8 +238,6 @@ public final class CesiumEngine implements AutoCloseable {
                     .sourcePartitions()
                     .orElseThrow(() ->
                             new EngineStartupException("startup validation passed but captured no partition count"));
-
-            revalidateHeapBudget(partitionCount);
 
             TrackerBackedStore resolved = resolveStore(config.store().type());
             this.store = resolved;
@@ -430,36 +424,10 @@ public final class CesiumEngine implements AutoCloseable {
                 + resolved.getClass().getName() + "); this app build orchestrates tracker-backed stores only");
     }
 
-    /**
-     * The §5.3 worst-case heap-budget report re-evaluated at a given partition count — the pure core
-     * of the M5 obligation-#10 re-validation, extracted so it is unit-testable without a broker.
-     */
-    static ValidationReport heapBudgetReport(CesiumConfig config, int partitionCount, long maxHeapBytes) {
-        return new CesiumConfigValidator().validate(config, new ValidationContext(maxHeapBytes, partitionCount));
-    }
-
     /** One planned loop worker: its role and its transactional-id ordinal. */
     record LoopSpec(Role role, int workerOrdinal) {}
 
     // ------------------------------------------------------------------ startup helpers
-
-    /**
-     * M5 obligation #10: re-run the §5.3 worst-case heap-budget check now that the <em>real</em>
-     * source partition count is known (config-load only had an estimate of 1). A breach under the
-     * default {@code startup-checks.heap-budget: FAIL} is a fail-fast; the always-present INFO
-     * footprint finding is logged either way.
-     */
-    private void revalidateHeapBudget(int partitionCount) {
-        ValidationReport report = heapBudgetReport(config, partitionCount, maxHeapBytes);
-        logFindings(report);
-        if (report.hasErrors()) {
-            throw new EngineStartupException(
-                    "worst-case index footprint exceeds the heap budget at the real partition count (" + partitionCount
-                            + "); lower dispatch.max-pending-per-partition, assign fewer partitions, or raise -Xmx"
-                            + " (design §5.3, M5 obligation #10)",
-                    report);
-        }
-    }
 
     /**
      * The route identity triple + topic facts from the same admin plane production uses (§3.5).

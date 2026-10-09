@@ -100,8 +100,8 @@ public final class CesiumApp {
         try {
             Path configPath = Path.of(resolveConfigPath(args, environment));
             log.info("loading configuration from {}", configPath);
-            loaded = new CesiumConfigLoader(environment, systemProperties, ValidationContext.runtime(1))
-                    .load(configPath);
+            loaded =
+                    new CesiumConfigLoader(environment, systemProperties, ValidationContext.runtime()).load(configPath);
         } catch (ConfigValidationException e) {
             log.error("configuration is invalid:\n{}", e.report().render());
             return CesiumConfigLoader.EX_CONFIG;

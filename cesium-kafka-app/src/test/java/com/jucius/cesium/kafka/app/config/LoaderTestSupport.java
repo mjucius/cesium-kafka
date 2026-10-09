@@ -15,7 +15,7 @@ import java.util.Properties;
 final class LoaderTestSupport {
 
     /** Generous heap so default configs pass the §5.3 budget check deterministically. */
-    static final ValidationContext ROOMY_CONTEXT = new ValidationContext(4L * 1024 * 1024 * 1024, 1);
+    static final ValidationContext ROOMY_CONTEXT = new ValidationContext(4L * 1024 * 1024 * 1024);
 
     /** A minimal valid YAML: required fields plus a DLQ (the default policies route to it). */
     static final String MINIMAL_YAML =

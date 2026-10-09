@@ -114,11 +114,7 @@ dispatch:
       backoff: PT0.05S
       backoff-max: PT10S
   on-unfetchable-payload: DLQ  # DLQ (default) | DROP | FAIL
-  # Pause/resume backpressure high-water mark per ACTIVE shard, and the input to
-  # the startup worst-case footprint check (partitions x cap x 64 B vs ~25% of
-  # Xmx, design §5.3). Quickstart-sized so it fits a small container heap;
-  # production default is 2,000,000.
-  max-pending-per-partition: 100000
+  # max-pending-per-partition: 2000000  # pause/resume high-water per ACTIVE shard (design §5.3)
   # max-pending-total: 0       # process-wide; 0 = AUTO (heap-derived, ~25% of Xmx / 64 B)
 
 observability:
@@ -139,6 +135,5 @@ startup-checks:
   size-based-retention: FAIL       # FAIL when size/tier eviction is detected; ACKNOWLEDGED to proceed (R13)
   max-tolerated-outage: P7D        # checked against broker offsets.retention.minutes (design D18, R6)
   outage-check: FAIL               # FAIL | WARN
-  heap-budget: FAIL                # worst-case index footprint vs heap budget: FAIL | WARN
   # tracker-acl: WARN              # R12 tracker write-ACL check: FAIL | WARN | SKIP (FAIL recommended in production)
   # revalidation-interval: PT5M    # re-run the checks while running (D23): identity change exits, other errors degrade

@@ -144,7 +144,7 @@ final class EngineHarness implements AutoCloseable {
      * checks (returned for assertions; includes the tracker CREATE bootstrap side effect).
      */
     StartupValidationResult validate() {
-        ValidationReport configReport = new CesiumConfigValidator().validate(config, ValidationContext.runtime(16));
+        ValidationReport configReport = new CesiumConfigValidator().validate(config, ValidationContext.runtime());
         if (configReport.hasErrors()) {
             throw new IllegalStateException("test-assembled config is invalid:\n" + configReport.render());
         }
@@ -819,8 +819,7 @@ final class EngineHarness implements AutoCloseable {
                     null,
                     new StoreConfig(null, storeProps),
                     null,
-                    // Small per-partition pending cap keeps the engine's heap-budget check trivially
-                    // green in CI JVMs of any size; IT loads never approach it (overridable for the
+                    // Small per-partition pending cap; IT loads never approach it (overridable for the
                     // §5.3 backpressure scenario via Builder.maxPendingPerPartition).
                     new DispatchConfig(
                             null,
@@ -836,13 +835,7 @@ final class EngineHarness implements AutoCloseable {
                     // The integration brokers run PLAINTEXT with no authorizer, so the R12 tracker-ACL
                     // check cannot be verified there; SKIP it (the fix's default is FAIL in production).
                     new StartupChecks(
-                            retentionCheck,
-                            sizeBasedRetention,
-                            null,
-                            null,
-                            null,
-                            CheckMode.SKIP,
-                            revalidationInterval));
+                            retentionCheck, sizeBasedRetention, null, null, CheckMode.SKIP, revalidationInterval));
             EngineHarness harness = new EngineHarness(config);
             harness.seekFetcherDecorator = seekFetcherDecorator;
             return harness;

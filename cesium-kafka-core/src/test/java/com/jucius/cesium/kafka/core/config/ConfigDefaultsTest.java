@@ -166,7 +166,6 @@ class ConfigDefaultsTest {
         assertEquals(StartupChecks.SizeBasedRetention.FAIL, checks.sizeBasedRetention());
         assertEquals(Duration.ofDays(7), checks.maxToleratedOutage()); // P7D
         assertEquals(CheckMode.FAIL, checks.outageCheck());
-        assertEquals(CheckMode.FAIL, checks.heapBudget());
         // R12: the tracker write-ACL check defaults to WARN (does not block clusters without an authorizer); FAIL is
         // opt-in.
         assertEquals(CheckMode.WARN, checks.trackerAcl());

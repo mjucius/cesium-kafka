@@ -519,8 +519,7 @@ Full detail and the memory worksheet are in [performance.md §5–§6](performan
 
 - **Backpressure.** `dispatch.max-pending-per-partition` pauses ACTIVE shards above its high-water
   (resumes below half); the process-wide `dispatch.max-pending-total` (AUTO ≈ 25 % of `Xmx` ÷ 64 B) pauses
-  ACTIVE shards above the total. A RECOVERING shard is never paused. The startup heap-budget check
-  (`startup-checks.heap-budget`) sizes the steady-state caps only; recovery is bounded by a runtime
+  ACTIVE shards above the total. A RECOVERING shard is never paused; recovery is bounded by a runtime
   resident-entry ceiling that fails fast instead of running out of heap
   (`cesium_recovery_over_budget_total`, [§14.3](#143-runtime-fail-fast-exit-1-readiness-false)).
   Watch `cesium_shard_paused`.
@@ -685,7 +684,6 @@ The app prints the full aggregate report and exits 78. Causes and fixes:
 | Locked Kafka key set in passthrough | Remove it. The message explains why it is engine-owned ([configuration.md §3](configuration.md#locked-kafka-keys-rejected-with-an-explanation)). |
 | `${env:VAR}` references an undefined variable | Define the variable or fix the reference. |
 | DLQ policy active but no `route.dlq.topic` | Configure the DLQ topic, or change the policy off DLQ. |
-| Worst-case index footprint exceeds the heap budget (config load assumes 1 partition; the check re-runs at the real partition count after cluster validation and fails with exit 1 there) | Lower `dispatch.max-pending-per-partition`, raise the heap, or set `startup-checks.heap-budget: WARN` to accept. |
 
 ### 14.2 Startup validation against the cluster (exit 1)
 

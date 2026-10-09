@@ -31,7 +31,7 @@ The app loads configuration in this order (design `§8`, `CesiumConfigLoader`):
 Any configuration error (a missing required key, an unknown key, a locked Kafka key, an
 out-of-range value, an undefined `${env:VAR}`) prints the full aggregate report and exits with code
 78 (`EX_CONFIG`, from BSD `sysexits.h`). A clean load still prints `WARNING`/`INFO` findings
-(for example the always-present worst-case index-footprint line) and continues. Fatal problems
+(for example the always-present index-cap line) and continues. Fatal problems
 discovered after config binding, such as failed startup validation against the live cluster or
 engine failures, exit with code 1.
 
@@ -223,7 +223,7 @@ not 78: the config schema leaves this map open).
 | `dispatch.fetch.penalty.backoff-max` | `PT10S` | Penalty-box backoff ceiling under consecutive failures. |
 | `dispatch.on-unfetchable-payload` | `DLQ` | Policy for provably-expired payloads: `DLQ` (loss notice + COMPLETE, atomic), `DROP` (COMPLETE only + metric), or `FAIL`. In all non-FAIL modes the COMPLETE is always written, so a poison entry never replays forever. |
 | `dispatch.max-pending-per-partition` | `2000000` | Backpressure high-water mark per ACTIVE shard; pauses the tracker consumer above it, resumes below half. A RECOVERING shard is never paused. Backlog accumulates durably in the tracker topic. |
-| `dispatch.max-pending-total` | `0` (AUTO) | Process-wide pending cap across every ACTIVE shard this instance owns (there is one dispatch worker per process). `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap is checked at load (`cap × 64 B` against the heap budget, strictness from `startup-checks.heap-budget`). |
+| `dispatch.max-pending-total` | `0` (AUTO) | Process-wide pending cap across every ACTIVE shard this instance owns (there is one dispatch worker per process). `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap whose `cap × 64 B` exceeds the heap budget is reported as a warning at load. This cap, together with the store's recovery ceiling, is what bounds the index; there is no separate startup footprint check (ADR-0021). |
 
 ---
 
@@ -250,7 +250,6 @@ an ERROR finding degrades; a `WARN`-mode finding is logged once when it appears.
 | `startup-checks.size-based-retention` | `FAIL` | When `retention.bytes != -1` or remote/tiered storage is enabled on the source, time-based validation cannot bound payload lifetime. Startup fails unless set to the explicit, named acceptance `ACKNOWLEDGED` (R13). |
 | `startup-checks.max-tolerated-outage` | `P7D` | The longest outage after which committed offsets must still exist; checked against broker `offsets.retention.minutes` (D18, R6). |
 | `startup-checks.outage-check` | `FAIL` | Strictness of the `max-tolerated-outage` vs broker offsets-retention check: `FAIL` or `WARN` only (`SKIP` is rejected). |
-| `startup-checks.heap-budget` | `FAIL` | Strictness of the worst-case index-footprint vs heap-budget check (§5.3): `FAIL` or `WARN` only. |
 | `startup-checks.revalidation-interval` | `PT5M` | How often a running engine re-runs these checks on the `cesium-admin` thread (D23, ADR-0020); must be positive. A source or tracker topic id change exits non-zero; every other error is logged at ERROR, counted in `cesium_revalidation_errors` and sets the readiness degraded flag, and dispatch continues. It never creates a topic or applies an ACL. |
 | `startup-checks.tracker-acl` | `WARN` | Strictness of the R12 tracker write-ACL verification: `FAIL`, `WARN`, or `SKIP`. `FAIL` refuses to start unless only the cesium principal can write the tracker (it also fails on an unset `acl-principal` or a cluster without an authorizer). `FAIL` is recommended for production. |
 

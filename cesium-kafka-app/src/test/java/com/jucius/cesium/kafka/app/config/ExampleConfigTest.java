@@ -32,14 +32,14 @@ class ExampleConfigTest {
     @Test
     void exampleConfigBindsAndValidates() {
         LoadedConfig loaded =
-                new CesiumConfigLoader(Map.of(), new Properties(), ValidationContext.runtime(1)).load(EXAMPLE);
+                new CesiumConfigLoader(Map.of(), new Properties(), ValidationContext.runtime()).load(EXAMPLE);
 
         // A clean load proves: parsed, no unknown keys, bound to records, aggregate-validated (it
         // throws ConfigValidationException otherwise). The report still carries WARN/INFO findings.
         assertFalse(loaded.report().hasErrors());
         assertTrue(
-                loaded.report().infos().stream().anyMatch(f -> f.path().equals("dispatch.max-pending-per-partition")),
-                "the §5.3 worst-case index-footprint INFO finding is always present");
+                loaded.report().infos().stream().anyMatch(f -> f.path().equals("dispatch.max-pending-total")),
+                "the §5.3 index-cap INFO finding is always present");
 
         CesiumConfig config = loaded.config();
         assertEquals("orders-delay", config.applicationId());
@@ -62,7 +62,7 @@ class ExampleConfigTest {
         LoadedConfig loaded = new CesiumConfigLoader(
                         Map.of("CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS", "kafka:9092"),
                         new Properties(),
-                        ValidationContext.runtime(1))
+                        ValidationContext.runtime())
                 .load(EXAMPLE);
         assertEquals("kafka:9092", loaded.config().kafka().properties().get("bootstrap.servers"));
     }

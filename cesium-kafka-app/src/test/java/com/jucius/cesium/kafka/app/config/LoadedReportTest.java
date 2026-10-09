@@ -14,9 +14,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * A successful load must not discard the validation report: the always-present INFO worst-case
- * index footprint (§5.3 prints it at startup) and WARNING findings (heap-budget breach under
- * {@code startup-checks.heap-budget: WARN}) need a path to the operator.
+ * A successful load must not discard the validation report: the always-present INFO index cap
+ * (§5.3 prints it at startup) and WARNING findings (an explicit cap over the heap budget) need a
+ * path to the operator.
  */
 class LoadedReportTest {
 
@@ -24,36 +24,36 @@ class LoadedReportTest {
     Path dir;
 
     @Test
-    void successfulLoadCarriesTheInfoFootprintFinding() {
+    void successfulLoadCarriesTheInfoCapFinding() {
         Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
         LoadedConfig loaded = LoaderTestSupport.loader(Map.of()).load(file);
         assertFalse(loaded.report().hasErrors(), loaded.report()::render);
         assertTrue(
                 loaded.report().infos().stream()
-                        .anyMatch(f -> f.path().equals("dispatch.max-pending-per-partition")
-                                && f.message().contains("worst-case index footprint")),
+                        .anyMatch(f -> f.path().equals("dispatch.max-pending-total")
+                                && f.message().contains("index cap")),
                 loaded.report()::render);
     }
 
     @Test
-    void warnModeHeapBreachSurfacesOnASuccessfulLoad() {
-        // 2,000,000 default entries x 64 B = 128 MB > 16 MiB budget (64 MiB heap / 4), downgraded
-        // to WARNING by startup-checks.heap-budget: WARN — the load succeeds but must report it.
+    void capOverTheHeapBudgetSurfacesOnASuccessfulLoad() {
+        // 1,000,000 entries x 64 B = 64 MB > 16 MiB budget (64 MiB heap / 4): the load succeeds
+        // but must report it.
         Path file = LoaderTestSupport.write(
                 dir,
                 LoaderTestSupport.MINIMAL_YAML
                         + """
-                        startup-checks:
-                          heap-budget: WARN
+                        dispatch:
+                          max-pending-total: 1000000
                         """);
-        ValidationContext tinyHeap = new ValidationContext(64L * 1024 * 1024, 1);
+        ValidationContext tinyHeap = new ValidationContext(64L * 1024 * 1024);
         LoadedConfig loaded = new CesiumConfigLoader(Map.of(), new Properties(), tinyHeap).load(file);
         assertFalse(loaded.report().hasErrors(), loaded.report()::render);
         var breach = loaded.report().warnings().stream()
-                .filter(f -> f.path().equals("dispatch.max-pending-per-partition"))
+                .filter(f -> f.path().equals("dispatch.max-pending-total"))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError(loaded.report().render()));
         assertEquals(Severity.WARNING, breach.severity());
-        assertTrue(breach.message().contains("exceeds the heap budget"), breach::message);
+        assertTrue(breach.message().contains("more than the heap budget"), breach::message);
     }
 }

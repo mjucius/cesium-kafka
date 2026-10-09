@@ -10,8 +10,7 @@ import java.util.Objects;
  *
  * <p>Findings carry a severity: {@code ERROR} refuses startup (the app maps it to exit code 78 /
  * {@code EX_CONFIG}), {@code WARNING} is surfaced but does not refuse, and {@code INFO} carries
- * always-reported facts such as the computed worst-case index footprint (§5.3 prints it at
- * startup).
+ * always-reported facts such as the effective index cap (§5.3 prints it at startup).
  *
  * @param findings all findings in the order they were collected; immutable
  */

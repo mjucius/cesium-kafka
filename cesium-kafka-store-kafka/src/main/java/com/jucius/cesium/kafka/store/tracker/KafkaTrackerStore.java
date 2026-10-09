@@ -73,7 +73,7 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
 
     /**
      * Heap budget for the H1 recovery resident-pending ceiling; {@code 0}/unset derives ~25% of
-     * {@code Xmx} (§5.3, §5.4). The startup footprint check is the engine's, not the store's.
+     * {@code Xmx} (§5.3, §5.4).
      */
     public static final String HEAP_BUDGET_BYTES_KEY = "heap-budget-bytes";
 
@@ -131,10 +131,6 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      * {@code store.properties} keys, sidecar-budget sanity (bounds, and the identity header must
      * fit the Base64 budget), index tuning floors, and the heap budget's sign.
      *
-     * <p>The worst-case footprint check (§5.3, {@code startup-checks.heap-budget}) is the engine's
-     * alone: it runs before the store is built and honours FAIL/WARN. The store does not repeat it,
-     * so WARN really lets startup proceed.
-     *
      * <p><strong>Validation split (deliberate).</strong> Broker-side checks are the
      * <em>engine's</em> {@code StartupValidator} job, performed with the engine's admin client —
      * this store never creates one: source/tracker partition parity (§2.1), the tombstone
@@ -142,8 +138,8 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
      * 6), topic-id liveness/identity (R11/R17), and compaction settings. The store validates only
      * what configuration alone can prove.
      *
-     * <p><strong>Recovery ceiling (H1, design §5.3/§5.4).</strong> The engine's footprint check
-     * sizes the <em>steady-state</em> ACTIVE backpressure caps against the heap budget; it does
+     * <p><strong>Recovery ceiling (H1, design §5.3/§5.4).</strong> The engine's process-wide pending
+     * cap bounds the <em>steady-state</em> ACTIVE shards against the heap budget; it does
      * <em>not</em> bound recovery, because a RECOVERING shard is never paused (it must replay to
      * the barrier, I4). The store's {@code effectiveHeapBudget} is therefore divided by
      * {@value #WORST_CASE_BYTES_PER_ENTRY} B/entry into a runtime resident-pending ceiling

@@ -48,14 +48,19 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   booleans, and no value echoed in errors.
 - `store.properties.max-pending-per-partition` (kafka-tracker) is removed and now fails startup as
   an unknown store key (exit 1). `dispatch.max-pending-per-partition` is the only per-partition cap
-  and footprint input. `KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY` and
+  input. `KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY` and
   `DEFAULT_MAX_PENDING_PER_PARTITION` are removed, and the `SchedulerStore.validate` javadoc no
   longer lists the footprint check as a store duty. The `kafka-tracker validated` INFO line loses
   its footprint fields.
-- `startup-checks.heap-budget: WARN` now really lets startup proceed: `KafkaTrackerStore.validate()`
-  no longer repeats the footprint check. Under the default FAIL the engine check still exits 1.
+- `startup-checks.heap-budget` is removed, together with the startup check it controlled; setting
+  it is an unknown-key error (exit 78). That check required `source partitions ×
+  dispatch.max-pending-per-partition × 64 B` to fit in 25% of the heap, so at the 2,000,000 default
+  it needed `-Xmx` of at least 512 MiB per source partition. The runtime bounds already cover it: the
+  AUTO `dispatch.max-pending-total` pauses ACTIVE shards at the same budget, and the store's H1
+  ceiling bounds RECOVERING shards. An explicit `dispatch.max-pending-total` larger than the budget
+  is now a warning instead of an error. The store's own repeat of the check is gone too.
 - `store.properties.heap-budget-bytes` keeps its name but now feeds only the store's H1 recovery
-  resident-pending ceiling. It no longer feeds a startup footprint check.
+  resident-pending ceiling.
 - `dispatch.max-pending-total` is now process-wide. Each dispatch worker enforces
   cap ÷ `dispatch.workers` (minimum 1); with `dispatch.workers` fixed at 1 that is the whole cap.
 - `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now
@@ -132,10 +137,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - The perf ITs ignored their `-Dperf.*` knobs: Gradle set them only in its own JVM, not in the forked
   test JVM, so every run used the CI defaults. The `cesium-kafka-it` build now forwards every
   `-Dperf.*` and `-Dsoak.*` property to its test tasks as a configuration-cache input.
-- `startup-checks.heap-budget: WARN` did not let startup proceed: `KafkaTrackerStore.validate()`
-  repeated the footprint check with its own store-side cap and failed whenever that footprint
-  exceeded the budget, whatever `startup-checks.heap-budget` said. The engine check is now the only
-  one.
 - `dispatch.max-pending-total` was enforced separately by every dispatch worker, so the effective
   process cap was `dispatch.workers` times the configured (or AUTO heap-derived) value. Each worker
   now gets an equal share.
@@ -156,8 +157,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 ### Removed
 - `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).
 - Testkit `FakeStoreContext.MapConfigView`. Use `ConfigView.of(Map)` (see Breaking changes).
-- `store.properties.max-pending-per-partition` and the store's duplicate footprint check (see
-  Breaking changes).
+- `store.properties.max-pending-per-partition`, `startup-checks.heap-budget` and the startup
+  footprint check, in both the engine and the store (see Breaking changes).
 - The documented but unimplemented `store.type: class:<FQCN>` store selection (see Breaking changes).
 - `ExternalSchedulerStore` and its contract kit, `StoreCapabilities`, `OwnershipEpoch`,
   `StoreContext.epoch()`/`clock()`, the testkit's `MutableClock`, and the headers-blind

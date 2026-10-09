@@ -1,7 +1,6 @@
 package com.jucius.cesium.kafka.core.config;
 
 import com.jucius.cesium.kafka.core.config.ValidationReport.Finding;
-import com.jucius.cesium.kafka.core.config.ValidationReport.Severity;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
@@ -16,27 +15,16 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Aggregate configuration validator (design §8): collects <em>every</em> violation — required
- * fields, ranges, cross-field rules, locked Kafka keys, and the heap-budget check — into one
- * {@link ValidationReport}, never failing on the first error.
+ * fields, ranges, cross-field rules and locked Kafka keys — into one {@link ValidationReport},
+ * never failing on the first error.
  *
- * <p>The heap-budget check (§5.3, R7/R18) compares the worst-case index footprint
- * {@code assignedPartitionEstimate × dispatch.max-pending-per-partition ×}
- * {@value DispatchConfig#INDEX_BYTES_PER_ENTRY}{@code  B/entry} against the index heap budget
- * (25% of max heap). Strictness is the {@code startup-checks.heap-budget} flag (FAIL default,
- * WARN opt-down); the computed footprint is always included in the report as an INFO finding so
- * startup logs print it (§5.3).
- *
- * <p><strong>Scope — this check bounds steady-state ACTIVE backpressure, not recovery (H1).</strong>
- * The worst-case footprint assumes the per-partition cap holds, which it does only for ACTIVE
- * shards: a RECOVERING shard is never backpressure-paused (it must replay to the barrier, I4), so
- * this startup check alone does <em>not</em> bound the replay footprint. Recovery is instead bounded
- * <em>at runtime</em> by the store's resident-pending ceiling (the same heap budget ÷
- * {@value DispatchConfig#INDEX_BYTES_PER_ENTRY} B/entry): an over-budget durable backlog fails fast
- * and attributably ({@code cesium_recovery_over_budget} + a runbook log line) instead of allocating
- * into an {@code OutOfMemoryError} crash-loop. The durable backlog that recovery replays is itself
- * bounded outside cesium by broker client/produce quotas + source {@code retention.bytes} +
- * {@code delay.max} (the L4 deployment guidance, §5.3/§5.4) — this validator cannot see those, which
- * is why the runtime ceiling is the load-bearing recovery guard.
+ * <p><strong>The index heap budget is enforced at runtime, not here (§5.3, ADR-0021).</strong>
+ * ACTIVE shards pause once the process-wide pending total exceeds {@code dispatch.max-pending-total}
+ * (AUTO: 25% of max heap ÷ {@value DispatchConfig#INDEX_BYTES_PER_ENTRY} B/entry), and RECOVERING
+ * shards are bounded by the store's resident-pending ceiling (the same budget), which fails fast and
+ * attributably ({@code cesium_recovery_over_budget}) instead of allocating into an
+ * {@code OutOfMemoryError}. The validator only reports the effective cap and warns when an explicit
+ * cap admits more than the budget.
  */
 public final class CesiumConfigValidator {
 
@@ -58,7 +46,7 @@ public final class CesiumConfigValidator {
         checkRanges(config, findings);
         checkCrossField(config, findings);
         checkLockedKafkaKeys(config, findings);
-        checkHeapBudget(config, context, findings);
+        checkPendingCap(config, context, findings);
         return new ValidationReport(findings);
     }
 
@@ -190,8 +178,6 @@ public final class CesiumConfigValidator {
                 config.startupChecks().revalidationInterval());
         failOrWarnOnly(
                 findings, "startup-checks.outage-check", config.startupChecks().outageCheck());
-        failOrWarnOnly(
-                findings, "startup-checks.heap-budget", config.startupChecks().heapBudget());
     }
 
     private static void atLeast(List<Finding> findings, String path, long value, long min) {
@@ -398,52 +384,23 @@ public final class CesiumConfigValidator {
     // ------------------------------------------------------------------ heap budget
 
     /**
-     * Worst-case index footprint vs the 25%-of-heap index budget (§5.3): always reported as INFO;
-     * a breach is an ERROR (or WARNING under {@code startup-checks.heap-budget: WARN}).
-     *
-     * <p>This bounds the ACTIVE backpressure caps only; the replay footprint of a RECOVERING shard
-     * is bounded at runtime by the store's resident-pending ceiling, not here (H1 — see the class
-     * javadoc).
+     * Reports the effective process-wide pending cap as INFO, and warns when an explicit
+     * {@code dispatch.max-pending-total} admits more index than the 25%-of-heap budget (§5.3, R18).
      */
-    private static void checkHeapBudget(CesiumConfig config, ValidationContext context, List<Finding> findings) {
-        long perPartition = config.dispatch().maxPendingPerPartition();
-        int partitions = context.assignedPartitionEstimate();
-        long footprint =
-                saturatedMultiply(saturatedMultiply(partitions, perPartition), DispatchConfig.INDEX_BYTES_PER_ENTRY);
+    private static void checkPendingCap(CesiumConfig config, ValidationContext context, List<Finding> findings) {
         long budget = DispatchConfig.heapBudgetBytes(context.maxHeapBytes());
-
+        long cap = config.dispatch().resolveMaxPendingTotal(context.maxHeapBytes());
         findings.add(Finding.info(
-                "dispatch.max-pending-per-partition",
-                "worst-case index footprint " + footprint + " bytes (" + partitions + " partition(s) x "
-                        + perPartition + " entries x " + DispatchConfig.INDEX_BYTES_PER_ENTRY
-                        + " B/entry) vs heap budget " + budget + " bytes (25% of max heap "
+                "dispatch.max-pending-total",
+                "index cap " + cap + " pending entries; heap budget " + budget + " bytes (25% of max heap "
                         + context.maxHeapBytes() + " bytes)."));
-
-        Severity breachSeverity =
-                config.startupChecks().heapBudget() == CheckMode.WARN ? Severity.WARNING : Severity.ERROR;
-        if (footprint > budget) {
-            findings.add(new Finding(
-                    breachSeverity,
-                    "dispatch.max-pending-per-partition",
-                    "worst-case index footprint " + footprint + " bytes exceeds the heap budget " + budget
-                            + " bytes (25% of max heap " + context.maxHeapBytes()
-                            + " bytes); lower dispatch.max-pending-per-partition, assign fewer partitions per"
-                            + " instance, or raise -Xmx (design §5.3)."));
-        }
-
-        long maxPendingTotal = config.dispatch().maxPendingTotal();
-        if (maxPendingTotal != DispatchConfig.AUTO_MAX_PENDING_TOTAL) {
-            long capFootprint = saturatedMultiply(maxPendingTotal, DispatchConfig.INDEX_BYTES_PER_ENTRY);
-            if (capFootprint > budget) {
-                findings.add(new Finding(
-                        breachSeverity,
-                        "dispatch.max-pending-total",
-                        "the configured process-wide cap admits " + capFootprint + " bytes of index ("
-                                + maxPendingTotal + " entries x " + DispatchConfig.INDEX_BYTES_PER_ENTRY
-                                + " B/entry), exceeding the heap budget " + budget + " bytes (25% of max heap "
-                                + context.maxHeapBytes() + " bytes); lower the cap or raise -Xmx (design §5.3,"
-                                + " R18)."));
-            }
+        long capFootprint = saturatedMultiply(cap, DispatchConfig.INDEX_BYTES_PER_ENTRY);
+        if (capFootprint > budget) {
+            findings.add(Finding.warning(
+                    "dispatch.max-pending-total",
+                    "the configured cap admits " + capFootprint + " bytes of index (" + cap + " entries x "
+                            + DispatchConfig.INDEX_BYTES_PER_ENTRY + " B/entry), more than the heap budget " + budget
+                            + " bytes; lower the cap or raise -Xmx (design §5.3, R18)."));
         }
     }
 

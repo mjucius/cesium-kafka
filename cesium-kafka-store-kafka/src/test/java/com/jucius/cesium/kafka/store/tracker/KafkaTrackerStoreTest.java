@@ -618,16 +618,6 @@ class KafkaTrackerStoreTest {
                 () -> validateWith(Map.of(KafkaTrackerStore.STALE_REBUILD_FLOOR_KEY, "0")));
     }
 
-    @Test
-    void validateDoesNotRepeatTheEngineFootprintCheck() {
-        // The footprint check is the engine's alone (startup-checks.heap-budget, FAIL/WARN). A store
-        // that re-checked it would fail startup under WARN; 100k partitions on a 64 B budget passes.
-        KafkaTrackerStore store = new KafkaTrackerStore();
-        store.configure(new FixedIdentityStoreContext(100_000, Map.of(KafkaTrackerStore.HEAP_BUDGET_BYTES_KEY, "64")));
-        store.validate();
-        store.close();
-    }
-
     private static void validateWith(Map<String, String> properties) {
         KafkaTrackerStore store = new KafkaTrackerStore();
         store.configure(new FixedIdentityStoreContext(3, properties));
