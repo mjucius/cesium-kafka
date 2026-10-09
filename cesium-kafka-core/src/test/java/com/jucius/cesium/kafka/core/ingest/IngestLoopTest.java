@@ -52,6 +52,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.errors.TransactionAbortableException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
@@ -437,6 +438,22 @@ class IngestLoopTest {
         h.loop.runOnce();
         assertEquals(1, h.producer().commitCount());
         assertEquals(1, h.producer().history().size(), "exactly one committed copy after the retry");
+    }
+
+    @Test
+    void postAmbiguityTransactionAbortableIsADefinitiveAbort() {
+        // KIP-890 TRANSACTION_ABORTABLE after an ambiguous timeout is the broker affirming the
+        // transaction did NOT commit: abort and rewind, the same as the dispatch loop.
+        Harness h = new Harness();
+        h.startAssigned(P0);
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+        h.producer().commitExceptionQueue.add(new TimeoutException("ambiguous"));
+        h.producer().commitExceptionQueue.add(new TransactionAbortableException("broker: not committed"));
+        h.loop.runOnce();
+
+        assertTrue(h.events.contains("abort"), "definitively not committed: abort and rewind");
+        assertEquals(1, h.producers.size(), "no in-doubt producer replacement");
+        assertEquals(0L, h.consumer.position(P0), "rewound to the batch start for the retry");
     }
 
     @Test

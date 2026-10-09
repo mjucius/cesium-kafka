@@ -2,12 +2,7 @@ package com.jucius.cesium.kafka.core.loop;
 
 import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import io.micrometer.core.instrument.MeterRegistry;
-import java.time.Duration;
 import java.util.Map;
-import java.util.Objects;
-import java.util.function.Supplier;
-import org.apache.kafka.clients.producer.Producer;
-import org.apache.kafka.common.KafkaException;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 
@@ -59,43 +54,6 @@ public final class LoopSupport {
             backoff <<= 1;
         }
         return Math.min(backoff, maxMs);
-    }
-
-    /** Surfaces an asynchronously failed send (recorded by a send callback) before offsets are sent. */
-    public static void throwIfAsyncSendFailed(@Nullable Exception asyncSendError) {
-        if (asyncSendError == null) {
-            return;
-        }
-        if (asyncSendError instanceof RuntimeException runtime) {
-            throw runtime;
-        }
-        throw new KafkaException("transactional send failed asynchronously", asyncSendError);
-    }
-
-    /**
-     * Aborts the open transaction; a failed abort forces a producer replacement. Nothing committed
-     * (the commit call was never reached, or failed non-ambiguously), so a replacement producer
-     * whose {@code initTransactions()} aborts the dangling transaction is safe.
-     *
-     * @return {@code producer}, or its initialized replacement when the abort failed
-     */
-    public static Producer<byte[], byte[]> abortOrReplace(
-            Producer<byte[], byte[]> producer, Supplier<Producer<byte[], byte[]>> producerFactory, Logger log) {
-        try {
-            producer.abortTransaction();
-            return producer;
-        } catch (RuntimeException abortFailure) {
-            log.warn("abortTransaction failed; replacing producer", abortFailure);
-            try {
-                producer.close(Duration.ZERO);
-            } catch (RuntimeException closeFailure) {
-                log.warn("closing the failed producer also failed; continuing with replacement", closeFailure);
-            }
-            Producer<byte[], byte[]> replacement =
-                    Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
-            replacement.initTransactions();
-            return replacement;
-        }
     }
 
     /**

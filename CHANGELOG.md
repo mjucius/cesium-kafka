@@ -190,6 +190,12 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   broker-side metrics (ADR-0020).
 
 ### Changed
+- The ingest and dispatch loops share one implementation of the transactional producer mechanics
+  (`LoopTransactions`: send with failure capture, the bounded commit retry and in-doubt
+  classification, abort-or-replace, producer replacement) instead of two copies that had drifted.
+  One behavior change follows: a `TransactionAbortableException` (KIP-890) after an ambiguous ingest
+  commit now aborts and rewinds the batch, as dispatch already did, instead of running the heavier
+  in-doubt procedure. Both are exactly-once; the broker has affirmed the transaction did not commit.
 - Internal simplification, about −470 lines net with the fixes included. Highlights:
   - The observability server is started directly instead of through a single-provider `ServiceLoader`.
   - The three HTTP handlers are merged into one.
