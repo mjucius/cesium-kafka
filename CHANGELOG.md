@@ -52,8 +52,7 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   worker-0 form (`cesium.<app>.<role>.<instance>.0`) and the thread names stay
   `cesium-ingest-0`/`cesium-dispatch-0`, so a rolling upgrade still fences its predecessor.
 - `dispatch.coalesce` is removed (YAML and `CESIUM_DISPATCH__COALESCE`).
-  Setting it is now an unknown-key error (exit 78). It never had any effect. Internally,
-  `DispatchConfig` loses its `coalesce` component (10 to 9 components).
+  Setting it is now an unknown-key error (exit 78). It never had any effect.
 - Config: `store.type` and `store.properties` are removed; setting either is an unknown-key error
   (exit 78). The store's keys go with them: `cursor.sidecar-max-bytes` is now
   `dispatch.cursor.sidecar-max-bytes` (already the documented key), `heap-budget-bytes` is derived
@@ -99,7 +98,7 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `dispatch.max-pending-total` is process-wide; 1.x enforced it once per dispatch worker.
 - `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now
   includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
-- Logs: JSON lines from the loop threads (`cesium-ingest-N`, `cesium-dispatch-N`) now carry an
+- Logs: JSON lines from the loop threads (`cesium-ingest-0`, `cesium-dispatch-0`) now carry an
   `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main, `cesium-shutdown`
   and `cesium-admin` threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
   shape, and `txn` is the loop's transactional id, which includes the instance id.
@@ -123,7 +122,7 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - D14's runtime term is now the dispatch group's committed-cursor age against
   `delete.retention.ms / 2 + 1h`, and a violation degrades and alerts instead of refusing
   (ADR-0020). The oldest-pending term is dropped as subsumed.
-- Core (internal): `StartupChecks` gains `revalidationInterval` as a 7th component.
+- Core (internal): `StartupChecks` gains `revalidationInterval` and loses `heapBudget`.
 
 ### Added
 - Runtime re-validation (D23, ADR-0020): a `cesium-admin` thread re-runs the environment checks every
@@ -318,7 +317,7 @@ size an offsets-retention budget.
   deployment was at risk of silent offset expiry.
 
 ### Changed
-- The two-dispatch-loop `switch` in design §4.2 and [`docs/store-spi.md`](docs/store-spi.md) §2 is
+- The two-dispatch-loop `switch` in design §4.2 and `docs/store-spi.md` §2 (removed in 2.0.0) is
   now labelled as design intent rather than current code. Both showed
   `switch (store) { case TrackerBackedStore -> new TrackerDispatchLoop(...); case
   ExternalSchedulerStore -> new ExternalDispatchLoop(...); }`. Neither loop type exists: there is one

@@ -15,7 +15,7 @@ import org.openjdk.jol.info.GraphLayout;
  * fully populated, and ~5% completed-held entries pinning log slots and stale heap copies.
  *
  * <p>The 10M variant is tagged {@code soak} and disabled by default; run it with:
- * {@code CESIUM_SOAK=true ./gradlew :cesium-kafka-store-kafka:test --tests '*ShardFootprintTest*'}.
+ * {@code CESIUM_SOAK=true ./gradlew :cesium-kafka-core:test --tests '*ShardFootprintTest*'}.
  */
 class ShardFootprintTest {
 

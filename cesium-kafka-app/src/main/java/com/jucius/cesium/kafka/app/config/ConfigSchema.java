@@ -88,7 +88,7 @@ final class ConfigSchema {
     private static Node nodeFor(Type type) {
         if (type instanceof Class<?> cls) {
             // Scalar-bound records (InstanceId) bind from one YAML scalar, not a subtree: they
-            // must be leaves so CESIUM_INSTANCE_ID / -Dcesium.instance-id resolve (design §8, D10).
+            // must be leaves so CESIUM_INSTANCE_ID resolves (design §8, D10).
             return cls.isRecord() && !ConfigMapper.SCALAR_BOUND_RECORDS.contains(cls)
                     ? recordNode(cls)
                     : new LeafNode(false);

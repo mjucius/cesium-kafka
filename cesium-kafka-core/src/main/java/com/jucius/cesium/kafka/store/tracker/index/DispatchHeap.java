@@ -14,7 +14,7 @@ import java.util.BitSet;
  * <p><strong>Equal-deadline tie-break.</strong> {@code sourceOffset} is immutable for the life of
  * a slot and arrival-ordered within a partition (the arrival log's double sortedness, design
  * §5.2), so the tie-break makes the order total and deterministic over live slots and realizes
- * the {@code SchedulerStore.pollDue} contract "({@code dispatchAtMs}, then arrival)" — a
+ * the {@code TrackerBackedStore.pollDue} contract "({@code dispatchAtMs}, then arrival)" — a
  * same-millisecond burst drains in source-offset order (ascending offsets feed §7.1's one-seek
  * forward-scan fetch). Copies of the SAME slot still compare equal (same live values), so every
  * soundness argument below — lazy deletion, rule (b), the suspect rebuild — carries over

@@ -1,7 +1,7 @@
 package com.jucius.cesium.kafka.api.store;
 
 /**
- * Primitive-friendly view of one batch of due entries popped by {@link SchedulerStore#pollDue}.
+ * Primitive-friendly view of one batch of due entries popped by {@link TrackerBackedStore#pollDue}.
  *
  * <p>Implementations are expected to be backed by parallel {@code long[]} arrays — accessors take
  * an index {@code i} in {@code [0, size())} and return primitives, so iterating a 10,000-entry
@@ -9,7 +9,7 @@ package com.jucius.cesium.kafka.api.store;
  *
  * <p><strong>Lifecycle.</strong> A batch represents in-flight entries inside exactly one engine
  * transaction. The engine resolves every drained entry exactly once, via
- * {@link SchedulerStore#onBatchCommitted} or {@link SchedulerStore#onBatchAborted} — either with
+ * {@link TrackerBackedStore#onBatchCommitted} or {@link TrackerBackedStore#onBatchAborted} — either with
  * the full drained batch, or split into engine-synthesized sub-batch views (the settled subset
  * committed, the carry-over subset restored — §3.2/§7 truncate-and-carry-over) — except after an
  * <em>in-doubt</em> commit (invariant I9), when neither is called and the affected partitions are

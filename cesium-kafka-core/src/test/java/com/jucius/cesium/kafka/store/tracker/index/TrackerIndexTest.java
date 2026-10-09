@@ -129,7 +129,7 @@ class TrackerIndexTest {
         assertEquals(10_000, index.nextDeadlineMs());
         assertEquals(0, index.drainDue(5_000, 10).size());
 
-        index.penalizeSourcePartition(0, 0); // clear-by-past-deadline, per the SchedulerStore javadoc
+        index.penalizeSourcePartition(0, 0); // clear-by-past-deadline, per the TrackerBackedStore javadoc
         assertEquals(100, index.nextDeadlineMs());
         IndexDueBatch batch = index.drainDue(5_000, 10);
         assertEquals(1, batch.size());

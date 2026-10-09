@@ -40,7 +40,7 @@ final class ConfigMapper {
      * Record types bound from a single YAML scalar via the deserializers registered in
      * {@link #create()}. {@link ConfigSchema} treats these as value leaves rather than record
      * subtrees, so the env / system-property grammar can set them directly
-     * ({@code CESIUM_INSTANCE_ID=blue-1}, {@code -Dcesium.instance-id=blue-1}) — exactly the
+     * ({@code CESIUM_INSTANCE_ID=blue-1}) — exactly the
      * per-deployment-slot keys D10/D21 expect operators to inject. Keep this set in sync with the
      * {@code addDeserializer} registrations below.
      */

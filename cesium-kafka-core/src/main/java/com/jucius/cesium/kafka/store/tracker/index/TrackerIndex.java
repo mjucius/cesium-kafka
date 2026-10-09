@@ -19,7 +19,7 @@ import java.util.Arrays;
  * correct as shard deadlines move (every {@code applyAdd}/duplicate-ADD/complete/restore can
  * change a shard's minimum), and allocation-free. A partition's <em>effective</em> deadline is
  * {@code max(shard.nextDeadlineMs(), penaltyNotBefore)} — a penalized-but-due entry must never
- * drive a zero poll timeout (see {@code SchedulerStore.nextDeadlineMs}).
+ * drive a zero poll timeout (see {@code TrackerBackedStore.nextDeadlineMs}).
  *
  * <p><strong>Recovery gating (I4, design §4.2/§4.4 item 5).</strong> Each shard carries a
  * {@link #setDispatchEligible(int, boolean) dispatch-eligibility} flag consulted by both
@@ -33,7 +33,7 @@ import java.util.Arrays;
  * flag is deliberately separate from the penalty box, whose replace-on-stamp/clear-by-past
  * semantics are owned by the engine's §7 fetch-isolation logic.
  *
- * <p><strong>Penalty box semantics</strong> (mirrors {@code SchedulerStore.penalizeSourcePartition}):
+ * <p><strong>Penalty box semantics</strong> (mirrors {@code TrackerBackedStore.penalizeSourcePartition}):
  * a new stamp always replaces the previous one; the engine clears a penalty by stamping a past
  * deadline (e.g. {@code 0}) — an expired stamp has no effect because only {@code max(deadline,
  * notBefore)} is ever consulted. Penalties are keyed by partition, not by shard: they survive
@@ -186,7 +186,7 @@ public final class TrackerIndex {
      * order only when no penalty stamps are involved (an entry behind an expired-but-nonzero
      * stamp legally drains after younger entries of healthy partitions). Ties across shards
      * surface in unspecified order; within a partition, entries surface in
-     * ({@code dispatchAtMs}, then arrival) order per the {@code SchedulerStore.pollDue} contract.
+     * ({@code dispatchAtMs}, then arrival) order per the {@code TrackerBackedStore.pollDue} contract.
      *
      * @return the reused batch — valid until the next call; resolve via
      *     {@link #onBatchCommitted}/{@link #onBatchAborted} (or abandon after an I9 drop)
@@ -251,7 +251,7 @@ public final class TrackerIndex {
 
     /**
      * Stamps the penalty-box not-before deadline for a source partition (replace-on-stamp; clear
-     * by stamping a past deadline — matching the {@code SchedulerStore} javadoc).
+     * by stamping a past deadline — matching the {@code TrackerBackedStore} javadoc).
      */
     public void penalizeSourcePartition(int sourcePartition, long notBeforeMs) {
         penaltyNotBefore.put(sourcePartition, notBeforeMs);
