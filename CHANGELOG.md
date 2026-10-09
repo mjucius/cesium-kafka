@@ -137,6 +137,11 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   listed as "not yet emitted".
 
 ### Fixed
+- After an ambiguous (in-doubt) dispatch commit, the dropped-and-readopted partitions kept two
+  pieces of loop state that a revocation clears: `cesium_shard_paused{partition}` could stay at 1
+  after the shard recovered below the backpressure threshold, and the partition's penalty streak
+  stayed counted in `cesium_fetch_penalized_partitions`. The in-doubt path now resets shard state
+  through the same code as a revocation.
 - `dispatch.cursor.sidecar-max-bytes` had no effect: the store read its own
   `store.properties.cursor.sidecar-max-bytes` instead. It is now the store's only sidecar budget.
 - The documented startup check against broker `offset.metadata.max.bytes` did not exist. Startup

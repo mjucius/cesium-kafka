@@ -650,6 +650,29 @@ class DispatchLoopTest {
     }
 
     @Test
+    void ambiguousCommitResetsPauseAndPenaltyStateLikeARevocation() {
+        // The I9 shard drop must clear every piece of loop-side shard state a revocation clears;
+        // it used to leave the paused gauge at 1 and the penalty streak counted.
+        Harness h = new Harness(config(c -> c.maxPendingPerPartition = 10));
+        h.startActive(0);
+        h.fetcher.classify(0, 5, FetchOutcome.TRANSIENT);
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 5));
+        h.loop.runOnce();
+        assertEquals(1.0, h.gaugeValue("cesium.fetch.penalized.partitions"));
+        h.store.pendingCounts.put(0, 11L);
+        h.loop.runOnce();
+        assertEquals(1.0, h.gaugeValue("cesium.shard.paused", "partition", "0"));
+
+        h.producer().commitTransactionException = new TimeoutException("ambiguous forever");
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 6));
+        h.loop.runOnce();
+
+        assertTrue(h.events.contains("lost:[0]"), "the in-doubt procedure dropped the shard");
+        assertEquals(0.0, h.gaugeValue("cesium.shard.paused", "partition", "0"));
+        assertEquals(0.0, h.gaugeValue("cesium.fetch.penalized.partitions"));
+    }
+
+    @Test
     void transientProducerReplacementFailureRetriesInsteadOfDying() {
         Harness h = new Harness();
         h.startActive(0);

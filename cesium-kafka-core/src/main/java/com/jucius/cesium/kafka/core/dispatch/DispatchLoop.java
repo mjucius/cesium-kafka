@@ -1043,18 +1043,12 @@ public final class DispatchLoop implements Runnable {
             toPause.add(trackerPartition(partition));
         }
         if (!affected.isEmpty()) {
+            // Exactly a lost-then-reassigned partition: still owned in group B; state rebuilds from
+            // the durable log, so every piece of loop-side shard state resets as on revocation.
             store.onPartitionsLost(affected);
-            store.onPartitionsAssigned(affected); // re-adopt: still owned in group B; state rebuilds
-            for (int partition : affected) {
-                shardEpochs.put(partition, ++epochCounter);
-                pendingBarriers.remove(partition);
-                streaming.remove(partition);
-                pausedForBackpressure.remove(partition);
-                lastCursorActivityMs.remove(partition);
-                lastCommittedCursorOffset.remove(partition);
-                dropUnrelayableForPartition(partition); // re-recovery re-discovers from the durable log
-                needsCursor.add(partition);
-            }
+            dropLoopState(affected);
+            store.onPartitionsAssigned(affected);
+            adoptShards(affected);
             consumer.pause(toPause);
         }
         InDoubtRecovery recovery = new InDoubtRecovery();
@@ -1545,6 +1539,36 @@ public final class DispatchLoop implements Runnable {
         return new TopicPartition(config.trackerTopic(), partition);
     }
 
+    /**
+     * Marks shards ASSIGNED for this loop (O(1) each, §6): a fresh epoch tag, intake paused by the
+     * caller, and the cursor queued for resolution — re-assignment re-snapshots the barrier (I8).
+     */
+    private void adoptShards(Set<Integer> ids) {
+        for (int partition : ids) {
+            shardEpochs.put(partition, ++epochCounter);
+            pendingBarriers.remove(partition);
+            streaming.remove(partition);
+            needsCursor.add(partition);
+        }
+    }
+
+    /** Drops all loop-side shard state in O(1) per partition; barrier futures are discarded. */
+    private void dropLoopState(Set<Integer> ids) {
+        for (int partition : ids) {
+            shardEpochs.remove(partition);
+            needsCursor.remove(partition);
+            pendingBarriers.remove(partition);
+            streaming.remove(partition);
+            lastCursorActivityMs.remove(partition);
+            lastCommittedCursorOffset.remove(partition);
+            penaltyStreaks.remove(partition);
+            dropUnrelayableForPartition(partition);
+            if (pausedForBackpressure.remove(partition)) {
+                pausedGauge(partition).set(0);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ rebalance callbacks
 
     /**
@@ -1567,12 +1591,7 @@ public final class DispatchLoop implements Runnable {
             Set<Integer> ids = partitionIds(partitions);
             store.onPartitionsAssigned(ids);
             consumer.pause(partitions);
-            for (int partition : ids) {
-                shardEpochs.put(partition, ++epochCounter);
-                pendingBarriers.remove(partition); // re-assignment re-snapshots (I8)
-                streaming.remove(partition);
-                needsCursor.add(partition);
-            }
+            adoptShards(ids);
         }
 
         @Override
@@ -1602,23 +1621,6 @@ public final class DispatchLoop implements Runnable {
                 ids.add(tp.partition());
             }
             return ids;
-        }
-
-        /** Drops all loop-side shard state in O(1) per partition; barrier futures are discarded. */
-        private void dropLoopState(Set<Integer> ids) {
-            for (int partition : ids) {
-                shardEpochs.remove(partition);
-                needsCursor.remove(partition);
-                pendingBarriers.remove(partition);
-                streaming.remove(partition);
-                lastCursorActivityMs.remove(partition);
-                lastCommittedCursorOffset.remove(partition);
-                penaltyStreaks.remove(partition);
-                dropUnrelayableForPartition(partition);
-                if (pausedForBackpressure.remove(partition)) {
-                    pausedGauge(partition).set(0);
-                }
-            }
         }
     }
 
