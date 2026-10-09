@@ -92,8 +92,6 @@ class YamlBindingTest {
                   on-malformed-header: relay_immediate
                 headers:
                   stamp-provenance: false
-                ingest:
-                  workers: 2
                 dispatch:
                   batch:
                     max-entries: 5000
@@ -146,7 +144,6 @@ class YamlBindingTest {
         assertEquals(MalformedHeaderPolicy.RELAY_IMMEDIATE, config.delay().onMalformedHeader());
 
         assertFalse(config.headers().stampProvenance());
-        assertEquals(2, config.ingest().workers());
 
         DispatchConfig dispatch = config.dispatch();
         assertEquals(5000, dispatch.batch().maxEntries());

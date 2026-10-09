@@ -10,36 +10,24 @@ import com.jucius.cesium.kafka.core.config.TopicRef;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
-/** {@code dispatch.max-pending-total} is process-wide: each loop enforces {@code cap / workers}. */
+/** {@code dispatch.max-pending-total} resolves to the loop's cap: AUTO derives it from the heap. */
 class DispatchLoopConfigTest {
 
     private static final long HEAP = 4L * 1024 * 1024 * 1024;
     private static final long AUTO_CAP = DispatchConfig.heapBudgetBytes(HEAP) / DispatchConfig.INDEX_BYTES_PER_ENTRY;
 
     @Test
-    void autoCapIsSplitAcrossWorkers() {
-        assertEquals(AUTO_CAP / 4, perLoopCap(4, DispatchConfig.AUTO_MAX_PENDING_TOTAL));
+    void autoCapDerivesFromTheHeap() {
+        assertEquals(AUTO_CAP, loopCap(DispatchConfig.AUTO_MAX_PENDING_TOTAL));
     }
 
     @Test
-    void explicitCapIsSplitAcrossWorkers() {
-        assertEquals(2, perLoopCap(4, 10L));
+    void explicitCapIsUsedAsIs() {
+        assertEquals(10, loopCap(10L));
     }
 
-    @Test
-    void perLoopCapIsAtLeastOne() {
-        assertEquals(1, perLoopCap(4, 3L));
-    }
-
-    @Test
-    void singleWorkerKeepsTheWholeCap() {
-        assertEquals(10, perLoopCap(1, 10L));
-        assertEquals(AUTO_CAP, perLoopCap(1, DispatchConfig.AUTO_MAX_PENDING_TOTAL));
-    }
-
-    private static long perLoopCap(int workers, long maxPendingTotal) {
-        DispatchConfig dispatch =
-                new DispatchConfig(workers, null, null, null, null, null, null, null, maxPendingTotal);
+    private static long loopCap(long maxPendingTotal) {
+        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, maxPendingTotal);
         CesiumConfig config = new CesiumConfig(
                 "orders-delay",
                 new InstanceId("slot-0"),
@@ -51,7 +39,6 @@ class DispatchLoopConfigTest {
                         null,
                         Optional.of(new TopicRef("orders-dlq")),
                         null),
-                null,
                 null,
                 null,
                 dispatch,

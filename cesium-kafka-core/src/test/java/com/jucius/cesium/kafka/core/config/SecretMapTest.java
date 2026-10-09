@@ -73,8 +73,8 @@ class SecretMapTest {
     void plantedSecretNeverAppearsInCesiumConfigToString() {
         KafkaConfig kafka = new KafkaConfig(
                 null, Map.of("ssl.keystore.password", SECRET), null, null, null, null, null, null, null);
-        CesiumConfig config = new CesiumConfig(
-                "app", new InstanceId("slot-0"), null, kafka, null, null, null, null, null, null, null);
+        CesiumConfig config =
+                new CesiumConfig("app", new InstanceId("slot-0"), null, kafka, null, null, null, null, null, null);
         assertFalse(config.toString().contains(SECRET), config.toString());
     }
 }

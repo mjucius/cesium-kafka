@@ -11,8 +11,6 @@ import java.util.Objects;
  * <p>Boxed numeric component types are deliberate: binding layers pass {@code null} for absent
  * keys and the compact constructor materializes the documented default.
  *
- * @param workers number of dispatch threads, each owning a tracker consumer, dispatch producer,
- *     seek consumer, and disjoint shards (§6); default 1, useful N ≤ tracker partitions fleet-wide
  * @param batch per-transaction batch bounds (D8)
  * @param drain time-sliced drain settings (§6, R2)
  * @param idleCursorInterval how long a partition may go untouched before its cursor advances in a
@@ -22,13 +20,11 @@ import java.util.Objects;
  * @param onUnfetchablePayload policy for provably-expired payloads (§7.4); default DLQ
  * @param maxPendingPerPartition pause/resume backpressure threshold for ACTIVE shards (§5.3);
  *     default 2,000,000
- * @param maxPendingTotal process-wide pending cap, split evenly across {@code workers} (each loop
- *     enforces {@code cap / workers}, at least 1); {@link #AUTO_MAX_PENDING_TOTAL} (the default) derives
+ * @param maxPendingTotal process-wide pending cap; {@link #AUTO_MAX_PENDING_TOTAL} (the default) derives
  *     it from the heap budget — ≈ 25% of {@code Xmx} ÷ {@value #INDEX_BYTES_PER_ENTRY} B/entry
  *     (§5.3, R18; 64 B/entry per the post-approval fastutil revision)
  */
 public record DispatchConfig(
-        Integer workers,
         Batch batch,
         Drain drain,
         Duration idleCursorInterval,
@@ -50,15 +46,11 @@ public record DispatchConfig(
     /** The index heap budget is 25% of max heap — i.e. max heap divided by this (§5.3). */
     public static final long HEAP_BUDGET_DIVISOR = 4L;
 
-    /** Default worker count (§8 defaults table). */
-    public static final int DEFAULT_WORKERS = 1;
-
     /** Default backpressure threshold per partition (§8 defaults table). */
     public static final long DEFAULT_MAX_PENDING_PER_PARTITION = 2_000_000L;
 
     /** Materializes the §8 defaults for absent components. */
     public DispatchConfig {
-        workers = Objects.requireNonNullElse(workers, DEFAULT_WORKERS);
         batch = Objects.requireNonNullElse(batch, Batch.defaults());
         drain = Objects.requireNonNullElse(drain, Drain.defaults());
         idleCursorInterval = Objects.requireNonNullElse(idleCursorInterval, Duration.ofSeconds(30));
@@ -72,7 +64,6 @@ public record DispatchConfig(
     /** Returns a {@code DispatchConfig} populated entirely from the §8 defaults table. */
     public static DispatchConfig defaults() {
         return new DispatchConfig(
-                DEFAULT_WORKERS,
                 Batch.defaults(),
                 Drain.defaults(),
                 Duration.ofSeconds(30),

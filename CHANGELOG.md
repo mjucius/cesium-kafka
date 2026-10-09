@@ -15,7 +15,8 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 ### Upgrading from 1.x
 1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce` and the whole `store` block
    (`store.type`, `store.properties`). Move a `store.properties.cursor.sidecar-max-bytes` value to
-   `dispatch.cursor.sidecar-max-bytes`. Set `dispatch.workers` to 1 and add instances instead.
+   `dispatch.cursor.sidecar-max-bytes`. Remove `ingest.workers` and `dispatch.workers` (the whole
+   `ingest` block); scale either loop by adding instances.
 2. Roll instances one at a time. The tracker wire format, committed-cursor offset metadata and
    worker-0 `group.instance.id`s are unchanged, so 1.1.5 and 2.0.0 instances can run side by side.
 3. Expect runtime re-validation (every `startup-checks.revalidation-interval`, default PT5M) to set
@@ -42,11 +43,14 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - SPI: the headers-blind `TrackerBackedStore.onTrackerRecord(int, long, byte[], byte[])` overload is
   removed. The engine always called the headers variant, and the overload applied reason-less
   tombstones that the engine's path counts and skips (R12).
-- `dispatch.workers` must be 1; any other value fails validation (exit 78). Every dispatch loop in
-  a process shared one single-threaded store, and `drainDue` did not filter by owned partition, so
-  a second worker raced the first. Scale dispatch by running more instances.
-- Ingest and dispatch workers with ordinal 1 or higher join as `<group>.<instance>.<n>` (see Fixed).
-  Worker 0 keeps its 1.x `group.instance.id`.
+- `ingest.workers` and `dispatch.workers` are removed (exit 78 if set): each instance runs at most
+  one ingest loop and one dispatch loop, selected by `roles`; scale either by adding instances.
+  1.x let `dispatch.workers` exceed 1, but every dispatch loop in a process shared one
+  single-threaded store and `drainDue` did not filter by owned partition, so a second worker raced
+  the first; extra ingest workers shared one `group.instance.id`, so the broker fenced all but one,
+  and they overwrote each other's degraded and heartbeat gauges. The transactional ids keep their 1.x
+  worker-0 form (`cesium.<app>.<role>.<instance>.0`) and the thread names stay
+  `cesium-ingest-0`/`cesium-dispatch-0`, so a rolling upgrade still fences its predecessor.
 - `dispatch.coalesce` is removed (YAML and `CESIUM_DISPATCH__COALESCE`).
   Setting it is now an unknown-key error (exit 78). It never had any effect. Internally,
   `DispatchConfig` loses its `coalesce` component (10 to 9 components).
@@ -85,14 +89,14 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `route.tracker.acl-principal`. Create the ACL yourself; a literal ACL can exist before the topic.
   `startup-checks.tracker-acl` still verifies it at startup and on every re-validation round, and
   the cesium principal no longer needs `Cluster:ALTER`. A failed grant can no longer fail startup.
+- The startup log line `cesium engine started` loses its `ingestWorkers`/`dispatchWorkers` fields.
 - `ingest.max-batch` is removed (exit 78 if set). It only set the ingest consumer's
   `max.poll.records`, which keeps its tuned default of 2000; override it through
   `kafka.ingest-consumer.properties`.
 - `/health/ready` loop detail loses its `assigned` field, and readiness no longer has an
   "assignment" term. The engine only ever set it alongside the heartbeat, so it never changed the
   verdict.
-- `dispatch.max-pending-total` is now process-wide. Each dispatch worker enforces
-  cap ÷ `dispatch.workers` (minimum 1); with `dispatch.workers` fixed at 1 that is the whole cap.
+- `dispatch.max-pending-total` is process-wide; 1.x enforced it once per dispatch worker.
 - `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now
   includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
 - Logs: JSON lines from the loop threads (`cesium-ingest-N`, `cesium-dispatch-N`) now carry an
@@ -145,10 +149,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   dispatch thread. Scrapes read the store's unsynchronized per-partition map and the index directly,
   so a scrape during a rebalance could report a wrong value or NaN. The gauges now read volatile
   per-partition snapshots; `cesium_pending_entries` is refreshed every dispatch-loop iteration.
-- With `ingest.workers` or `dispatch.workers` above 1 and static membership on (any `instance-id`
-  other than `random`), sibling worker consumers shared one `group.instance.id`, so the broker
-  fenced all but one. Worker `n > 0` now joins as `<group>.<instance>.<n>`; worker 0 keeps its
-  existing id, so single-worker deployments rejoin as the same static member on upgrade.
 - Docs claimed a `past_due` relay reason that was never emitted anywhere; reworded.
 - Docs and javadoc described startup admin calls as running on a `cesium-admin` thread; they run on
   the thread that calls `start()` (`cesium-admin` now exists only for re-validation, see Added). They
@@ -159,9 +159,6 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - The perf ITs ignored their `-Dperf.*` knobs: Gradle set them only in its own JVM, not in the forked
   test JVM, so every run used the CI defaults. The `cesium-kafka-it` build now forwards every
   `-Dperf.*` and `-Dsoak.*` property to its test tasks as a configuration-cache input.
-- `dispatch.max-pending-total` was enforced separately by every dispatch worker, so the effective
-  process cap was `dispatch.workers` times the configured (or AUTO heap-derived) value. Each worker
-  now gets an equal share.
 - `cesium_dlq_records_total` counted only ingest-side DLQ writes. The dispatch loop's
   `payload-expired` loss notices and its `unrelayable` DLQ copies are now counted too, once per
   committed transaction (an aborted attempt counts nothing).

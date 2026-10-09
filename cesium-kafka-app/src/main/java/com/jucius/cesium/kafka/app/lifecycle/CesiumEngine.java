@@ -71,10 +71,10 @@ import org.slf4j.MDC;
  *       parity, retention, identity) and fail-fasts on errors;
  *   <li>builds the {@link KafkaTrackerStore} from the captured cluster and topic ids, the sidecar
  *       budget (clamped to the broker's {@code offset.metadata.max.bytes}) and the heap budget;
- *   <li>per {@linkplain Role role}, spawns {@code ingest.workers} {@link IngestLoop}s and
- *       {@code dispatch.workers} (validated to 1) {@link DispatchLoop}s — each owning its own Kafka clients (distinct
- *       transactional-id worker ordinals), the shared store, registry, {@link RelayRecordFactory},
- *       and (for dispatch) a {@link KafkaSeekFetcher} — on named non-daemon threads.
+ *   <li>per {@linkplain Role role}, spawns one {@link IngestLoop} and/or one {@link DispatchLoop} —
+ *       each owning its own Kafka clients, sharing the store, registry and
+ *       {@link RelayRecordFactory}, and (for dispatch) a {@link KafkaSeekFetcher} — on named
+ *       non-daemon threads.
  * </ol>
  *
  * <p><strong>Lifecycle.</strong> {@link #start()} is non-blocking; {@link #awaitDone()} blocks until
@@ -251,12 +251,7 @@ public final class CesiumEngine implements AutoCloseable {
             health.markStartupComplete();
             startHealthSampler();
             startRevalidation(clusterAdmin, identity, trackerTopicId);
-            log.info(
-                    "cesium engine started: applicationId={} roles={} ingestWorkers={} dispatchWorkers={}",
-                    config.applicationId(),
-                    config.roles(),
-                    ingestHandles.size(),
-                    dispatchHandles.size());
+            log.info("cesium engine started: applicationId={} roles={}", config.applicationId(), config.roles());
         } catch (EngineStartupException e) {
             stop(shutdownTimeout); // unwind any partially-built clients/store
             throw e;
@@ -318,27 +313,6 @@ public final class CesiumEngine implements AutoCloseable {
     // ------------------------------------------------------------------ pure wiring decisions (tested)
 
     /**
-     * The loops this configuration runs: {@code ingest.workers} ingest specs then
-     * {@code dispatch.workers} dispatch specs, per the selected {@linkplain CesiumConfig#roles()
-     * roles}. Each worker gets a distinct ordinal driving its transactional id (§3.3, D10). Pure —
-     * unit-tested without a broker.
-     */
-    static List<LoopSpec> planLoops(CesiumConfig config) {
-        List<LoopSpec> specs = new ArrayList<>();
-        if (config.roles().contains(Role.INGEST)) {
-            for (int ordinal = 0; ordinal < config.ingest().workers(); ordinal++) {
-                specs.add(new LoopSpec(Role.INGEST, ordinal));
-            }
-        }
-        if (config.roles().contains(Role.DISPATCH)) {
-            for (int ordinal = 0; ordinal < config.dispatch().workers(); ordinal++) {
-                specs.add(new LoopSpec(Role.DISPATCH, ordinal));
-            }
-        }
-        return specs;
-    }
-
-    /**
      * The cursor sidecar budget the store gets: {@code dispatch.cursor.sidecar-max-bytes} clamped to
      * the broker's {@code offset.metadata.max.bytes} (§3.5; startup validation already warned
      * about the clamp), and never below the store's minimum. Pure — unit-tested without a broker.
@@ -351,9 +325,6 @@ public final class CesiumEngine implements AutoCloseable {
         // it fail either way, so the floor only keeps the identity header encodable.
         return Math.max(DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES, budget);
     }
-
-    /** One planned loop worker: its role and its transactional-id ordinal. */
-    record LoopSpec(Role role, int workerOrdinal) {}
 
     // ------------------------------------------------------------------ startup helpers
 
@@ -382,54 +353,41 @@ public final class CesiumEngine implements AutoCloseable {
             TrackerBackedStore sharedStore,
             IdentityBlob identity,
             int partitionCount) {
-        for (LoopSpec spec : planLoops(config)) {
-            switch (spec.role()) {
-                case INGEST -> {
-                    IngestLoop loop = new IngestLoop(
-                            IngestLoopConfig.from(config, partitionCount),
-                            clients.newIngestConsumer(spec.workerOrdinal()),
-                            () -> clients.newIngestProducer(spec.workerOrdinal()),
-                            sharedStore,
-                            new DelayHeaderCodec(config.delay().max()),
-                            new IngestPolicyEngine(
-                                    config.delay().max(),
-                                    config.delay().onMalformedHeader(),
-                                    config.delay().onOverMax()),
-                            relay,
-                            identity,
+        if (config.roles().contains(Role.INGEST)) {
+            IngestLoop loop = new IngestLoop(
+                    IngestLoopConfig.from(config, partitionCount),
+                    clients.newIngestConsumer(),
+                    clients::newIngestProducer,
+                    sharedStore,
+                    new DelayHeaderCodec(config.delay().max()),
+                    new IngestPolicyEngine(
+                            config.delay().max(),
+                            config.delay().onMalformedHeader(),
+                            config.delay().onOverMax()),
+                    relay,
+                    identity,
+                    registry,
+                    clock);
+            ingestHandles.add(spawn(Role.INGEST, clients.ingestTransactionalId(), loop, loop::stop, loop::isDegraded));
+        }
+        if (config.roles().contains(Role.DISPATCH)) {
+            DispatchLoop loop = new DispatchLoop(
+                    DispatchLoopConfig.from(config, maxHeapBytes),
+                    clients.newTrackerConsumer(),
+                    clients::newDispatchProducer,
+                    sharedStore,
+                    new KafkaSeekFetcher(
+                            config.route().source().topic(),
+                            config.dispatch().fetch().partitionTimeFloor(),
+                            clients.newSeekConsumer(),
                             registry,
-                            clock);
-                    ingestHandles.add(spawn(
-                            spec,
-                            clients.ingestTransactionalId(spec.workerOrdinal()),
-                            loop,
-                            loop::stop,
-                            loop::isDegraded));
-                }
-                case DISPATCH -> {
-                    DispatchLoop loop = new DispatchLoop(
-                            DispatchLoopConfig.from(config, maxHeapBytes),
-                            clients.newTrackerConsumer(spec.workerOrdinal()),
-                            () -> clients.newDispatchProducer(spec.workerOrdinal()),
-                            sharedStore,
-                            new KafkaSeekFetcher(
-                                    config.route().source().topic(),
-                                    config.dispatch().fetch().partitionTimeFloor(),
-                                    clients.newSeekConsumer(),
-                                    registry,
-                                    clock),
-                            relay,
-                            dispatchAdmin,
-                            registry,
-                            clock);
-                    dispatchHandles.add(spawn(
-                            spec,
-                            clients.dispatchTransactionalId(spec.workerOrdinal()),
-                            loop,
-                            loop::stop,
-                            loop::isDegraded));
-                }
-            }
+                            clock),
+                    relay,
+                    dispatchAdmin,
+                    registry,
+                    clock);
+            dispatchHandles.add(
+                    spawn(Role.DISPATCH, clients.dispatchTransactionalId(), loop, loop::stop, loop::isDegraded));
         }
     }
 
@@ -470,10 +428,10 @@ public final class CesiumEngine implements AutoCloseable {
      * {@code loop} and {@code txn} (design §9), set once here so every log line from the loop, and the
      * fatal log in the {@code finally}, is tagged without any per-record MDC work.
      */
-    private LoopHandle spawn(
-            LoopSpec spec, String txn, Runnable body, Runnable stopper, BooleanSupplier degradedProbe) {
-        String loopName = spec.role().name().toLowerCase(Locale.ROOT);
-        String name = "cesium-" + loopName + "-" + spec.workerOrdinal();
+    private LoopHandle spawn(Role role, String txn, Runnable body, Runnable stopper, BooleanSupplier degradedProbe) {
+        String loopName = role.name().toLowerCase(Locale.ROOT);
+        // The -0 suffix keeps 1.x thread names (and the log lines that carry them) unchanged.
+        String name = "cesium-" + loopName + "-0";
         String applicationId = config.applicationId();
         Thread thread = new Thread(
                 () -> {
@@ -486,12 +444,12 @@ public final class CesiumEngine implements AutoCloseable {
                     } catch (Throwable t) {
                         failure = t;
                     } finally {
-                        onLoopTerminated(spec.role(), failure);
+                        onLoopTerminated(role, failure);
                     }
                 },
                 name);
         thread.setDaemon(false);
-        LoopHandle handle = new LoopHandle(spec.role(), thread, stopper, degradedProbe);
+        LoopHandle handle = new LoopHandle(role, thread, stopper, degradedProbe);
         thread.start();
         return handle;
     }

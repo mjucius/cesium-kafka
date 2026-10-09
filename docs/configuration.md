@@ -113,7 +113,7 @@ says why. This removes the PoC's `Properties(defaults)` config drift.
 |---|---|---|
 | `group.id` | derived from `application-id` | An override would detach the ingest/dispatch groups from their transactional offset commits. |
 | `group.instance.id` | derived from `instance-id` (D21) | Static-membership ids drive the zero-partition-movement rolling-restart recipe; an override breaks it. |
-| `transactional.id` | `cesium.<application-id>.<role>.<instance-id>.<ordinal>` (D10) | Ad-hoc ids break immediate fencing of a predecessor's dangling transaction. |
+| `transactional.id` | `cesium.<application-id>.<role>.<instance-id>.0` (D10; the `.0` is kept from 1.x) | Ad-hoc ids break immediate fencing of a predecessor's dangling transaction. |
 | `enable.auto.commit` | `false` | Every offset commit travels inside a Kafka transaction via `sendOffsetsToTransaction`; auto-commit would advance offsets outside the transaction and break exactly-once. |
 | `isolation.level` | `read_committed` (every cesium consumer, D17) | KIP-447 takeover ordering depends on the `require_stable` offset-fetch flag, which the consumer sets only under `read_committed`; `read_uncommitted` would also relay records from aborted upstream transactions. |
 | `auto.offset.reset` | `none` (both consumer groups, D18) | After committed-offset expiry (KIP-211), an automatic reset silently loses (latest) or mass-duplicates (earliest); resets must be explicit operator decisions (see the offset-reset runbook in [operations.md](operations.md)). |
@@ -156,7 +156,7 @@ the violation is visible and the pipeline stays alive (D3). DLQ policies require
 
 > **`FAIL` is unsafe whenever the source topic has untrusted producers.** One crafted record (a
 > non-decimal `cesium-delay-ms`, an over-`delay.max` value, a wrong-length binary value) fatally
-> stops the ingest loop, tears down all ingest/dispatch workers in the process, and exits non-zero.
+> stops the ingest loop, tears down both loops in the process, and exits non-zero.
 > Because the aborted batch never advanced the source offset and `auto.offset.reset=none` is locked,
 > the next start re-polls the same poison record and re-fails. The result is a pipeline-wide outage
 > that survives restarts until an operator seeks the group past the offset or changes the policy.
@@ -182,11 +182,11 @@ and `store.properties` are unknown keys (exit 78; ADR-0021). Its sidecar budget 
 
 ---
 
-## 8. Ingest loop (`ingest.*`)
+## 8. Ingest loop
 
-| Key | Default | Meaning |
-|---|---|---|
-| `ingest.workers` | `1` | Ingest threads, each owning its own source consumer + transactional producer. Each worker after the first gets its own `group.instance.id` (`.<ordinal>` suffix). |
+There are no `ingest.*` keys: each instance runs at most one ingest loop and one dispatch loop
+(selected by `roles`), and you scale either half by adding instances. `ingest.workers`,
+`dispatch.workers` and `ingest.max-batch` were removed in 2.0.0 (exit 78 if set; ADR-0021).
 
 ---
 
@@ -194,7 +194,6 @@ and `store.properties` are unknown keys (exit 78; ADR-0021). Its sidecar budget 
 
 | Key | Default | Meaning |
 |---|---|---|
-| `dispatch.workers` | `1` | Must be `1`: the dispatch thread owns the tracker consumer, dispatch producer, seek consumer and the in-memory index, which is single-threaded. Any other value fails validation (exit 78). Scale dispatch by running more instances, up to the tracker partition count fleet-wide. |
 | `dispatch.batch.max-entries` | `10000` | Maximum entries per dispatch transaction (D8). |
 | `dispatch.batch.max-bytes` | `33554432` (32 MiB) | Decompressed payload byte budget per dispatch transaction, enforced in the fetch pass with truncate-and-carry-over (R8). |
 | `dispatch.drain.max-slice` | `PT1M` | Maximum back-to-back transaction time before the loop returns to a real `poll()`. Always validated `≤ max.poll.interval.ms / 3`, using the tracker consumer's effective `max.poll.interval.ms` (overlay, then `kafka.properties`, else the client default 300000 ms), so membership survives due-storms (§6). |
@@ -206,7 +205,7 @@ and `store.properties` are unknown keys (exit 78; ADR-0021). Its sidecar budget 
 | `dispatch.fetch.penalty.backoff-max` | `PT10S` | Penalty-box backoff ceiling under consecutive failures. |
 | `dispatch.on-unfetchable-payload` | `DLQ` | Policy for provably-expired payloads: `DLQ` (loss notice + COMPLETE, atomic), `DROP` (COMPLETE only + metric), or `FAIL`. In all non-FAIL modes the COMPLETE is always written, so a poison entry never replays forever. |
 | `dispatch.max-pending-per-partition` | `2000000` | Backpressure high-water mark per ACTIVE shard; pauses the tracker consumer above it, resumes below half. A RECOVERING shard is never paused. Backlog accumulates durably in the tracker topic. |
-| `dispatch.max-pending-total` | `0` (AUTO) | Process-wide pending cap across every ACTIVE shard this instance owns (there is one dispatch worker per process). `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap whose `cap × 64 B` exceeds the heap budget is reported as a warning at load. This cap, together with the store's recovery ceiling, is what bounds the index; there is no separate startup footprint check (ADR-0021). |
+| `dispatch.max-pending-total` | `0` (AUTO) | Process-wide pending cap across every ACTIVE shard this instance owns. `0` (or unset) derives it from the heap budget: ≈ 25% of `Xmx` ÷ 64 B/entry. There is no writable `AUTO` literal; `0` is the sentinel. A non-zero cap whose `cap × 64 B` exceeds the heap budget is reported as a warning at load. This cap, together with the store's recovery ceiling, is what bounds the index; there is no separate startup footprint check (ADR-0021). |
 
 ---
 

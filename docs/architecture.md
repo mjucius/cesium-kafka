@@ -267,8 +267,8 @@ life.
 
 | Thread | Owns | Loop |
 |---|---|---|
-| `cesium-ingest-{n}` (default 1) | source consumer (group A) + ingest transactional producer | Poll → one transaction per non-empty batch (immediate relays + ADDs + DLQ + offsets). Stateless; degradation path is pause-all + heartbeat-poll + capped backoff. |
-| `cesium-dispatch-{n}` (default 1; useful up to the tracker partition count, fleet-wide) | tracker consumer (group B) + dispatch transactional producer + seek consumer + the shards it owns | The event loop below. Each dispatch worker gets its own clients and disjoint shards. |
+| `cesium-ingest-0` (at most one) | source consumer (group A) + ingest transactional producer | Poll → one transaction per non-empty batch (immediate relays + ADDs + DLQ + offsets). Stateless; degradation path is pause-all + heartbeat-poll + capped backoff. |
+| `cesium-dispatch-0` (at most one; scale by instances, up to the tracker partition count fleet-wide) | tracker consumer (group B) + dispatch transactional producer + seek consumer + the shards it owns | The event loop below. |
 | (start() thread), `cesium-admin` | one shared `AdminClient`, created at startup: startup validation (partition parity, retention, compaction, topic-ID identity, offsets-retention) on the starting thread; then the re-validation round every `startup-checks.revalidation-interval` on `cesium-admin` (ADR-0020); the dispatch loops' barrier `listOffsets` futures and committed-offset probes run on the dispatch threads | Low duty. |
 | `cesium-obs-{n}`, `cesium-health` | metrics/health HTTP server workers; the 1 s health sampler (gauge sampling, heartbeat freshness) | n/a |
 

@@ -189,8 +189,8 @@ class AppQuickstartIT extends KafkaIT {
 
         // Each loop thread tags its lines with applicationId/loop/txn, set once when the thread starts.
         KafkaClientFactory clients = new KafkaClientFactory(config);
-        assertLoopMdc("ingest loop started", "ingest", clients.ingestTransactionalId(0));
-        assertLoopMdc("dispatch loop started", "dispatch", clients.dispatchTransactionalId(0));
+        assertLoopMdc("ingest loop started", "ingest", clients.ingestTransactionalId());
+        assertLoopMdc("dispatch loop started", "dispatch", clients.dispatchTransactionalId());
 
         HttpResponse<String> info = get("/info");
         assertEquals(200, info.statusCode());

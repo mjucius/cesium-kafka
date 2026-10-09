@@ -56,26 +56,24 @@ class CesiumConfigValidatorTest {
 
     @Test
     void everyViolationIsCollectedIntoOneReport() {
-        // Missing applicationId + missing instanceId + missing topics + bad workers + DLQ policies
+        // Missing applicationId + missing instanceId + missing topics + DLQ policies
         // without a DLQ topic: all must surface in a single pass — never fail-on-first (§8).
-        CesiumConfig broken =
-                new CesiumConfig(null, null, null, null, null, null, null, new IngestConfig(0), null, null, null);
+        CesiumConfig broken = new CesiumConfig(null, null, null, null, null, null, null, null, null, null);
         ValidationReport report = validate(broken);
         List<String> paths = errorPaths(report);
         assertTrue(paths.contains("application-id"), report::render);
         assertTrue(paths.contains("instance-id"), report::render);
         assertTrue(paths.contains("route.source.topic"), report::render);
         assertTrue(paths.contains("route.destination.topic"), report::render);
-        assertTrue(paths.contains("ingest.workers"), report::render);
         assertTrue(paths.contains("delay.on-malformed-header"), report::render);
         assertTrue(paths.contains("delay.on-over-max"), report::render);
         assertTrue(paths.contains("dispatch.on-unfetchable-payload"), report::render);
-        assertTrue(paths.size() >= 8, report::render);
+        assertTrue(paths.size() >= 7, report::render);
     }
 
     @Test
     void validateOrThrowCarriesTheFullReport() {
-        CesiumConfig broken = new CesiumConfig(null, null, null, null, null, null, null, null, null, null, null);
+        CesiumConfig broken = new CesiumConfig(null, null, null, null, null, null, null, null, null, null);
         ConfigValidationException exception = assertThrows(
                 ConfigValidationException.class, () -> validator.validateOrThrow(broken, TestConfigs.ROOMY_CONTEXT));
         assertTrue(exception.report().hasErrors());
@@ -84,31 +82,9 @@ class CesiumConfigValidatorTest {
     }
 
     @Test
-    void moreThanOneDispatchWorkerIsRejected() {
-        DispatchConfig dispatch = new DispatchConfig(2, null, null, null, null, null, null, null, null);
-        CesiumConfig config = new CesiumConfig(
-                "app",
-                new InstanceId("slot-0"),
-                null,
-                null,
-                TestConfigs.route(),
-                null,
-                null,
-                null,
-                dispatch,
-                null,
-                null);
-        Finding finding = validate(config).errors().stream()
-                .filter(f -> f.path().equals("dispatch.workers"))
-                .findFirst()
-                .orElseThrow();
-        assertTrue(finding.message().contains("more instances"), finding.message());
-    }
-
-    @Test
     void instanceIdErrorMentionsTheRandomOptIn() {
         CesiumConfig broken = new CesiumConfig(
-                "app", new InstanceId(""), null, null, TestConfigs.route(), null, null, null, null, null, null);
+                "app", new InstanceId(""), null, null, TestConfigs.route(), null, null, null, null, null);
         ValidationReport report = validate(broken);
         Finding finding = report.errors().stream()
                 .filter(f -> f.path().equals("instance-id"))
@@ -120,17 +96,7 @@ class CesiumConfigValidatorTest {
     @Test
     void emptyRolesAreRejected() {
         CesiumConfig broken = new CesiumConfig(
-                "app",
-                new InstanceId("slot-0"),
-                Set.of(),
-                null,
-                TestConfigs.route(),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null);
+                "app", new InstanceId("slot-0"), Set.of(), null, TestConfigs.route(), null, null, null, null, null);
         assertTrue(errorPaths(validate(broken)).contains("roles"));
     }
 
@@ -218,9 +184,9 @@ class CesiumConfigValidatorTest {
                     Optional.empty(),
                     new RelayConfig(null, null, onUnrelayable));
             DelayConfig delay = new DelayConfig(null, onOverMax, onMalformed);
-            DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, onUnfetchable, null, null);
+            DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, onUnfetchable, null, null);
             return new CesiumConfig(
-                    "app", new InstanceId("slot-0"), null, null, route, delay, null, null, dispatch, null, null);
+                    "app", new InstanceId("slot-0"), null, null, route, delay, null, dispatch, null, null);
         }
 
         @Test
@@ -279,8 +245,8 @@ class CesiumConfigValidatorTest {
         void blankDlqTopicIsRejected() {
             RouteConfig route = new RouteConfig(
                     new TopicRef("orders"), new TopicRef("orders-out"), null, Optional.of(new TopicRef("  ")), null);
-            CesiumConfig config = new CesiumConfig(
-                    "app", new InstanceId("slot-0"), null, null, route, null, null, null, null, null, null);
+            CesiumConfig config =
+                    new CesiumConfig("app", new InstanceId("slot-0"), null, null, route, null, null, null, null, null);
             assertTrue(errorPaths(validator.validate(config, TestConfigs.ROOMY_CONTEXT))
                     .contains("route.dlq.topic"));
         }
@@ -300,7 +266,6 @@ class CesiumConfigValidatorTest {
                     null,
                     TestConfigs.route(),
                     delay,
-                    null,
                     null,
                     null,
                     null,
@@ -380,7 +345,7 @@ class CesiumConfigValidatorTest {
             // §8 states the cap unconditionally: PT5M (300000 ms) > 300000 / 3 even when the
             // operator never touched max.poll.interval.ms — refuse at startup, not at runtime.
             DispatchConfig dispatch = new DispatchConfig(
-                    null, null, new DispatchConfig.Drain(Duration.ofMinutes(5)), null, null, null, null, null, null);
+                    null, new DispatchConfig.Drain(Duration.ofMinutes(5)), null, null, null, null, null, null);
             ValidationReport report = validate(TestConfigs.withDispatch(dispatch));
             Finding finding = report.errors().stream()
                     .filter(f -> f.path().equals("dispatch.drain.max-slice"))
@@ -431,7 +396,7 @@ class CesiumConfigValidatorTest {
     @Test
     void sidecarBytesMustBePositive() {
         DispatchConfig dispatch =
-                new DispatchConfig(null, null, null, null, new DispatchConfig.Cursor(0), null, null, null, null);
+                new DispatchConfig(null, null, null, new DispatchConfig.Cursor(0), null, null, null, null);
         ValidationReport report = validate(TestConfigs.withDispatch(dispatch));
         assertTrue(errorPaths(report).contains("dispatch.cursor.sidecar-max-bytes"), report::render);
     }
@@ -440,7 +405,7 @@ class CesiumConfigValidatorTest {
     void penaltyBackoffMaxMustNotBeBelowBackoff() {
         DispatchConfig.Fetch fetch = new DispatchConfig.Fetch(
                 null, null, new DispatchConfig.Fetch.Penalty(Duration.ofSeconds(5), Duration.ofSeconds(1)));
-        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, fetch, null, null, null);
+        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, fetch, null, null, null);
         ValidationReport report = validate(TestConfigs.withDispatch(dispatch));
         assertTrue(errorPaths(report).contains("dispatch.fetch.penalty.backoff-max"), report::render);
     }
@@ -454,7 +419,6 @@ class CesiumConfigValidatorTest {
                 null,
                 TestConfigs.route(),
                 new DelayConfig(Duration.ofDays(-1), OverMaxPolicy.FAIL, MalformedHeaderPolicy.FAIL),
-                null,
                 null,
                 null,
                 null,
@@ -499,7 +463,6 @@ class CesiumConfigValidatorTest {
                 null,
                 null,
                 TestConfigs.route(),
-                null,
                 null,
                 null,
                 null,

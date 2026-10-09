@@ -239,8 +239,8 @@ Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the
 | Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: identity check, first-run probe, the dispatch group's cursor-age read); **`CREATE` bootstrap only:** `Cluster` CREATE + ALTER. The checks run at startup and every `startup-checks.revalidation-interval`; re-validation needs no extra grant (`listOffsets` by timestamp needs only Topic DESCRIBE) | per cell |
 
 > **The `TransactionalId` and `Group` ACLs are required (M3).** cesium's transactional ids
-> (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
-> (`cesium.<app>.<role>.<instance>`, plus `.<ordinal>` for workers after the first) are deterministic. The `application-id` seed is easy to infer
+> (`cesium.<app>.<role>.<instance>.0`) and `group.instance.id`s
+> (`cesium.<app>.<role>.<instance>`) are deterministic. The `application-id` seed is easy to infer
 > (it names the consumer groups and the default tracker topic) and appears on the unauthenticated
 > `/info` when `observability.detailed-info: true`. Without a `TransactionalId` ACL scoping
 > `cesium.<app>.*` to the cesium principal, any authenticated co-tenant can open a producer with
@@ -286,8 +286,8 @@ clusters where cesium's own credentials are already suspect).
 ### Untrusted-producer ingress: avoid the `FAIL` delay policies (L5)
 
 `delay.on-malformed-header: FAIL` and `delay.on-over-max: FAIL` (both non-default) are unsafe when
-the source topic has untrusted producers. One crafted record fatally stops ingest, tears down all
-workers, and exits non-zero. The offset never advances and `auto.offset.reset=none` is locked, so
+the source topic has untrusted producers. One crafted record fatally stops ingest, tears down both
+loops, and exits non-zero. The offset never advances and `auto.offset.reset=none` is locked, so
 restart re-polls and re-fails: a pipeline-wide outage that survives restarts. Keep the `DLQ` defaults
 (or `RELAY_IMMEDIATE`) for multi-tenant ingress. See [configuration.md §5](configuration.md#5-delay-protocol-delay).
 
@@ -367,11 +367,9 @@ independently on separate fleets:
 - **Dispatch fleet** (`roles: [dispatch]`): scales with dispatch + re-fetch throughput and owns the
   in-memory index shards. Parallelism is useful up to the tracker partition count fleet-wide.
 
-Per-instance ingest parallelism is `ingest.workers` (default 1). Dispatch runs one worker per
-process (`dispatch.workers` must be 1), so scale dispatch by adding instances. Throughput is
-ultimately bounded by transaction-commit latency per worker and, for dispatch, by seek-fetch I/O
-([§12](#12-broker-iops-budgeting-for-seek-fetch)). Prefer scaling out with more instances (more partition
-owners) over raising `ingest.workers`.
+Each instance runs at most one ingest loop and one dispatch loop, so scale either half by adding
+instances (more partition owners). Throughput is ultimately bounded by transaction-commit latency
+per loop and, for dispatch, by seek-fetch I/O ([§12](#12-broker-iops-budgeting-for-seek-fetch)).
 
 > **Do not autoscale the dispatch fleet on CPU.** See the HPA warning in [§10](#10-kubernetes-rollout-recipe).
 

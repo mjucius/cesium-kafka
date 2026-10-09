@@ -86,11 +86,8 @@ delay:
 headers:
   stamp-provenance: true            # stamp cesium-relayed-at / cesium-source-* on relay
 
-ingest:
-  workers: 1        # ingest threads, each owning a source consumer + txn producer
-
+# Each instance runs at most one ingest and one dispatch loop (see roles); scale by adding instances.
 dispatch:
-  workers: 1        # must be 1 (scale dispatch by instances); owns tracker consumer + producer + seek consumer
   batch:
     max-entries: 10000
     max-bytes: 33554432        # 32 MiB decompressed payload budget per dispatch txn

@@ -24,7 +24,7 @@ class SeekConsumerPropertiesTest {
         RouteConfig route =
                 new RouteConfig(new TopicRef("orders"), new TopicRef("orders-out"), null, Optional.empty(), null);
         return new CesiumConfig(
-                "orders-delay", new InstanceId("slot-0"), null, kafka, route, null, null, null, null, null, null);
+                "orders-delay", new InstanceId("slot-0"), null, kafka, route, null, null, null, null, null);
     }
 
     @Test

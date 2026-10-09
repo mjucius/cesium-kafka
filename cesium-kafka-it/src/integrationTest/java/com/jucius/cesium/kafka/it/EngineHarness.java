@@ -174,8 +174,8 @@ final class EngineHarness implements AutoCloseable {
             IngestLoop loop = new IngestLoop(
                     // Tracker partitions == source partitions once the R-7 parity check passed.
                     IngestLoopConfig.from(config, result.sourcePartitions().orElseThrow()),
-                    clients.newIngestConsumer(0),
-                    () -> clients.newIngestProducer(0),
+                    clients.newIngestConsumer(),
+                    clients::newIngestProducer,
                     store,
                     new DelayHeaderCodec(config.delay().max()),
                     new IngestPolicyEngine(
@@ -191,8 +191,8 @@ final class EngineHarness implements AutoCloseable {
         if (config.roles().contains(Role.DISPATCH)) {
             DispatchLoop loop = new DispatchLoop(
                     dispatchLoopConfig(),
-                    clients.newTrackerConsumer(0),
-                    () -> clients.newDispatchProducer(0),
+                    clients.newTrackerConsumer(),
+                    clients::newDispatchProducer,
                     store,
                     seekFetcherDecorator.apply(new KafkaSeekFetcher(
                             sourceTopic(),
@@ -755,11 +755,9 @@ final class EngineHarness implements AutoCloseable {
                             null),
                     new DelayConfig(delayMax, onOverMax, onMalformedHeader),
                     null,
-                    null,
                     // Small per-partition pending cap; IT loads never approach it (overridable for the
                     // §5.3 backpressure scenario via Builder.maxPendingPerPartition).
                     new DispatchConfig(
-                            null,
                             batchMaxBytes == null ? null : new DispatchConfig.Batch(null, batchMaxBytes),
                             drainMaxSlice == null ? null : new DispatchConfig.Drain(drainMaxSlice),
                             idleCursorInterval,

@@ -34,7 +34,7 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
  *   <li>static membership: {@code group.instance.id = cesium.<applicationId>.ingest.<instanceId>},
  *       omitted when the operator opted into {@code instance-id: random} (static membership is
  *       pointless for a non-stable id)
- *   <li>transactional id: {@code cesium.<applicationId>.ingest.<instanceId>.<workerOrdinal>} —
+ *   <li>transactional id: {@code cesium.<applicationId>.ingest.<instanceId>.0} —
  *       stable across restarts so {@code initTransactions()} immediately fences a predecessor's
  *       dangling transaction instead of waiting out {@code transaction.timeout.ms}; under the
  *       {@code random} opt-in the instance component is a per-process random token (unique among
@@ -63,6 +63,12 @@ public final class KafkaClientFactory {
 
     /** Ingest consumer {@code max.poll.records}: records per poll, so per ingest transaction (§8). */
     static final String INGEST_MAX_POLL_RECORDS = "2000";
+
+    /**
+     * Suffix of both transactional ids: the 1.x worker-0 ordinal, kept so 2.x ids stay byte-identical
+     * to the ids a 1.x instance used (one loop per role since 2.0).
+     */
+    private static final String TRANSACTIONAL_ID_SUFFIX = ".0";
 
     /** Tuned tracker-consumer default: {@code max.poll.records} (§8 — tracker records are ≤ 26 B). */
     static final String TRACKER_MAX_POLL_RECORDS = "10000";
@@ -108,20 +114,20 @@ public final class KafkaClientFactory {
     }
 
     /**
-     * Group A's static membership id for one worker, or empty under the {@code instance-id: random}
-     * opt-in (design D21: static membership is default on, keyed by the stable deployment-slot id).
-     * See {@link #groupInstanceId(String, int)} for the per-worker suffix.
+     * Group A's static membership id, or empty under the {@code instance-id: random} opt-in (design
+     * D21: static membership is default on, keyed by the stable deployment-slot id).
      */
-    public Optional<String> ingestGroupInstanceId(int workerOrdinal) {
-        return groupInstanceId(ingestGroupId(), workerOrdinal);
+    public Optional<String> ingestGroupInstanceId() {
+        return groupInstanceId(ingestGroupId());
     }
 
     /**
-     * The ingest transactional id for one worker:
-     * {@code cesium.<applicationId>.ingest.<instanceId>.<workerOrdinal>} (design §3.3, D10).
+     * The ingest transactional id: {@code cesium.<applicationId>.ingest.<instanceId>.0} (design
+     * §3.3, D10). The trailing {@code .0} is the 1.x worker ordinal, kept so a rolling upgrade's new
+     * producer fences its predecessor's dangling transaction on {@code initTransactions()}.
      */
-    public String ingestTransactionalId(int workerOrdinal) {
-        return ingestGroupId() + "." + effectiveInstanceId + "." + workerOrdinal;
+    public String ingestTransactionalId() {
+        return ingestGroupId() + "." + effectiveInstanceId + TRANSACTIONAL_ID_SUFFIX;
     }
 
     /**
@@ -131,7 +137,7 @@ public final class KafkaClientFactory {
      * {@code isolation.level=read_committed} (D17), {@code auto.offset.reset=none} (D18), the
      * derived group id and static-membership id.
      */
-    public Properties ingestConsumerProperties(int workerOrdinal) {
+    public Properties ingestConsumerProperties() {
         Properties props = new Properties();
         // 1. Tuned defaults (§8) — overridable by operator maps.
         props.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, INGEST_MAX_POLL_RECORDS);
@@ -145,7 +151,7 @@ public final class KafkaClientFactory {
         // protocol while config.kafka().groupProtocol() reports otherwise.
         applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
-        lockGroup(props, ingestGroupId(), ingestGroupInstanceId(workerOrdinal));
+        lockGroup(props, ingestGroupId(), ingestGroupInstanceId());
         lockConsumer(props);
         return props;
     }
@@ -156,8 +162,8 @@ public final class KafkaClientFactory {
      * {@code kafka.transactions.timeout}, then the locked keys — the derived transactional id,
      * idempotence on, byte-array serialization.
      */
-    public Properties ingestProducerProperties(int workerOrdinal) {
-        return producerProperties(config.kafka().ingestProducer().properties(), ingestTransactionalId(workerOrdinal));
+    public Properties ingestProducerProperties() {
+        return producerProperties(config.kafka().ingestProducer().properties(), ingestTransactionalId());
     }
 
     /**
@@ -180,19 +186,19 @@ public final class KafkaClientFactory {
      * (design D21 — static membership is default on so rolling restarts move zero tracker
      * partitions and replay happens on the returning member).
      */
-    public Optional<String> dispatchGroupInstanceId(int workerOrdinal) {
-        return groupInstanceId(dispatchGroupId(), workerOrdinal);
+    public Optional<String> dispatchGroupInstanceId() {
+        return groupInstanceId(dispatchGroupId());
     }
 
     /**
-     * The dispatch transactional id for one worker:
-     * {@code cesium.<applicationId>.dispatch.<instanceId>.<workerOrdinal>} (design §3.3, D10) —
-     * stable across restarts so {@code initTransactions()} fences a predecessor's dangling
-     * transaction immediately instead of stalling the tracker LSO (and with it every replay
-     * barrier) for {@code transaction.timeout.ms}.
+     * The dispatch transactional id: {@code cesium.<applicationId>.dispatch.<instanceId>.0} (design
+     * §3.3, D10) — stable across restarts so {@code initTransactions()} fences a predecessor's
+     * dangling transaction immediately instead of stalling the tracker LSO (and with it every
+     * replay barrier) for {@code transaction.timeout.ms}. The {@code .0} is the 1.x worker ordinal,
+     * kept byte-identical for rolling upgrades.
      */
-    public String dispatchTransactionalId(int workerOrdinal) {
-        return dispatchGroupId() + "." + effectiveInstanceId + "." + workerOrdinal;
+    public String dispatchTransactionalId() {
+        return dispatchGroupId() + "." + effectiveInstanceId + TRANSACTIONAL_ID_SUFFIX;
     }
 
     /**
@@ -205,7 +211,7 @@ public final class KafkaClientFactory {
      * operator decisions; group B's only sanctioned reset is the provable first-run seek, §3.6),
      * the derived group id and static-membership id (D21).
      */
-    public Properties trackerConsumerProperties(int workerOrdinal) {
+    public Properties trackerConsumerProperties() {
         Properties props = new Properties();
         // 1. Tuned defaults (§8) — overridable by operator maps.
         props.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, TRACKER_MAX_POLL_RECORDS);
@@ -221,7 +227,7 @@ public final class KafkaClientFactory {
         // stripped — they are broker-side under KIP-848 and the client rejects them otherwise.
         applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
-        lockGroup(props, dispatchGroupId(), dispatchGroupInstanceId(workerOrdinal));
+        lockGroup(props, dispatchGroupId(), dispatchGroupInstanceId());
         lockConsumer(props);
         return props;
     }
@@ -232,9 +238,8 @@ public final class KafkaClientFactory {
      * dispatch-producer overlay, the typed {@code kafka.transactions.timeout}, then the locked
      * keys — the derived dispatch transactional id, idempotence on, byte-array serialization.
      */
-    public Properties dispatchProducerProperties(int workerOrdinal) {
-        return producerProperties(
-                config.kafka().dispatchProducer().properties(), dispatchTransactionalId(workerOrdinal));
+    public Properties dispatchProducerProperties() {
+        return producerProperties(config.kafka().dispatchProducer().properties(), dispatchTransactionalId());
     }
 
     /**
@@ -276,23 +281,23 @@ public final class KafkaClientFactory {
     }
 
     /** Creates the group-A source consumer. The caller's thread owns it for its whole life (§6). */
-    public Consumer<byte[], byte[]> newIngestConsumer(int workerOrdinal) {
-        return new KafkaConsumer<>(ingestConsumerProperties(workerOrdinal));
+    public Consumer<byte[], byte[]> newIngestConsumer() {
+        return new KafkaConsumer<>(ingestConsumerProperties());
     }
 
     /** Creates one ingest worker's transactional producer. The caller's thread owns it (§6). */
-    public Producer<byte[], byte[]> newIngestProducer(int workerOrdinal) {
-        return new KafkaProducer<>(ingestProducerProperties(workerOrdinal));
+    public Producer<byte[], byte[]> newIngestProducer() {
+        return new KafkaProducer<>(ingestProducerProperties());
     }
 
     /** Creates the group-B tracker consumer. The owning dispatch thread holds it for life (§6). */
-    public Consumer<byte[], byte[]> newTrackerConsumer(int workerOrdinal) {
-        return new KafkaConsumer<>(trackerConsumerProperties(workerOrdinal));
+    public Consumer<byte[], byte[]> newTrackerConsumer() {
+        return new KafkaConsumer<>(trackerConsumerProperties());
     }
 
     /** Creates one dispatch worker's transactional producer. The caller's thread owns it (§6). */
-    public Producer<byte[], byte[]> newDispatchProducer(int workerOrdinal) {
-        return new KafkaProducer<>(dispatchProducerProperties(workerOrdinal));
+    public Producer<byte[], byte[]> newDispatchProducer() {
+        return new KafkaProducer<>(dispatchProducerProperties());
     }
 
     /** Creates the group-less payload seek consumer (§7). The owning dispatch thread holds it (§6). */
@@ -352,18 +357,14 @@ public final class KafkaClientFactory {
     }
 
     /**
-     * The static-membership id for one worker's consumer in {@code groupId}, or empty under the
-     * {@code instance-id: random} opt-in. Sibling workers join the same group, so each needs its own
-     * id or the broker fences one of them: worker 0 keeps {@code <groupId>.<instanceId>} (the id a
-     * single-worker deployment has always used, so upgrades rejoin as the same member) and worker
-     * {@code n > 0} gets {@code <groupId>.<instanceId>.<n>}.
+     * The static-membership id {@code <groupId>.<instanceId>} for this instance's consumer in
+     * {@code groupId}, or empty under the {@code instance-id: random} opt-in.
      */
-    private Optional<String> groupInstanceId(String groupId, int workerOrdinal) {
+    private Optional<String> groupInstanceId(String groupId) {
         if (config.instanceId().isRandom()) {
             return Optional.empty();
         }
-        String base = groupId + "." + effectiveInstanceId;
-        return Optional.of(workerOrdinal == 0 ? base : base + "." + workerOrdinal);
+        return Optional.of(groupId + "." + effectiveInstanceId);
     }
 
     /** Locks the group id and static-membership id (removed under the random opt-in, D21). */

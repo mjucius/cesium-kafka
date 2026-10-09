@@ -91,8 +91,8 @@ ADR-0020). Re-validation needs no grant beyond these: `listOffsets` by timestamp
 DESCRIBE, and it never creates topics or applies ACLs.
 
 > **The `TransactionalId` ACLs (rows 4 and 5) are required.** cesium's transactional ids
-> (`cesium.<app>.<role>.<instance>.<ordinal>`) and `group.instance.id`s
-> (`cesium.<app>.<role>.<instance>`, plus `.<ordinal>` for workers after the first) are fully deterministic. The `application-id` seed is easy to
+> (`cesium.<app>.<role>.<instance>.0`) and `group.instance.id`s
+> (`cesium.<app>.<role>.<instance>`) are fully deterministic. The `application-id` seed is easy to
 > infer (it names the consumer groups and the default tracker topic) and is disclosed on the
 > unauthenticated `/info` endpoint when `observability.detailed-info: true`. **Without a
 > `TransactionalId` ACL scoping `cesium.<app>.*` to the cesium principal, any authenticated co-tenant
@@ -210,8 +210,8 @@ and [§13](docs/operations.md#13-metrics-and-alerting).
 
 `delay.on-malformed-header: FAIL` and `delay.on-over-max: FAIL` (both non-default) are **unsafe
 whenever the source topic has untrusted producers.** One crafted record (a non-decimal
-`cesium-delay-ms`, an over-`delay.max` value, ...) fatally stops the ingest loop, tears down all
-workers, and exits non-zero. Because the offset never advances and `auto.offset.reset=none` is locked,
+`cesium-delay-ms`, an over-`delay.max` value, ...) fatally stops the ingest loop, tears down both
+loops, and exits non-zero. Because the offset never advances and `auto.offset.reset=none` is locked,
 restart re-polls the same record and fails again: a pipeline-wide outage that survives restarts. Keep
 the defaults (`DLQ`), or use `RELAY_IMMEDIATE`, for any multi-tenant ingress.
 See [docs/configuration.md §5](docs/configuration.md#5-delay-protocol-delay) and

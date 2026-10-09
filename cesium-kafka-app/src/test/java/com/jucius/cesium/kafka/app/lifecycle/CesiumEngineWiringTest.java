@@ -7,11 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.app.health.ShardRecovery;
-import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine.LoopSpec;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.DispatchConfig;
-import com.jucius.cesium.kafka.core.config.IngestConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
@@ -39,48 +37,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * The config-to-engine wiring decisions that do not need a broker (design §6, §10): role selection
- * and worker counts ({@link CesiumEngine#planLoops}), the sidecar budget, and the health and
- * re-validation plumbing.
+ * The config-to-engine wiring decisions that do not need a broker (design §6, §10): the sidecar
+ * budget, and the health and re-validation plumbing.
  */
 class CesiumEngineWiringTest {
-
-    // ------------------------------------------------------------------ role selection / workers
-
-    @Test
-    void ingestOnlyRoleStartsOnlyIngestWorkers() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.INGEST), 3, 5));
-        assertEquals(
-                List.of(new LoopSpec(Role.INGEST, 0), new LoopSpec(Role.INGEST, 1), new LoopSpec(Role.INGEST, 2)),
-                specs,
-                "ingest-only roles must start exactly ingest.workers ingest loops and no dispatch loop");
-    }
-
-    @Test
-    void dispatchOnlyRoleStartsOnlyDispatchWorkers() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.DISPATCH), 4, 2));
-        assertEquals(List.of(new LoopSpec(Role.DISPATCH, 0), new LoopSpec(Role.DISPATCH, 1)), specs);
-    }
-
-    @Test
-    void bothRolesStartIngestThenDispatchWithDistinctOrdinals() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.INGEST, Role.DISPATCH), 2, 2));
-        assertEquals(
-                List.of(
-                        new LoopSpec(Role.INGEST, 0),
-                        new LoopSpec(Role.INGEST, 1),
-                        new LoopSpec(Role.DISPATCH, 0),
-                        new LoopSpec(Role.DISPATCH, 1)),
-                specs);
-    }
-
-    @Test
-    void defaultWorkerCountsAreOneEach() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.INGEST, Role.DISPATCH), 1, 1));
-        assertEquals(2, specs.size());
-        assertEquals(1, specs.stream().filter(s -> s.role() == Role.INGEST).count());
-        assertEquals(1, specs.stream().filter(s -> s.role() == Role.DISPATCH).count());
-    }
 
     @Nested
     class RecoverySnapshot {
@@ -138,8 +98,8 @@ class CesiumEngineWiringTest {
     class Revalidation {
 
         private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        private final CesiumEngine engine = new CesiumEngine(
-                config(Set.of(Role.DISPATCH), 1, 1), registry, Clock.systemUTC(), Duration.ofSeconds(1));
+        private final CesiumEngine engine =
+                new CesiumEngine(config(Set.of(Role.DISPATCH)), registry, Clock.systemUTC(), Duration.ofSeconds(1));
 
         private StartupValidator.Revalidation errors(String... paths) {
             List<ValidationReport.Finding> findings = new ArrayList<>();
@@ -253,8 +213,8 @@ class CesiumEngineWiringTest {
         }
     }
 
-    /** A structurally valid config (route + DLQ + defaults) with the given roles and worker counts. */
-    private static CesiumConfig config(Set<Role> roles, int ingestWorkers, int dispatchWorkers) {
+    /** A structurally valid config (route + DLQ + defaults) with the given roles. */
+    private static CesiumConfig config(Set<Role> roles) {
         return new CesiumConfig(
                 "orders",
                 InstanceId.of("slot-0"),
@@ -263,8 +223,7 @@ class CesiumEngineWiringTest {
                 new RouteConfig(new TopicRef("src"), new TopicRef("dst"), null, Optional.of(new TopicRef("dlq")), null),
                 null,
                 null,
-                new IngestConfig(ingestWorkers),
-                new DispatchConfig(dispatchWorkers, null, null, null, null, null, null, null, null),
+                null,
                 null,
                 null);
     }

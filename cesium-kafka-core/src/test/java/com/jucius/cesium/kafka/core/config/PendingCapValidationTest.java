@@ -34,7 +34,7 @@ class PendingCapValidationTest {
     @Test
     void explicitCapOverTheBudgetWarnsButPasses() {
         // 10,000,000 entries x 64 B = 640 MB > 256 MiB budget.
-        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, 1_000_000L, 10_000_000L);
+        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, 1_000_000L, 10_000_000L);
         ValidationReport report =
                 validator.validate(TestConfigs.withDispatch(dispatch), new ValidationContext(ONE_GIB));
         assertFalse(report.hasErrors(), report::render);
@@ -44,7 +44,7 @@ class PendingCapValidationTest {
     @Test
     void absurdCapsSaturateInsteadOfOverflowing() {
         DispatchConfig dispatch =
-                new DispatchConfig(null, null, null, null, null, null, null, 1_000_000L, Long.MAX_VALUE / 2);
+                new DispatchConfig(null, null, null, null, null, null, 1_000_000L, Long.MAX_VALUE / 2);
         ValidationReport report =
                 validator.validate(TestConfigs.withDispatch(dispatch), new ValidationContext(ONE_GIB));
         assertTrue(

@@ -24,7 +24,6 @@ import java.util.Set;
  * @param route the served route
  * @param delay delay limits and violation policies (§2.3)
  * @param headers control-header protocol options (§2.3, §2.4)
- * @param ingest ingest-loop settings
  * @param dispatch dispatch-loop settings
  * @param observability metrics/health endpoint settings (§9)
  * @param startupChecks startup-check strictness (§7.6)
@@ -37,7 +36,6 @@ public record CesiumConfig(
         RouteConfig route,
         DelayConfig delay,
         HeadersConfig headers,
-        IngestConfig ingest,
         DispatchConfig dispatch,
         ObservabilityConfig observability,
         StartupChecks startupChecks) {
@@ -54,7 +52,6 @@ public record CesiumConfig(
         route = Objects.requireNonNullElse(route, RouteConfig.defaults());
         delay = Objects.requireNonNullElse(delay, DelayConfig.defaults());
         headers = Objects.requireNonNullElse(headers, HeadersConfig.defaults());
-        ingest = Objects.requireNonNullElse(ingest, IngestConfig.defaults());
         dispatch = Objects.requireNonNullElse(dispatch, DispatchConfig.defaults());
         observability = Objects.requireNonNullElse(observability, ObservabilityConfig.defaults());
         startupChecks = Objects.requireNonNullElse(startupChecks, StartupChecks.defaults());
