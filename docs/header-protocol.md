@@ -7,7 +7,7 @@ on relayed and dead-lettered records, and the dead-letter (DLQ) record contract.
 authoritative, versioned description of the wire surface a producer or downstream consumer
 integrates against. The design rationale is in [docs/design.md](design.md) `§2.3`–`§2.4`; the
 header names and grammar are pinned in code by `com.jucius.cesium.kafka.api.headers.CesiumHeaders`
-(published in `cesium-kafka-api`).
+(in `cesium-kafka-core`).
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted
 as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).

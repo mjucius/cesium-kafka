@@ -11,7 +11,6 @@ testing {
             dependencies {
                 implementation(project(":cesium-kafka-app"))
                 implementation(project(":cesium-kafka-core"))
-                implementation(project(":cesium-kafka-store-kafka"))
                 implementation(libs.kafka.clients)
                 implementation(libs.micrometer.core)
                 // The app integration test wires the production ObservabilityServer over a real

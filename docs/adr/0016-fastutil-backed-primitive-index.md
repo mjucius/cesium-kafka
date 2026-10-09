@@ -1,6 +1,7 @@
 # ADR-0016: fastutil-backed primitive index
 
 - **Status:** Accepted
+- **Amended by:** [ADR-0021](0021-store-spi-folded-into-core.md) (the index now lives in `cesium-kafka-core`)
 - **Date:** 2026-06-06
 - **Design reference:** [`../design.md`](../design.md) §5 (post-approval revision 1)
 

@@ -23,10 +23,7 @@ dependencyResolutionManagement {
 rootProject.name = "cesium-kafka"
 
 include(
-    "cesium-kafka-api",
     "cesium-kafka-core",
-    "cesium-kafka-store-kafka",
-    "cesium-kafka-store-testkit",
     "cesium-kafka-app",
     "cesium-kafka-it",
 )

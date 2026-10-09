@@ -199,7 +199,7 @@ and [`design.md` §3.5](design.md#35-the-committed-cursor-v2-position-watermark-
 
 ## 6. The in-memory index
 
-Module `cesium-kafka-store-kafka`, package `com.jucius.cesium.kafka.store.tracker.index`. Each tracker
+Module `cesium-kafka-core`, package `com.jucius.cesium.kafka.store.tracker.index`. Each tracker
 partition's state is owned by exactly one dispatch thread and touched by no other thread. Even on a
 combined ingest+dispatch instance, ADDs reach the index only via the tracker topic and the dispatch
 thread's own `poll()`. Zero locks, zero CAS on the hot path.
@@ -327,13 +327,10 @@ in-doubt commit → never restore the batch (I9); retry exhaustion → park-and-
 
 | Module | Contents | Surface |
 |---|---|---|
-| `cesium-kafka-api` | The store interfaces, header constants, `ScheduledRef`/`DueBatch`/`TrackerCursor`/`ConfigView` | Internal (ADR-0021) |
-| `cesium-kafka-core` | The engine: ingest & dispatch loops, transaction manager + error taxonomy, cursor/barrier orchestration, policies, header codec, penalty box, admin validation, shard state machine | Internal, no compatibility promise (ADR-0019) |
-| `cesium-kafka-store-kafka` | `KafkaTrackerStore`: tracker wire format, sidecar codec, the fastutil packed index (§6) | Internal (ADR-0021) |
-| `cesium-kafka-store-testkit` | The store contract kit + fixtures (`TrackerBackedStoreContract`, `FakeStoreContext`, `TrackerEventScript`) | Test support |
+| `cesium-kafka-core` | The engine: ingest & dispatch loops, transaction manager + error taxonomy, cursor/barrier orchestration, policies, header codec, penalty box, admin validation, shard state machine. Also `KafkaTrackerStore` (`com.jucius.cesium.kafka.store.tracker`: tracker wire format, sidecar codec, the fastutil packed index of §6), the header constants (`com.jucius.cesium.kafka.api.headers`), and, in its tests, the store contract kit (`TrackerBackedStoreContract`) | Internal, no compatibility promise (ADR-0019, ADR-0021) |
 | `cesium-kafka-app` | `main()`, YAML config, lifecycle, health/metrics HTTP, distribution archives, Dockerfile | The supported product surface |
 | `cesium-kafka-it` | Testcontainers integration suite (in-JVM multi-instance kill and fencing tests, EOS/LSO/barrier-ordering scenarios, soak, macro perf) | Tests |
-| `cesium-kafka-benchmarks` | JMH micro-benchmarks (the JOL footprint test, `ShardFootprintTest`, lives in `cesium-kafka-store-kafka`) | Tests |
+| `cesium-kafka-benchmarks` | JMH micro-benchmarks (the JOL footprint test, `ShardFootprintTest`, lives in `cesium-kafka-core`) | Tests |
 
 The runnable app is the supported product; every Java module is internal (ADR-0021).
 

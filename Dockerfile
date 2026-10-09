@@ -39,10 +39,7 @@ COPY gradle/ gradle/
 COPY build-logic/ build-logic/
 
 # Then the module sources (.dockerignore keeps build/.gradle/.git out of context).
-COPY cesium-kafka-api/ cesium-kafka-api/
 COPY cesium-kafka-core/ cesium-kafka-core/
-COPY cesium-kafka-store-kafka/ cesium-kafka-store-kafka/
-COPY cesium-kafka-store-testkit/ cesium-kafka-store-testkit/
 COPY cesium-kafka-app/ cesium-kafka-app/
 COPY cesium-kafka-it/ cesium-kafka-it/
 

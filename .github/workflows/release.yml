@@ -4,12 +4,12 @@ name: Release
 #
 # REPO-ONLY PUBLISHING. This workflow builds, verifies, and publishes a GitHub Release with
 # the application distribution archives (distTar/distZip) ONLY. There is deliberately:
-#   * NO Maven Central / Sonatype publish of api/core/store-kafka/testkit, and
+#   * NO Maven Central / Sonatype publish of cesium-kafka-core, and
 #   * NO container image push to GHCR or any other registry.
 # Both are OUT OF SCOPE by owner decision (the runnable APP is the supported product; the
 # engine programmatic API stays internal; ADR-0019). See docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md.
 # How they WOULD be added later, if/when the decision is revisited:
-#   * Maven Central: add the `maven-publish` + `signing` plugins to api/core/store-kafka/testkit,
+#   * Maven Central: add the `maven-publish` + `signing` plugins to cesium-kafka-core,
 #     a `publishToSonatype` step here gated on OIDC/Sonatype credentials (secrets), and POM metadata.
 #   * GHCR image: a `docker/build-push-action` step using the existing multi-stage Dockerfile, with
 #     `packages: write` added to the permissions block below and a `ghcr.io/<owner>/cesium-kafka` tag.

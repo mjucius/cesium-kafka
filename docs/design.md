@@ -904,6 +904,11 @@ The operations runbook ties alerts to remedies: re-validation errors (cursor age
 
 ## 10. Project / Module Layout
 
+> **Superseded (post-approval revision 5, ADR-0021).** The api, store-kafka and store-testkit
+> modules were folded into `cesium-kafka-core` in 2.0.0, keeping their package names; the contract
+> kit lives in core's test sources. The build is `cesium-kafka-core`, `cesium-kafka-app`,
+> `cesium-kafka-it` and `cesium-kafka-benchmarks`. The layout and rationale below are historical.
+
 Gradle (Kotlin DSL), version catalog (`gradle/libs.versions.toml`), convention plugins via included `build-logic`, Java toolchain 21 (CI also tests latest LTS). Group id `com.jucius.cesium`; package root `com.jucius.cesium.kafka`. Dependencies minimal: kafka-clients 4.x, slf4j (+logback in app), micrometer-core, jackson-dataformat-yaml (app), fastutil-core (store-kafka, post-approval revision 1); no Spring. Test-only: Testcontainers, Toxiproxy module (deterministic fault injection, §11.3), jqwik, awaitility, JOL. JPMS: `Automatic-Module-Name` only (kafka-clients is not module-safe). As shipped, the jars carry no JPMS metadata at all (no `Automatic-Module-Name` manifest entry).
 
 ```

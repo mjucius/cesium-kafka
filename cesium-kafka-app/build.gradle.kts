@@ -7,7 +7,6 @@ description = "Runnable cesium-kafka service: configuration, lifecycle, health a
 
 dependencies {
     implementation(project(":cesium-kafka-core"))
-    implementation(project(":cesium-kafka-store-kafka"))
     implementation(libs.jackson.yaml)
     // Optional<T> record components (route.dlq, tracker.acl-principal) bind via the Jdk8Module.
     implementation(libs.jackson.jdk8)

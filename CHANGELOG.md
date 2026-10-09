@@ -27,6 +27,11 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 ### Breaking changes
 - The release is 2.0.0 (ADR-0019). Every Java module is internal, with no compatibility promise:
   the pluggable store SPI is retired and `KafkaTrackerStore` is the only store (ADR-0021).
+- Build: the `cesium-kafka-api`, `cesium-kafka-store-kafka` and `cesium-kafka-store-testkit`
+  modules are folded into `cesium-kafka-core`, with their package names unchanged; the store
+  contract kit is now part of core's test sources. None of them was ever published as an artifact
+  (ADR-0017), so this only affects source builds. The build has four modules: core, app, it,
+  benchmarks.
 - SPI: `ExternalSchedulerStore`, its contract kit (`ExternalSchedulerStoreContract`,
   `ExternalStoreHarness`) and the testkit's `InMemoryExternalSchedulerStore` are removed. The engine
   never had a dispatch loop for the external archetype and rejected such a store at startup.
