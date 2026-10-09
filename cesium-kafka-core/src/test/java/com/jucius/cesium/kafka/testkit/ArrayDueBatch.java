@@ -47,6 +47,30 @@ public final class ArrayDueBatch implements DueBatch {
         return new Builder();
     }
 
+    /** Unclamped entries on one partition, all due at {@code dueAtMs}; tracker offset = 10 × source offset. */
+    public static ArrayDueBatch onPartition(int partition, long dueAtMs, long... sourceOffsets) {
+        Builder builder = builder();
+        for (long offset : sourceOffsets) {
+            builder.add(partition, offset, dueAtMs, offset * 10, false);
+        }
+        return builder.build();
+    }
+
+    /**
+     * One entry per {@code (partitions[i], sourceOffsets[i])} pair, in array order, with placeholder
+     * {@code dispatchAtMs} 0 and tracker offset -1 — the shape a fetch pass reads.
+     */
+    public static ArrayDueBatch of(int[] partitions, long[] sourceOffsets) {
+        if (partitions.length != sourceOffsets.length) {
+            throw new IllegalArgumentException("parallel arrays must match");
+        }
+        Builder builder = builder();
+        for (int i = 0; i < partitions.length; i++) {
+            builder.add(partitions[i], sourceOffsets[i], 0, -1, false);
+        }
+        return builder.build();
+    }
+
     /** Copies every entry of {@code batch} — safe to hold across the source batch's resolution. */
     public static ArrayDueBatch snapshot(DueBatch batch) {
         Builder builder = builder();

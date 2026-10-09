@@ -6,6 +6,7 @@ import com.jucius.cesium.kafka.api.store.ScheduledRef;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
+import com.jucius.cesium.kafka.testkit.ArrayDueBatch;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
@@ -70,7 +71,7 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
     @Override
     public DueBatch pollDue(long nowMs, int maxBatch) {
         DueBatch next = dueQueue.poll();
-        return next == null ? TestBatch.builder().build() : next;
+        return next == null ? ArrayDueBatch.builder().build() : next;
     }
 
     @Override

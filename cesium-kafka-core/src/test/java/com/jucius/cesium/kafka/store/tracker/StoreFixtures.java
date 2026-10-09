@@ -4,37 +4,13 @@ import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
+import com.jucius.cesium.kafka.testkit.ArrayDueBatch;
 
 /** Shared helpers for {@code KafkaTrackerStore} unit tests. */
 final class StoreFixtures {
 
     /** An empty engine-synthesized batch (the records-free idle-advancement transaction shape). */
-    static final DueBatch EMPTY_BATCH = new DueBatch() {
-        @Override
-        public int size() {
-            return 0;
-        }
-
-        @Override
-        public int sourcePartition(int i) {
-            throw new IndexOutOfBoundsException("empty batch");
-        }
-
-        @Override
-        public long sourceOffset(int i) {
-            throw new IndexOutOfBoundsException("empty batch");
-        }
-
-        @Override
-        public long dispatchAtMs(int i) {
-            throw new IndexOutOfBoundsException("empty batch");
-        }
-
-        @Override
-        public long trackerOffset(int i) {
-            throw new IndexOutOfBoundsException("empty batch");
-        }
-    };
+    static final DueBatch EMPTY_BATCH = ArrayDueBatch.EMPTY;
 
     private StoreFixtures() {}
 

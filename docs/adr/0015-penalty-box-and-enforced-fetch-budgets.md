@@ -52,4 +52,8 @@ Dispatch batch default is 10,000 entries.
   isolation mechanism.
 
 > **As shipped:** the partition-affine seek-consumer pool has not shipped; each dispatch
-> worker still owns one seek consumer, and the penalty box remains the isolation mechanism.
+> loop still owns one seek consumer, and the penalty box remains the isolation mechanism.
+>
+> The outcome type has a fourth value besides the tri-state: `CARRY_OVER`, for entries left
+> unfetched when the byte budget trips. They return to pending with no penalty, because nothing
+> failed (`FetchOutcome`).

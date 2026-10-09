@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.jucius.cesium.kafka.testkit.ArrayDueBatch;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
@@ -98,7 +99,7 @@ class KafkaSeekFetcherTest {
         consumer.addRecord(record(0, 5, 10));
         consumer.addRecord(record(0, 7, 10));
         consumer.addRecord(record(1, 3, 10));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 0, 1}, new long[] {5, 7, 3});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 0, 1}, new long[] {5, 7, 3});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 30_000);
 
@@ -120,7 +121,7 @@ class KafkaSeekFetcherTest {
     void goneWhenLogStartPassedWantedOffsetWithoutAnyScan() {
         assignWithLogStartZero(0);
         consumer.updateBeginningOffsets(Map.of(tp(0), 10L)); // retention expired offsets < 10
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0}, new long[] {5});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0}, new long[] {5});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 30_000);
 
@@ -136,7 +137,7 @@ class KafkaSeekFetcherTest {
         assignWithLogStartZero(0);
         consumer.addRecord(record(0, 6, 10)); // offset 5 compacted away: delivery skips to 6
         consumer.addRecord(record(0, 8, 10));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 0}, new long[] {5, 8});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 0}, new long[] {5, 8});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 30_000);
 
@@ -149,7 +150,7 @@ class KafkaSeekFetcherTest {
     void transientWhenSliceExhaustsAndPayloadStillInRange() {
         assignWithLogStartZero(0); // log start 0 ≤ wanted: provably NOT expired, so never GONE
         tickOnEveryPoll(1_000);
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0}, new long[] {5});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0}, new long[] {5});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 4_000);
 
@@ -166,7 +167,7 @@ class KafkaSeekFetcherTest {
             clock.advanceMillis(5_000); // blow the whole deadline in one poll...
             consumer.updateBeginningOffsets(Map.of(tp(0), 9L)); // ...while retention passes the offset
         });
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0}, new long[] {5});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0}, new long[] {5});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 4_000);
 
@@ -180,7 +181,7 @@ class KafkaSeekFetcherTest {
         assignWithLogStartZero(0, 1);
         consumer.addRecord(record(1, 3, 10));
         consumer.setPollException(new KafkaException("fetch failed"));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 1}, new long[] {5, 3});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 1}, new long[] {5, 3});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 30_000);
 
@@ -195,7 +196,7 @@ class KafkaSeekFetcherTest {
         consumer.addRecord(record(0, 6, 100));
         consumer.addRecord(record(0, 7, 100));
         consumer.addRecord(record(1, 3, 100));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 0, 0, 1}, new long[] {5, 6, 7, 3});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 0, 0, 1}, new long[] {5, 6, 7, 3});
 
         FetchResult result = fetcher.fetch(batch, 150, NOW + 30_000);
 
@@ -217,7 +218,7 @@ class KafkaSeekFetcherTest {
         assignWithLogStartZero(0, 1);
         consumer.addRecord(record(1, 3, 10));
         tickOnEveryPoll(1_000); // partition 0 never yields; every poll costs a simulated second
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 1}, new long[] {5, 3});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 1}, new long[] {5, 3});
 
         // Two partitions, 10 s overall ⇒ 5 s slice each (floor 2 s). Partition 0 burns exactly
         // its slice and no more; partition 1 still fetches inside the remaining deadline.
@@ -232,7 +233,7 @@ class KafkaSeekFetcherTest {
     void overallDeadlineExhaustionMarksNeverAttemptedRunsTransient() {
         assignWithLogStartZero(0, 1);
         tickOnEveryPoll(4_000); // first poll blows the 3 s deadline
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 1}, new long[] {5, 3});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 1}, new long[] {5, 3});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 3_000);
 
@@ -246,7 +247,7 @@ class KafkaSeekFetcherTest {
         // No pre-assignment: the fetcher assigns the batch partitions itself; the pass runs no
         // poll at all (deadline ≤ now), and the §7.3 pass-end re-check still classifies honestly.
         consumer.updateBeginningOffsets(Map.of(tp(0), 9L));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0}, new long[] {5});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0}, new long[] {5});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW);
 
@@ -261,7 +262,7 @@ class KafkaSeekFetcherTest {
         // Retention advances past the fetch position mid-scan: the next poll raises
         // OffsetOutOfRange (reset=none), which the fetcher treats as expiry evidence.
         consumer.schedulePollTask(() -> consumer.updateBeginningOffsets(Map.of(tp(0), 8L)));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 0}, new long[] {5, 8});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 0}, new long[] {5, 8});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 30_000);
 
@@ -276,20 +277,20 @@ class KafkaSeekFetcherTest {
         // test exercises pure assignment bookkeeping.
         consumer.updateBeginningOffsets(Map.of(tp(0), 100L, tp(1), 100L));
 
-        fetcher.fetch(FakeDueBatch.of(new int[] {0}, new long[] {5}), 1 << 20, NOW + 1_000);
+        fetcher.fetch(ArrayDueBatch.of(new int[] {0}, new long[] {5}), 1 << 20, NOW + 1_000);
         assertEquals(Set.of(tp(0)), consumer.assignment());
 
-        fetcher.fetch(FakeDueBatch.of(new int[] {1}, new long[] {5}), 1 << 20, NOW + 1_000);
+        fetcher.fetch(ArrayDueBatch.of(new int[] {1}, new long[] {5}), 1 << 20, NOW + 1_000);
         assertEquals(Set.of(tp(0), tp(1)), consumer.assignment(), "§7.5: union of recent passes, not churn");
 
         // Passes 3..8 keep partition 0 warm (last seen pass 1 > pass − WARM_PASSES)...
         for (int pass = 3; pass <= KafkaSeekFetcher.WARM_PASSES; pass++) {
-            fetcher.fetch(FakeDueBatch.of(new int[] {1}, new long[] {5}), 1 << 20, NOW + 1_000);
+            fetcher.fetch(ArrayDueBatch.of(new int[] {1}, new long[] {5}), 1 << 20, NOW + 1_000);
         }
         assertEquals(Set.of(tp(0), tp(1)), consumer.assignment());
 
         // ...and pass 9 evicts it.
-        fetcher.fetch(FakeDueBatch.of(new int[] {1}, new long[] {5}), 1 << 20, NOW + 1_000);
+        fetcher.fetch(ArrayDueBatch.of(new int[] {1}, new long[] {5}), 1 << 20, NOW + 1_000);
         assertEquals(Set.of(tp(1)), consumer.assignment(), "stale partition evicted after WARM_PASSES passes");
     }
 
@@ -297,7 +298,7 @@ class KafkaSeekFetcherTest {
     void duplicateWantedOffsetsResolveAgainstTheSameRecord() {
         assignWithLogStartZero(0);
         consumer.addRecord(record(0, 5, 10));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 0}, new long[] {5, 5});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 0}, new long[] {5, 5});
 
         FetchResult result = fetcher.fetch(batch, 1 << 20, NOW + 30_000);
 
@@ -347,7 +348,7 @@ class KafkaSeekFetcherTest {
                 new byte[10],
                 new RecordHeaders(),
                 Optional.empty()));
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 0}, new long[] {5, 6});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 0}, new long[] {5, 6});
 
         FetchResult result = fetcher.fetch(batch, 500, NOW + 30_000);
 
@@ -358,7 +359,7 @@ class KafkaSeekFetcherTest {
 
     @Test
     void emptyBatchTouchesNothing() {
-        FetchResult result = fetcher.fetch(FakeDueBatch.empty(), 1 << 20, NOW + 30_000);
+        FetchResult result = fetcher.fetch(ArrayDueBatch.EMPTY, 1 << 20, NOW + 30_000);
         assertEquals(0, result.size());
         assertTrue(consumer.assignment().isEmpty(), "no consumer interaction for an empty batch");
         assertEquals(0, registry.get("cesium.fetch.duration.seconds").timer().count());
@@ -368,7 +369,7 @@ class KafkaSeekFetcherTest {
     void wakeupPropagatesAsShutdownSignal() {
         assignWithLogStartZero(0);
         consumer.wakeup();
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0}, new long[] {5});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0}, new long[] {5});
         assertThrows(WakeupException.class, () -> fetcher.fetch(batch, 1 << 20, NOW + 30_000));
     }
 
@@ -377,7 +378,7 @@ class KafkaSeekFetcherTest {
         fetcher.close();
         fetcher.close();
         assertTrue(consumer.closed());
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0}, new long[] {5});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0}, new long[] {5});
         assertThrows(IllegalStateException.class, () -> fetcher.fetch(batch, 1 << 20, NOW + 1));
     }
 

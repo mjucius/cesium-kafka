@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.jucius.cesium.kafka.testkit.ArrayDueBatch;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -14,7 +15,7 @@ class FetchCandidatesTest {
     void groupsByPartitionInFirstAppearanceOrderAndSortsOffsetsAscending() {
         // Due order is not offset order: a later-offset entry with an earlier deliver-at pops
         // first, so within-partition offsets arrive unsorted (§7.1 "typically nearly-sorted").
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {1, 0, 1, 0}, new long[] {9, 7, 3, 8});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {1, 0, 1, 0}, new long[] {9, 7, 3, 8});
         FetchCandidates candidates = FetchCandidates.of(batch);
 
         assertSame(batch, candidates.batch());
@@ -42,7 +43,7 @@ class FetchCandidatesTest {
 
     @Test
     void duplicateOffsetsStayAdjacentAndKeepBatchOrder() {
-        FakeDueBatch batch = FakeDueBatch.of(new int[] {0, 0, 0}, new long[] {5, 5, 4});
+        ArrayDueBatch batch = ArrayDueBatch.of(new int[] {0, 0, 0}, new long[] {5, 5, 4});
         FetchCandidates.PartitionRun run = FetchCandidates.of(batch).runs().get(0);
         assertEquals(4, run.wantedOffset(0));
         assertEquals(5, run.wantedOffset(1));
@@ -53,7 +54,7 @@ class FetchCandidatesTest {
 
     @Test
     void emptyBatchYieldsNoRuns() {
-        FetchCandidates candidates = FetchCandidates.of(FakeDueBatch.empty());
+        FetchCandidates candidates = FetchCandidates.of(ArrayDueBatch.EMPTY);
         assertEquals(0, candidates.size());
         assertTrue(candidates.runs().isEmpty());
     }

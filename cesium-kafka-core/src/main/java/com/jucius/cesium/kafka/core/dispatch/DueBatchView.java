@@ -8,8 +8,8 @@ import com.jucius.cesium.kafka.api.store.DueBatch;
  * settled/carry-over split of truncate-and-carry-over, and the {@linkplain #EMPTY empty batch} of
  * the records-free idle-advancement transaction.
  *
- * <p>The published testkit ships an equivalent type ({@code ArrayDueBatch}); this one lives in
- * {@code core} because production code cannot depend on the testkit. Views reference entries by
+ * <p>The test sources carry an equivalent type ({@code ArrayDueBatch}); this one lives in
+ * main because production code cannot depend on test code. Views reference entries by
  * copied primitives — safe to hold across the source batch's resolution.
  */
 final class DueBatchView implements DueBatch {
