@@ -103,7 +103,6 @@ class ConfigDefaultsTest {
     void ingestDefaults() {
         IngestConfig ingest = allDefaults().ingest();
         assertEquals(1, ingest.workers());
-        assertEquals(2000, ingest.maxBatch()); // = max.poll.records
     }
 
     @Test

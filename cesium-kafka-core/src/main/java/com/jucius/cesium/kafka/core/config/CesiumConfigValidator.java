@@ -99,7 +99,6 @@ public final class CesiumConfigValidator {
 
     private static void checkRanges(CesiumConfig config, List<Finding> findings) {
         atLeast(findings, "ingest.workers", config.ingest().workers(), 1);
-        atLeast(findings, "ingest.max-batch", config.ingest().maxBatch(), 1);
         atLeast(findings, "dispatch.workers", config.dispatch().workers(), 1);
         // Every dispatch loop in a process shares one single-threaded store, and drainDue does not
         // filter by owned partition, so a second worker would race the first. Scale by instances.

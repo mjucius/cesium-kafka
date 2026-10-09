@@ -72,11 +72,11 @@ class KafkaClientFactoryTest {
     }
 
     @Test
-    void consumerTunedDefaultsComeFromConfigAndYieldToOverlays() {
-        IngestConfig ingest = new IngestConfig(null, 1234);
+    void consumerTunedDefaultsYieldToOverlays() {
+        IngestConfig ingest = new IngestConfig(null);
         Properties defaults =
                 new KafkaClientFactory(config(new InstanceId("slot-0"), null, ingest)).ingestConsumerProperties(0);
-        assertEquals("1234", defaults.getProperty("max.poll.records"));
+        assertEquals(KafkaClientFactory.INGEST_MAX_POLL_RECORDS, defaults.getProperty("max.poll.records"));
         assertEquals(
                 KafkaClientFactory.INGEST_MAX_PARTITION_FETCH_BYTES, defaults.getProperty("max.partition.fetch.bytes"));
 

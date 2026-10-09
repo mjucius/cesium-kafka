@@ -98,7 +98,6 @@ class YamlBindingTest {
                     hmac.key: secret
                 ingest:
                   workers: 2
-                  max-batch: 1000
                 dispatch:
                   batch:
                     max-entries: 5000
@@ -153,7 +152,6 @@ class YamlBindingTest {
         assertFalse(config.headers().stampProvenance());
         assertEquals("secret", config.store().properties().get("hmac.key"));
         assertEquals(2, config.ingest().workers());
-        assertEquals(1000, config.ingest().maxBatch());
 
         DispatchConfig dispatch = config.dispatch();
         assertEquals(5000, dispatch.batch().maxEntries());

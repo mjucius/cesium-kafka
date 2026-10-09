@@ -58,8 +58,8 @@ class CesiumConfigValidatorTest {
     void everyViolationIsCollectedIntoOneReport() {
         // Missing applicationId + missing instanceId + missing topics + bad workers + DLQ policies
         // without a DLQ topic: all must surface in a single pass — never fail-on-first (§8).
-        CesiumConfig broken = new CesiumConfig(
-                null, null, null, null, null, null, null, null, new IngestConfig(0, null), null, null, null);
+        CesiumConfig broken =
+                new CesiumConfig(null, null, null, null, null, null, null, null, new IngestConfig(0), null, null, null);
         ValidationReport report = validate(broken);
         List<String> paths = errorPaths(report);
         assertTrue(paths.contains("application-id"), report::render);

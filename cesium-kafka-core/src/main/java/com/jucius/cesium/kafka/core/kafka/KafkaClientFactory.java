@@ -61,6 +61,9 @@ public final class KafkaClientFactory {
     /** Tuned ingest-consumer default: {@code max.partition.fetch.bytes} 4 MiB (§8). */
     static final String INGEST_MAX_PARTITION_FETCH_BYTES = "4194304";
 
+    /** Ingest consumer {@code max.poll.records}: records per poll, so per ingest transaction (§8). */
+    static final String INGEST_MAX_POLL_RECORDS = "2000";
+
     /** Tuned tracker-consumer default: {@code max.poll.records} (§8 — tracker records are ≤ 26 B). */
     static final String TRACKER_MAX_POLL_RECORDS = "10000";
 
@@ -122,8 +125,8 @@ public final class KafkaClientFactory {
     }
 
     /**
-     * Properties for the group-A source consumer: tuned defaults ({@code max.poll.records} from
-     * {@code ingest.max-batch}, 4 MiB partition fetch), common map, ingest-consumer overlay, then
+     * Properties for the group-A source consumer: tuned defaults ({@code max.poll.records} 2000,
+     * 4 MiB partition fetch), common map, ingest-consumer overlay, then
      * the locked keys — byte-array deserialization, auto-commit off,
      * {@code isolation.level=read_committed} (D17), {@code auto.offset.reset=none} (D18), the
      * derived group id and static-membership id.
@@ -131,9 +134,7 @@ public final class KafkaClientFactory {
     public Properties ingestConsumerProperties(int workerOrdinal) {
         Properties props = new Properties();
         // 1. Tuned defaults (§8) — overridable by operator maps.
-        props.setProperty(
-                ConsumerConfig.MAX_POLL_RECORDS_CONFIG,
-                String.valueOf(config.ingest().maxBatch()));
+        props.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, INGEST_MAX_POLL_RECORDS);
         props.setProperty(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, INGEST_MAX_PARTITION_FETCH_BYTES);
         // 2. Common passthrough, then 3. the per-client overlay (overlay wins).
         props.putAll(config.kafka().properties());

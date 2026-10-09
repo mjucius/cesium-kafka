@@ -94,7 +94,6 @@ store:
 
 ingest:
   workers: 1        # ingest threads, each owning a source consumer + txn producer
-  max-batch: 2000   # = source consumer max.poll.records
 
 dispatch:
   workers: 1        # must be 1 (scale dispatch by instances); owns tracker consumer + producer + seek consumer

@@ -412,7 +412,7 @@ class CesiumEngineWiringTest {
                 null,
                 null,
                 null,
-                new IngestConfig(ingestWorkers, null),
+                new IngestConfig(ingestWorkers),
                 new DispatchConfig(dispatchWorkers, null, null, null, null, null, null, null, null),
                 null,
                 null);

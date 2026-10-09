@@ -823,7 +823,7 @@ Key defaults (durations ISO-8601):
 | `delay.on-malformed-header` / `on-over-max` | `DLQ` / `DLQ` | D3 |
 | `dispatch.on-unfetchable-payload` | `DLQ` | §7 |
 | `ingest.workers` / `dispatch.workers` | 1 / 1 | `dispatch.workers` must be 1 (revision 4): dispatch loops in one process would share the single-threaded store. Scale dispatch by instances. |
-| `ingest.max-batch` | 2000 | = `max.poll.records` |
+| `ingest.max-batch` | 2000 | = `max.poll.records` (revision 5: removed; a tuned `max.poll.records` default, overridable through `kafka.ingest-consumer.properties`) |
 | `dispatch.batch.max-entries` / `max-bytes` | 10000 / 32 MiB | bytes enforced in the fetch pass with truncate-and-carry-over (D8) |
 | `dispatch.drain.max-slice` | `PT1M`, capped at `max.poll.interval.ms / 3` | time-sliced drain (§6) |
 | `dispatch.idle-cursor-interval` | `PT30S` | §3.5 |

@@ -78,6 +78,9 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   `route.tracker.acl-principal`. Create the ACL yourself; a literal ACL can exist before the topic.
   `startup-checks.tracker-acl` still verifies it at startup and on every re-validation round, and
   the cesium principal no longer needs `Cluster:ALTER`. A failed grant can no longer fail startup.
+- `ingest.max-batch` is removed (exit 78 if set). It only set the ingest consumer's
+  `max.poll.records`, which keeps its tuned default of 2000; override it through
+  `kafka.ingest-consumer.properties`.
 - `/health/ready` loop detail loses its `assigned` field, and readiness no longer has an
   "assignment" term. The engine only ever set it alongside the heartbeat, so it never changed the
   verdict.

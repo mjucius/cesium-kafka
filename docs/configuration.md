@@ -96,7 +96,7 @@ cesium overrides these client defaults (design `§8`):
 - Producers: `linger.ms=10` (both the ingest and dispatch producers), `batch.size=256K`,
   `compression.type=lz4`, `buffer.memory=64M`. (design `§8` lists `10/5`; the implemented code uses
   `10/10` for both; see `KafkaClientFactory`.)
-- Ingest consumer: `max.poll.records` follows `ingest.max-batch` (2000), `max.partition.fetch.bytes=4M`.
+- Ingest consumer: `max.poll.records=2000` (records per poll, so per ingest transaction), `max.partition.fetch.bytes=4M`.
 - Tracker consumer: `max.poll.records=10000`, `CooperativeStickyAssignor` (classic protocol only).
 - Ingest and tracker consumers: `group.instance.id` derived from `instance-id` (static membership,
   D21); omitted under `instance-id: random`.
@@ -199,7 +199,6 @@ not 78: the config schema leaves this map open).
 | Key | Default | Meaning |
 |---|---|---|
 | `ingest.workers` | `1` | Ingest threads, each owning its own source consumer + transactional producer. Each worker after the first gets its own `group.instance.id` (`.<ordinal>` suffix). |
-| `ingest.max-batch` | `2000` | Maximum records per poll/transaction; becomes the source consumer's `max.poll.records`. |
 
 ---
 
@@ -269,5 +268,5 @@ overlay, fails startup with exit 78 and names the offending path. The exceptions
 rejected there, and the store validates its own keys.
 
 An unknown key gets a did-you-mean hint when it differs from a real key only by case or hyphens
-(`maxBatch` → `max-batch`). Two older top-level spellings are pointed at their real homes:
+(`maxEntries` → `max-entries`). Two older top-level spellings are pointed at their real homes:
 `transactions` → `kafka.transactions` and `relay` → `route.relay`.
