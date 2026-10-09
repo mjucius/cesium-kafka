@@ -152,8 +152,8 @@ import org.slf4j.LoggerFactory;
  * </ul>
  *
  * <p><strong>Backpressure (§5.3):</strong> an ACTIVE shard pauses tracker intake above
- * {@code dispatch.max-pending-per-partition} (resumes below half of it) and while this loop's share
- * of the process-wide {@code dispatch.max-pending-total} is exceeded; a RECOVERING shard is <em>never</em> paused — replay must reach the
+ * {@code dispatch.max-pending-per-partition} (resumes below half of it) and while the
+ * process-wide {@code dispatch.max-pending-total} is exceeded; a RECOVERING shard is <em>never</em> paused — replay must reach the
  * barrier. Pause state is observable as {@code cesium_shard_paused{partition}}.
  *
  * <p><strong>Idle cursor advancement (§3.5):</strong> a streaming, non-recovering partition
@@ -202,7 +202,8 @@ public final class DispatchLoop implements Runnable {
     private long backoffUntilMs;
     private long lastPollReturnMs;
     private long epochCounter;
-    private @Nullable InDoubtRecovery inDoubtRecovery;
+    /** The I9 producer replacement failed transiently and is retried before the loop proceeds. */
+    private boolean producerRecoveryPending;
 
     // Per-partition loop-side shard bookkeeping (the store owns the index; this is plumbing).
     private final Map<Integer, Long> shardEpochs = new HashMap<>();
@@ -398,17 +399,16 @@ public final class DispatchLoop implements Runnable {
         // single legitimately large gap (a cold-segment fetch, a long recovery) and leave a
         // threshold alert firing permanently even after gaps return to healthy values (§6).
         maxPollGapMs.set(0);
-        InDoubtRecovery recovery = inDoubtRecovery;
-        if (recovery != null) {
+        if (producerRecoveryPending) {
             if (clock.millis() < backoffUntilMs) {
                 heartbeatIntake();
                 return;
             }
-            if (!attemptProducerRecovery(recovery)) {
+            if (!attemptProducerRecovery()) {
                 scheduleBackoff("in_doubt_recovery");
                 return;
             }
-            inDoubtRecovery = null;
+            producerRecoveryPending = false;
             log.info("in-doubt producer replacement completed; re-resolving cursors and re-entering recovery");
         }
         ConsumerRecords<byte[], byte[]> records = pollTracker(pollTimeout());
@@ -497,34 +497,12 @@ public final class DispatchLoop implements Runnable {
     }
 
     /**
-     * The locked {@code auto.offset.reset=none} surfaced a partition with no committed offset
-     * (design §3.6 step 2, D18): seek to the beginning explicitly <em>only</em> on a provable
-     * first run — no committed offsets anywhere for the dispatch group — else fail fast with the
-     * runbook (committed offsets expired per KIP-211, or were tampered with; an implicit reset
-     * would silently lose all pending entries or mass-replay).
+     * The locked {@code auto.offset.reset=none} surfaced a partition with no committed offset from
+     * {@code poll()}. Give it a provisional position so the poll can proceed: the partition is
+     * still paused, and {@link #resolveCursor} runs for it later in this same iteration — proving
+     * the first run or failing fast ({@link #firstRunCursor}) before any of its records is applied.
      */
     private void handleMissingCommittedOffsets(Set<TopicPartition> partitions) {
-        final boolean groupHasOffsets;
-        try {
-            groupHasOffsets = admin.groupHasCommittedOffsets();
-        } catch (RuntimeException e) {
-            log.warn("first-run probe failed; retrying with backoff", e);
-            scheduleBackoff(causeTag(e));
-            return;
-        }
-        if (groupHasOffsets) {
-            throw new LoopFatalException(
-                    "no committed offset for assigned tracker partition(s) " + partitions + " while the dispatch"
-                            + " group has committed offsets elsewhere, and auto.offset.reset=none is locked: either"
-                            + " committed offsets expired (broker offsets.retention.minutes shorter than the outage)"
-                            + " or the group state was modified — an operator must seed the group offsets explicitly;"
-                            + " see the offset-reset runbook (§3.6, D18)");
-        }
-        log.warn(
-                "provable first run for tracker partition(s) {} (no committed offsets anywhere in the dispatch"
-                        + " group): seeking to the beginning explicitly — a full replay of the compacted tracker is"
-                        + " correct but may be slow (§3.6 step 2)",
-                partitions);
         consumer.seekToBeginning(partitions);
     }
 
@@ -580,7 +558,7 @@ public final class DispatchLoop implements Runnable {
      * of stalling the fetch until {@code transaction.timeout.ms}.
      */
     private void resolveNewAssignments() {
-        if (inDoubtRecovery != null) {
+        if (producerRecoveryPending) {
             return;
         }
         completeBarriers();
@@ -1051,10 +1029,7 @@ public final class DispatchLoop implements Runnable {
             adoptShards(affected);
             consumer.pause(toPause);
         }
-        InDoubtRecovery recovery = new InDoubtRecovery();
-        if (!attemptProducerRecovery(recovery)) {
-            inDoubtRecovery = recovery;
-        }
+        producerRecoveryPending = !attemptProducerRecovery();
         scheduleBackoff("in_doubt");
     }
 
@@ -1066,18 +1041,15 @@ public final class DispatchLoop implements Runnable {
      * cursor re-resolution that follows (gated on this completing) reads the resolved truth.
      * Returns false on a transient failure — the caller schedules a retry (R15).
      */
-    private boolean attemptProducerRecovery(InDoubtRecovery recovery) {
+    private boolean attemptProducerRecovery() {
         try {
-            if (!recovery.producerReady) {
-                try {
-                    producer.close(Duration.ZERO);
-                } catch (RuntimeException closeFailure) {
-                    log.warn("closing the unusable producer failed; continuing with replacement", closeFailure);
-                }
-                producer = Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
-                producer.initTransactions();
-                recovery.producerReady = true;
+            try {
+                producer.close(Duration.ZERO);
+            } catch (RuntimeException closeFailure) {
+                log.warn("closing the unusable producer failed; continuing with replacement", closeFailure);
             }
+            producer = Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
+            producer.initTransactions();
             return true;
         } catch (WakeupException e) {
             throw e; // stop() raced the recovery: run() resolves clean shutdown vs unexpected wakeup
@@ -1101,7 +1073,7 @@ public final class DispatchLoop implements Runnable {
      * (unnecessary; recovery is short) and while the failure backoff gates the loop.
      */
     private void maybeCommitIdleCursors() {
-        if (inDoubtRecovery != null || streaming.isEmpty()) {
+        if (producerRecoveryPending || streaming.isEmpty()) {
             return;
         }
         long intervalMs = config.idleCursorInterval().toMillis();
@@ -1162,7 +1134,7 @@ public final class DispatchLoop implements Runnable {
 
     /**
      * Pause/resume tracker intake per shard: above the per-partition high-water mark (or while
-     * this loop's share of the process-wide cap is exceeded) an ACTIVE shard's tracker partition pauses — backlog
+     * the process-wide cap is exceeded) an ACTIVE shard's tracker partition pauses — backlog
      * accumulates durably in the tracker topic; below the low-water mark (half the high) it
      * resumes. A RECOVERING shard is never paused: replay must reach the barrier (R7).
      */
@@ -1174,13 +1146,11 @@ public final class DispatchLoop implements Runnable {
         long low = Math.max(1, high / 2);
         long cap = config.maxPendingTotal();
         long total = 0;
-        if (cap > 0) {
-            for (int partition : streaming) {
-                total += store.pendingCount(partition);
-            }
+        for (int partition : streaming) {
+            total += store.pendingCount(partition);
         }
-        boolean globalHigh = cap > 0 && total > cap;
-        boolean globalRecovered = cap <= 0 || total <= cap / 2;
+        boolean globalHigh = total > cap;
+        boolean globalRecovered = total <= cap / 2;
         for (int partition : streaming) {
             boolean paused = pausedForBackpressure.contains(partition);
             if (store.isRecovering(partition)) {
@@ -1655,13 +1625,5 @@ public final class DispatchLoop implements Runnable {
             carryIndices = new int[capacity];
             rejected = new boolean[capacity];
         }
-    }
-
-    /**
-     * The pending half of the I9 procedure: whether the replacement producer has been built and
-     * fenced yet. Cursor re-resolution state lives in the ordinary {@code needsCursor} queue.
-     */
-    private static final class InDoubtRecovery {
-        boolean producerReady;
     }
 }

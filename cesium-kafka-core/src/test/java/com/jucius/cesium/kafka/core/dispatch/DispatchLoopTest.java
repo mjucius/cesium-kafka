@@ -40,6 +40,7 @@ import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.MockConsumer;
+import org.apache.kafka.clients.consumer.NoOffsetForPartitionException;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.MockProducer;
@@ -166,6 +167,20 @@ class DispatchLoopTest {
                 List.of(new ScriptedTrackerStore.RecoveryCall(0, 0L, "", 0L)),
                 h.store.recoveries,
                 "explicit first-run recovery from the partition beginning with an empty sidecar");
+    }
+
+    @Test
+    void noOffsetFromPollStillGoesThroughTheFirstRunProof() {
+        // poll() surfaces the missing position before resolveCursor runs; the provisional seek
+        // must not bypass the first-run proof, which still decides in the same iteration.
+        Harness h = new Harness();
+        h.admin.groupHasOffsets = true;
+        h.start(0);
+        h.consumer.setPollException(new NoOffsetForPartitionException(tracker(0)));
+
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
+        assertTrue(failure.getMessage().contains("offset-reset runbook"), failure.getMessage());
+        assertTrue(h.store.recoveries.isEmpty(), "never auto-reset (D18)");
     }
 
     @Test
@@ -936,7 +951,7 @@ class DispatchLoopTest {
                 b.policy,
                 b.onUnrelayable,
                 b.maxPendingPerPartition,
-                0L,
+                Long.MAX_VALUE,
                 3,
                 b.parkThreshold,
                 Duration.ofMillis(100),

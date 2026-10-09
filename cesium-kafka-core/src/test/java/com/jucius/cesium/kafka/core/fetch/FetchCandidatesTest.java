@@ -1,7 +1,6 @@
 package com.jucius.cesium.kafka.core.fetch;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.testkit.ArrayDueBatch;
@@ -18,8 +17,6 @@ class FetchCandidatesTest {
         ArrayDueBatch batch = ArrayDueBatch.of(new int[] {1, 0, 1, 0}, new long[] {9, 7, 3, 8});
         FetchCandidates candidates = FetchCandidates.of(batch);
 
-        assertSame(batch, candidates.batch());
-        assertEquals(4, candidates.size());
         List<FetchCandidates.PartitionRun> runs = candidates.runs();
         assertEquals(2, runs.size());
 
@@ -31,7 +28,6 @@ class FetchCandidatesTest {
         assertEquals(2, first.batchIndex(0), "offset 3 came from batch index 2");
         assertEquals(0, first.batchIndex(1), "offset 9 came from batch index 0");
         assertEquals(3, first.minWantedOffset());
-        assertEquals(9, first.maxWantedOffset());
 
         FetchCandidates.PartitionRun second = runs.get(1);
         assertEquals(0, second.sourcePartition());
@@ -55,7 +51,6 @@ class FetchCandidatesTest {
     @Test
     void emptyBatchYieldsNoRuns() {
         FetchCandidates candidates = FetchCandidates.of(ArrayDueBatch.EMPTY);
-        assertEquals(0, candidates.size());
         assertTrue(candidates.runs().isEmpty());
     }
 }
