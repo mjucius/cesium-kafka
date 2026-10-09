@@ -9,7 +9,6 @@ import com.jucius.cesium.kafka.core.config.ValidationContext;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Severity;
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.Properties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -47,7 +46,7 @@ class LoadedReportTest {
                           max-pending-total: 1000000
                         """);
         ValidationContext tinyHeap = new ValidationContext(64L * 1024 * 1024);
-        LoadedConfig loaded = new CesiumConfigLoader(Map.of(), new Properties(), tinyHeap).load(file);
+        LoadedConfig loaded = new CesiumConfigLoader(Map.of(), tinyHeap).load(file);
         assertFalse(loaded.report().hasErrors(), loaded.report()::render);
         var breach = loaded.report().warnings().stream()
                 .filter(f -> f.path().equals("dispatch.max-pending-total"))

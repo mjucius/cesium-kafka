@@ -176,15 +176,6 @@ final class ConfigSchema {
                 .replace('_', '.'));
     }
 
-    /**
-     * Resolves a system-property path ({@code cesium.} stripped, split on {@code .}): segments
-     * are already kebab keys ({@code cesium.delay.on-over-max}); below a map node the remaining
-     * segments are re-joined with dots ({@code cesium.kafka.properties.max.poll.interval.ms}).
-     */
-    @Nullable Resolved resolveSystemPropertyPath(List<String> segments) {
-        return resolve(segments, UnaryOperator.identity(), UnaryOperator.identity());
-    }
-
     private @Nullable Resolved resolve(
             List<String> segments, UnaryOperator<String> fieldKey, UnaryOperator<String> mapKeyPart) {
         Node current = root;

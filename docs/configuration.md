@@ -20,13 +20,14 @@ The app loads configuration in this order (design `§8`, `CesiumConfigLoader`):
 2. Reject unknown YAML keys against the schema. Every unknown key is collected and reported
    together. A key repeated in the same mapping is also rejected, so a pasted duplicate cannot
    silently win.
-3. Overlay environment variables under the `CESIUM_` prefix (grammar below).
-4. Overlay system properties under the `-Dcesium.` prefix (highest precedence).
-5. Interpolate `${env:VAR}` references inside string values (keep secrets out of files). An
+3. Overlay environment variables under the `CESIUM_` prefix (grammar below; highest precedence).
+4. Interpolate `${env:VAR}` references inside string values (keep secrets out of files). An
    undefined referenced variable is an error.
-6. Bind to immutable Java records. Defaults materialize here, so precedence is
-   `defaults < YAML < environment < -D system properties`.
-7. Validate the whole config at once (every violation reported together).
+5. Bind to immutable Java records. Defaults materialize here, so precedence is
+   `defaults < YAML < environment`.
+6. Validate the whole config at once (every violation reported together).
+
+There is no `-Dcesium.*` system-property overlay (removed in 2.0.0, ADR-0021).
 
 Any configuration error (a missing required key, an unknown key, a locked Kafka key, an
 out-of-range value, an undefined `${env:VAR}`) prints the full aggregate report and exits with code
@@ -49,14 +50,10 @@ engine failures, exit with code 1.
 Segments are matched case-insensitively (they are lowercased first). Because every `_` inside a
 map-key segment becomes `.`, a map key that contains `-` or `_` cannot be set from the environment:
 `CESIUM_STORE__PROPERTIES__CURSOR__SIDECAR_MAX_BYTES` sets `store.properties.cursor.sidecar.max.bytes`,
-which the `kafka-tracker` store rejects. Use YAML or a `-D` property for those keys
-(`-Dcesium.store.properties.cursor.sidecar-max-bytes=3072`).
+which the `kafka-tracker` store rejects. Set those keys in YAML.
 
 Unknown keys under the `CESIUM_` prefix are startup errors (exit 78), like unknown YAML keys, so a
 typo'd override fails fast instead of being ignored.
-
-System-property overlay uses dotted paths: `-Dcesium.route.source.topic=orders`,
-`-Dcesium.instance-id=cesium-0`.
 
 `${env:VAR}` interpolation works inside any string value, e.g.
 `bootstrap.servers: ${env:KAFKA_BOOTSTRAP}` or a SASL JAAS string referencing `${env:KAFKA_PASSWORD}`.
@@ -266,7 +263,7 @@ integers (`33554432` for 32 MiB). Enum values are case-insensitive (`DLQ`, `dlq`
 bind); this reference writes them as shown (`DLQ`, `CLAMP`, `DISPATCH`, `BY_KEY`, `FAIL`,
 `ACKNOWLEDGED`, `classic`, ...). The `instance-id` literal `random` is case-sensitive.
 
-The schema is strict: any key not in the schema, at any nesting level, from YAML or the env/`-D`
+The schema is strict: any key not in the schema, at any nesting level, from YAML or the env
 overlay, fails startup with exit 78 and names the offending path. The exceptions are the open maps
 (`kafka.*.properties` and `store.properties`), which accept any key; locked Kafka keys are still
 rejected there, and the store validates its own keys.

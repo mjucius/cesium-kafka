@@ -13,7 +13,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -31,8 +30,7 @@ class ExampleConfigTest {
 
     @Test
     void exampleConfigBindsAndValidates() {
-        LoadedConfig loaded =
-                new CesiumConfigLoader(Map.of(), new Properties(), ValidationContext.runtime()).load(EXAMPLE);
+        LoadedConfig loaded = new CesiumConfigLoader(Map.of(), ValidationContext.runtime()).load(EXAMPLE);
 
         // A clean load proves: parsed, no unknown keys, bound to records, aggregate-validated (it
         // throws ConfigValidationException otherwise). The report still carries WARN/INFO findings.
@@ -61,7 +59,6 @@ class ExampleConfigTest {
         // file's localhost default without editing the mounted file (precedence: file < env).
         LoadedConfig loaded = new CesiumConfigLoader(
                         Map.of("CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS", "kafka:9092"),
-                        new Properties(),
                         ValidationContext.runtime())
                 .load(EXAMPLE);
         assertEquals("kafka:9092", loaded.config().kafka().properties().get("bootstrap.servers"));

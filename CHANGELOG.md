@@ -40,7 +40,7 @@ HTTP bodies are the same JSON, though an escaped control character there would n
   a second worker raced the first. Scale dispatch by running more instances.
 - Ingest and dispatch workers with ordinal 1 or higher join as `<group>.<instance>.<n>` (see Fixed).
   Worker 0 keeps its 1.x `group.instance.id`.
-- `dispatch.coalesce` is removed (YAML, `CESIUM_DISPATCH__COALESCE`, `-Dcesium.dispatch.coalesce`).
+- `dispatch.coalesce` is removed (YAML and `CESIUM_DISPATCH__COALESCE`).
   Setting it is now an unknown-key error (exit 78). It never had any effect. Internally,
   `DispatchConfig` loses its `coalesce` component (10 to 9 components).
 - Testkit: `FakeStoreContext.MapConfigView` is removed; use `ConfigView.of(Map)`.
@@ -67,6 +67,11 @@ HTTP bodies are the same JSON, though an escaped control character there would n
 - `headers.accept-binary-long-values` is removed (exit 78 if set). ASCII decimal is the only
   control-header encoding, and an 8-byte big-endian value is malformed. The flag was compatibility
   with the retired proof-of-concept and was never used outside a unit test.
+- The `-Dcesium.*` system-property config overlay is removed; precedence is now
+  `defaults < YAML < CESIUM_* environment`. Set the same keys through the environment
+  (`-Dcesium.instance-id=x` becomes `CESIUM_INSTANCE_ID=x`) or YAML. `-Dcesium.*` properties are now
+  ignored rather than rejected. This also removes the clash between the overlay prefix and the
+  test-only `cesium.testing.crashpoints` switch, which an app JVM would have rejected as an unknown key.
 - `/health/ready` loop detail loses its `assigned` field, and readiness no longer has an
   "assignment" term. The engine only ever set it alongside the heartbeat, so it never changed the
   verdict.

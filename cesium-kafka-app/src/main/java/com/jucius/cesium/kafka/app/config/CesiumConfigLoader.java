@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
@@ -39,17 +38,16 @@ import org.jspecify.annotations.Nullable;
  *       {@code _} maps to {@code -} for record fields and to {@code .} for map keys
  *       ({@code CESIUM_KAFKA__PROPERTIES__MAX_POLL_INTERVAL_MS}); unknown env keys under the
  *       prefix are startup errors;
- *   <li>overlay system properties ({@code -Dcesium.route.source.topic=...}) — highest precedence;
  *   <li>interpolate {@code ${env:VAR}} references inside string values (secrets stay out of
  *       files); an undefined variable is an error;
  *   <li>bind to the immutable {@link CesiumConfig} records (defaults materialize in their compact
- *       constructors — precedence is therefore {@code defaults < YAML < env < system properties});
+ *       constructors — precedence is therefore {@code defaults < YAML < env});
  *   <li>run the aggregate {@link CesiumConfigValidator}.
  * </ol>
  *
  * <p>Any error throws {@link ConfigValidationException} carrying the full report; the app maps it
- * to exit code {@link #EX_CONFIG}. Environment and system properties are injected so tests run
- * hermetically without touching the real process environment.
+ * to exit code {@link #EX_CONFIG}. The environment is injected so tests run hermetically without
+ * touching the real process environment.
  */
 public final class CesiumConfigLoader {
 
@@ -67,11 +65,9 @@ public final class CesiumConfigLoader {
 
     private static final String ENV_PREFIX = "CESIUM_";
     private static final String ENV_SEPARATOR = "__";
-    private static final String SYSPROP_PREFIX = "cesium.";
     private static final Pattern ENV_REFERENCE = Pattern.compile("\\$\\{env:([A-Za-z_][A-Za-z0-9_]*)}");
 
     private final Map<String, String> environment;
-    private final Properties systemProperties;
     private final ValidationContext validationContext;
     private final ObjectMapper mapper = ConfigMapper.create();
     private final ConfigSchema schema = ConfigSchema.forCesiumConfig();
@@ -82,13 +78,10 @@ public final class CesiumConfigLoader {
      *
      * @param environment the environment map (tests inject; production passes
      *     {@code System.getenv()})
-     * @param systemProperties the {@code -D} overlay source (highest precedence)
      * @param validationContext the heap ceiling the §5.3 index-cap finding is computed from
      */
-    public CesiumConfigLoader(
-            Map<String, String> environment, Properties systemProperties, ValidationContext validationContext) {
+    public CesiumConfigLoader(Map<String, String> environment, ValidationContext validationContext) {
         this.environment = Map.copyOf(environment);
-        this.systemProperties = (Properties) systemProperties.clone();
         this.validationContext = validationContext;
     }
 
@@ -115,7 +108,6 @@ public final class CesiumConfigLoader {
         List<Finding> findings = new ArrayList<>();
         schema.collectUnknownKeys(tree, findings);
         applyEnvironmentOverlay(tree, findings);
-        applySystemPropertyOverlay(tree, findings);
         interpolate(tree, "", findings);
         throwIfErrors(findings);
         CesiumConfig config = bind(tree);
@@ -192,30 +184,6 @@ public final class CesiumConfigLoader {
                         return;
                     }
                     setOverride(tree, resolved, entry.getValue());
-                });
-    }
-
-    // ------------------------------------------------------------------ system-property overlay
-
-    private void applySystemPropertyOverlay(ObjectNode tree, List<Finding> findings) {
-        systemProperties.stringPropertyNames().stream()
-                .filter(name -> name.startsWith(SYSPROP_PREFIX))
-                .sorted()
-                .forEach(name -> {
-                    String remainder = name.substring(SYSPROP_PREFIX.length());
-                    List<String> segments = List.of(remainder.split("\\.", -1));
-                    ConfigSchema.Resolved resolved = remainder.isEmpty() || segments.contains("")
-                            ? null
-                            : schema.resolveSystemPropertyPath(segments);
-                    if (resolved == null) {
-                        findings.add(Finding.error(
-                                name,
-                                "unknown system property under the " + SYSPROP_PREFIX
-                                        + " prefix: no configuration key matches path '" + remainder
-                                        + "' (unknown keys are startup errors, design §8)."));
-                        return;
-                    }
-                    setOverride(tree, resolved, systemProperties.getProperty(name));
                 });
     }
 

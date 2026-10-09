@@ -679,7 +679,7 @@ The app prints the full aggregate report and exits 78. Causes and fixes:
 
 | Cause | Fix |
 |---|---|
-| Unknown key (YAML or `CESIUM_`/`-D` overlay) | Typo or stale key; the report names the path. Correct it against [configuration.md](configuration.md). |
+| Unknown key (YAML or `CESIUM_` overlay) | Typo or stale key; the report names the path. Correct it against [configuration.md](configuration.md). |
 | Missing required key (`application-id`, `instance-id`, `route.source.topic`, `route.destination.topic`) | Provide it. |
 | Locked Kafka key set in passthrough | Remove it. The message explains why it is engine-owned ([configuration.md §3](configuration.md#locked-kafka-keys-rejected-with-an-explanation)). |
 | `${env:VAR}` references an undefined variable | Define the variable or fix the reference. |

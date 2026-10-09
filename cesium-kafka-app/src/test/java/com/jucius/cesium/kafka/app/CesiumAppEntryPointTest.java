@@ -14,7 +14,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.Map;
-import java.util.Properties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
@@ -34,10 +33,7 @@ class CesiumAppEntryPointTest {
     @Test
     void missingConfigFileExitsWithConfigCode() {
         int code = CesiumApp.run(
-                new String[] {"--config", dir.resolve("absent.yaml").toString()},
-                Map.of(),
-                new Properties(),
-                Clock.systemUTC());
+                new String[] {"--config", dir.resolve("absent.yaml").toString()}, Map.of(), Clock.systemUTC());
         assertEquals(CesiumConfigLoader.EX_CONFIG, code);
     }
 
@@ -46,14 +42,13 @@ class CesiumAppEntryPointTest {
         // An empty file binds to pure defaults: application-id / instance-id / topics are blank, so
         // the aggregate validator reports errors and the loader throws — exit 78, before any Kafka.
         Path file = Files.writeString(dir.resolve("empty.yaml"), "# no required fields here\n");
-        int code = CesiumApp.run(
-                new String[] {"--config", file.toString()}, Map.of(), new Properties(), Clock.systemUTC());
+        int code = CesiumApp.run(new String[] {"--config", file.toString()}, Map.of(), Clock.systemUTC());
         assertEquals(CesiumConfigLoader.EX_CONFIG, code);
     }
 
     @Test
     void danglingConfigFlagExitsWithConfigCode() {
-        int code = CesiumApp.run(new String[] {"--config"}, Map.of(), new Properties(), Clock.systemUTC());
+        int code = CesiumApp.run(new String[] {"--config"}, Map.of(), Clock.systemUTC());
         assertEquals(CesiumConfigLoader.EX_CONFIG, code);
     }
 
@@ -101,8 +96,7 @@ class CesiumAppEntryPointTest {
         appender.start();
         logger.addAppender(appender);
         try {
-            int code = CesiumApp.run(
-                    new String[] {"--config", file.toString()}, Map.of(), new Properties(), Clock.systemUTC());
+            int code = CesiumApp.run(new String[] {"--config", file.toString()}, Map.of(), Clock.systemUTC());
             assertEquals(CesiumApp.EX_FATAL, code);
         } finally {
             logger.detachAppender(appender);

@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Properties;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +30,7 @@ import org.slf4j.MDC;
 
 /**
  * Entry point for the cesium-kafka service (design §6, §9, §10). {@link #main(String[])} is a thin
- * wrapper over the testable {@link #run(String[], Map, Properties, Clock)} body, which returns the
+ * wrapper over the testable {@link #run(String[], Map, Clock)} body, which returns the
  * process exit code instead of calling {@link System#exit} so the config and exit-code paths are
  * unit-testable without forking a JVM.
  *
@@ -84,24 +83,23 @@ public final class CesiumApp {
     private CesiumApp() {}
 
     public static void main(String[] args) {
-        System.exit(run(args, System.getenv(), System.getProperties(), Clock.systemUTC()));
+        System.exit(run(args, System.getenv(), Clock.systemUTC()));
     }
 
     /**
      * The testable {@code main} body: resolves and loads config, builds and runs the engine, and
-     * returns the process exit code (never calls {@link System#exit}). Environment and system
-     * properties are injected so tests run hermetically.
+     * returns the process exit code (never calls {@link System#exit}). The environment is injected
+     * so tests run hermetically.
      *
      * @return {@code 0} clean, {@value CesiumConfigLoader#EX_CONFIG} config error, {@value #EX_FATAL}
      *     any other fatal
      */
-    public static int run(String[] args, Map<String, String> environment, Properties systemProperties, Clock clock) {
+    public static int run(String[] args, Map<String, String> environment, Clock clock) {
         final LoadedConfig loaded;
         try {
             Path configPath = Path.of(resolveConfigPath(args, environment));
             log.info("loading configuration from {}", configPath);
-            loaded =
-                    new CesiumConfigLoader(environment, systemProperties, ValidationContext.runtime()).load(configPath);
+            loaded = new CesiumConfigLoader(environment, ValidationContext.runtime()).load(configPath);
         } catch (ConfigValidationException e) {
             log.error("configuration is invalid:\n{}", e.report().render());
             return CesiumConfigLoader.EX_CONFIG;

@@ -4,12 +4,12 @@
 # A complete, commented configuration for the delayed-message relay. Every key
 # shown here is OPTIONAL except the four marked "required"; the documented §8
 # defaults materialise for anything you omit. Precedence is
-# defaults < this file < environment < -D system properties, so you can mount
-# this file read-only and override per-deployment values from the environment:
+# defaults < this file < environment, so you can mount this file read-only and
+# override per-deployment values from the environment:
 #
 #   CESIUM_ROUTE__SOURCE__TOPIC=orders            # '__' separates path segments
 #   CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS=kafka:9092
-#   -Dcesium.instance-id=cesium-0
+#   CESIUM_INSTANCE_ID=cesium-0
 #
 # Secrets stay out of the file via ${env:VAR} interpolation inside any value.
 # Unknown keys (here or under the CESIUM_ prefix) are startup errors (exit 78).

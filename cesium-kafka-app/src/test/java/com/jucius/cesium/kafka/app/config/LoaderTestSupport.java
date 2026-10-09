@@ -6,7 +6,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.Properties;
 
 /**
  * Hermetic loader fixtures: the environment and system properties are plain injected maps — tests
@@ -34,11 +33,7 @@ final class LoaderTestSupport {
     private LoaderTestSupport() {}
 
     static CesiumConfigLoader loader(Map<String, String> environment) {
-        return new CesiumConfigLoader(environment, new Properties(), ROOMY_CONTEXT);
-    }
-
-    static CesiumConfigLoader loader(Map<String, String> environment, Properties systemProperties) {
-        return new CesiumConfigLoader(environment, systemProperties, ROOMY_CONTEXT);
+        return new CesiumConfigLoader(environment, ROOMY_CONTEXT);
     }
 
     static Path write(Path dir, String yaml) {

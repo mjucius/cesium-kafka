@@ -44,7 +44,7 @@ application and can run anywhere a suitable JVM can reach Kafka:
 
 The supported product surface is the runnable app, not an embedded Java library API. That means
 the recommended production shape is to run cesium-kafka as its own process or service and configure
-it with YAML, environment variables, and system properties.
+it with YAML and environment variables.
 
 The engine code is Java and is structured internally as reusable modules, but its programmatic API is
 not a stable public embedding contract. The stable extension point is the scheduler store SPI,

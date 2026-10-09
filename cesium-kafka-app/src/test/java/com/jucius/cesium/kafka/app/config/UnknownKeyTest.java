@@ -12,7 +12,6 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -84,8 +83,7 @@ class UnknownKeyTest {
         List<String> paths =
                 exception.report().errors().stream().map(Finding::path).toList();
         assertEquals(List.of("dispatch.coalesce"), paths, exception::getMessage);
-        int code = CesiumApp.run(
-                new String[] {"--config", file.toString()}, Map.of(), new Properties(), Clock.systemUTC());
+        int code = CesiumApp.run(new String[] {"--config", file.toString()}, Map.of(), Clock.systemUTC());
         assertEquals(CesiumConfigLoader.EX_CONFIG, code);
     }
 
