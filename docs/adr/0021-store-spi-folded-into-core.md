@@ -22,11 +22,11 @@ pluggability was in use:
   `clock()`. Most of `ConfigView` and `RouteDescriptor` was never read.
 - The api and testkit jars are not published anywhere (ADR-0017, repo-only publishing).
 
-The boundary also cost real complexity. Shard recovery state, the shard-epoch counter, the last
+The boundary also duplicated state and settings. Shard recovery state, the shard-epoch counter, the last
 committed cursor offset and the penalty box were each tracked on both sides of it, the sidecar budget
 had two config keys, and the heap-budget rule was written in two modules.
 
-The same 2.0 review found config keys with no real use: `ingest.workers` and `dispatch.workers` (the
+The same 2.0 review also marked these settings and features for removal: `ingest.workers` and `dispatch.workers` (the
 latter already forced to 1), the startup heap-budget check, the PoC-era binary header decode, the
 `-Dcesium.*` system-property overlay, the tracker ACL grant on topic creation, and `ingest.max-batch`.
 
@@ -62,6 +62,9 @@ latter already forced to 1), the startup heap-budget check, the PoC-era binary h
 ## Consequences
 
 - Writing a new store means changing the engine, and that change needs its own ADR.
+- The dispatch loop and the store still each track shard recovery state, the shard epoch, the last
+  committed cursor offset and the penalty box. With one module, merging them is possible, but 2.0
+  does not do it.
 - ADR-0019's api/testkit stability clause no longer applies, because those modules no longer exist.
   The supported product surface is the runnable app (ADR-0017), and `cesium-kafka-core` stays
   internal.
