@@ -812,9 +812,9 @@ public final class StartupValidator {
                     "route.tracker.acl-principal='" + configured + "' is configured but no matching ALLOW WRITE ACL"
                             + " exists on tracker topic '" + topic + "' (live ALLOW WRITE principals: "
                             + (writePrincipals.isEmpty() ? "none" : new TreeSet<>(writePrincipals))
-                            + ") — the R12 write restriction is not in force. Re-apply the grant (or set"
-                            + " route.tracker.bootstrap: CREATE on a run where the topic is absent), or restore it"
-                            + " out of band."));
+                            + ") — the R12 write restriction is not in force. Create the ALLOW WRITE ACL for that"
+                            + " principal on the tracker topic yourself (cesium never grants ACLs), or set"
+                            + " startup-checks.tracker-acl: WARN/SKIP if you enforce the restriction out of band."));
         }
         if (!foreign.isEmpty()) {
             // L3(b): a principal other than the configured cesium principal can write tracker

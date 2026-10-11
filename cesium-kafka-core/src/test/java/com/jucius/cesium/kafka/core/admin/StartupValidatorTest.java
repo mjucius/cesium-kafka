@@ -789,6 +789,7 @@ class StartupValidatorTest {
                     validator.validate(failMode("User:cesium").build());
 
             assertErrorContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
+            assertErrorContains(result, ACL_PATH, "Create the ALLOW WRITE ACL for that principal");
         }
 
         @Test

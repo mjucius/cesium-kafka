@@ -61,7 +61,7 @@ route:
   tracker:
     bootstrap: CREATE
     # topic: cesium.orders-delay.tracker
-    # acl-principal: User:cesium     # granted tracker write/read/describe ACLs (R12)
+    # acl-principal: User:cesium     # the principal you grant tracker write/read/describe (R12)
   # Dead-letter topic. Required whenever any policy routes to DLQ (the defaults do).
   dlq:
     topic: orders-dlq

@@ -92,6 +92,7 @@ rollback.
   `route.tracker.acl-principal`. Create the ACL yourself; a literal ACL can exist before the topic.
   `startup-checks.tracker-acl` still verifies it at startup and on every re-validation round, and
   the cesium principal no longer needs `Cluster:ALTER`. A failed grant can no longer fail startup.
+  The startup finding for a missing ACL now says to create it yourself rather than suggesting `CREATE`.
 - The startup log line `cesium engine started` loses its `ingestWorkers`/`dispatchWorkers` fields.
 - `ingest.max-batch` is removed (exit 78 if set). It only set the ingest consumer's
   `max.poll.records`, which keeps its tuned default of 2000; override it through
