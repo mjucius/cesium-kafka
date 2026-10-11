@@ -38,7 +38,7 @@ apply to a running cluster.
   source partition with no tracker partition (I-7) stays, and startup still fails on every check as
   before.
 - D14's observed term becomes the dispatch group's committed tracker cursor age, compared against
-  `delete.retention.ms / 2 + 1h`. Under the `2 × delay.max` floor a breach is still safe until the
+  `delete.retention.ms / 2`. Under the `2 × delay.max` floor a breach is still safe until the
   cursor's age reaches the full `delete.retention.ms`, so this alerts with half the retention left.
   It runs only on instances whose `roles` include `dispatch`, since an ingest-only instance cannot
   fix a stalled dispatch fleet. The oldest-pending term is dropped: a replay starts at the committed

@@ -166,7 +166,7 @@ Getting them wrong can cause a duplicate or silent loss.
 | Setting | Required value | Why it matters |
 |---|---|---|
 | `cleanup.policy` | `compact` (never `compact,delete`) | `compact,delete` would delete a still-pending ADD older than retention → silent loss (D4). Compaction-only means a lone pending ADD can never expire. |
-| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. On dispatch instances, re-validation checks the committed-cursor age against `delete.retention.ms / 2 + 1h` and degrades + alerts on a breach; the oldest-pending term is covered by it, since a replay starts at the cursor (ADR-0020, [§4](#4-lowering-delaymax-runbook)). |
+| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. On dispatch instances, re-validation checks the committed-cursor age against `delete.retention.ms / 2` and degrades + alerts on a breach; the oldest-pending term is covered by it, since a replay starts at the cursor (ADR-0020, [§4](#4-lowering-delaymax-runbook)). |
 | `min.compaction.lag.ms` | `≥ max(2 × transaction.timeout.ms, 1 h)` | Keeps the cleaner away from the active tail / LSO region. Below the floor is a startup FAIL. |
 | `segment.ms` | `≈ 1 h` | So cleaning happens. Larger is a WARN (delays tombstone collection, grows disk). |
 | `message.timestamp.type` | `LogAppendTime` | So tracker record timestamps reflect append order. Otherwise a WARN. |
@@ -201,7 +201,7 @@ committed-cursor age (ADR-0020), but the drain below is what keeps you out of th
    (`2 × new delay.max`), and restart so startup re-validates.
 
 If you skip the drain, startup passes (it checks only `2 × delay.max`). Re-validation then degrades
-once a committed cursor is older than `delete.retention.ms / 2 + 1h`, which is the overflow-mode state
+once a committed cursor is older than `delete.retention.ms / 2`, which is the overflow-mode state
 in which a replay can deliver a duplicate. Raise `delete.retention.ms` again if that happens; it
 applies live.
 
@@ -635,7 +635,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | Condition | Expression (sketch) | Meaning / action |
 |---|---|---|
 | Loop degraded | `cesium_degraded > 0` | Park-and-degrade (§3.8): broker degradation outlasting retries. Page; check the logged cause (e.g. destination ISR shortage). Self-recovers when the dependency returns. |
-| Re-validation error | `cesium_revalidation_errors > 0` | The environment broke under a running engine: a tracker setting below the §3 floors, a committed cursor older than `delete.retention.ms / 2 + 1h`, partition drift, a missing topic, a retention change, or a round that could not complete. The ERROR log on `cesium-admin` names it. Fix it live; the next clean round clears the flag ([§14.5](#145-re-validation-errors-not-an-exit)). |
+| Re-validation error | `cesium_revalidation_errors > 0` | The environment broke under a running engine: a tracker setting below the §3 floors, a committed cursor older than `delete.retention.ms / 2`, partition drift, a missing topic, a retention change, or a round that could not complete. The ERROR log on `cesium-admin` names it. Fix it live; the next clean round clears the flag ([§14.5](#145-re-validation-errors-not-an-exit)). |
 | Loop stalled | `time() − cesium_loop_last_iteration_timestamp_seconds > N` | A loop stopped iterating. Page; check thread/JVM health. |
 | Dispatch precision SLO | `histogram_quantile(0.99, cesium_dispatch_lag_seconds_bucket) > SLO` | Lateness over budget. Investigate commit/IO/GC tails ([performance.md](performance.md)). |
 | Poll-gap approaching eviction | `cesium_dispatch_poll_gap_seconds > 0.5 × max.poll.interval.ms/1000` | Risk of group eviction under a due-storm. Lower `dispatch.drain.max-slice` or `dispatch.batch.max-entries`. |
@@ -736,7 +736,7 @@ resumes automatically.
 Every `startup-checks.revalidation-interval` (default `PT5M`) the `cesium-admin` thread re-runs the
 §14.2 checks against the live cluster, without creating topics or applying ACLs, plus three runtime
 checks: the source and tracker topic ids (a change is the exit in §14.3), the dispatch group's
-committed-cursor age against `delete.retention.ms / 2 + 1h` (dispatch instances only), and, for an
+committed-cursor age against `delete.retention.ms / 2` (dispatch instances only), and, for an
 acknowledged size- or tier-evicting source, whether eviction reached records inside
 `delay.max + 1h`. Every other error is logged at ERROR as *re-validation finding route.tracker: …*,
 sets `cesium_revalidation_errors` and the `/health/ready` degraded flag with a short cause, and

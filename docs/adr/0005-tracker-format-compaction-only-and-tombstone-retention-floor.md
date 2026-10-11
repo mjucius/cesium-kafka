@@ -52,6 +52,6 @@ is lowered to `P1D` to keep default tracker disk sane.
 
 > **Amended by [ADR-0020](0020-runtime-revalidation.md):** the `delay.max` term is validated at
 > startup (FAIL). Every `startup-checks.revalidation-interval`, re-validation compares the dispatch
-> group's committed-cursor age with `delete.retention.ms / 2 + 1h`. A violation degrades health, logs
+> group's committed-cursor age with `delete.retention.ms / 2`. A violation degrades health, logs
 > an ERROR and sets `cesium_revalidation_errors`, and dispatch continues rather than refusing. The
 > oldest-pending term is dropped as subsumed by the cursor term.

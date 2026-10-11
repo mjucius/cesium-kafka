@@ -128,7 +128,7 @@ rollback.
   Partition drift at runtime no longer fails fast in the spec (R-7); ingest's I-7 fail-fast on a
   source partition with no tracker partition is unchanged.
 - D14's runtime term is now the dispatch group's committed-cursor age against
-  `delete.retention.ms / 2 + 1h`, and a violation degrades and alerts instead of refusing
+  `delete.retention.ms / 2`, and a violation degrades and alerts instead of refusing
   (ADR-0020). The oldest-pending term is dropped as subsumed.
 - Core (internal): `StartupChecks` gains `revalidationInterval` and loses `heapBudget`.
 

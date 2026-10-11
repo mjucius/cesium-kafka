@@ -1342,9 +1342,9 @@ class StartupValidatorTest {
 
         // ---- D14 committed-cursor age
 
-        /** delete.retention.ms = 2 x P1D, so the age limit is 1 day + 1 hour. */
+        /** delete.retention.ms = 2 x P1D, so the age limit is 1 day. */
         private long cutoff() {
-            return NOW - (DAY + HOUR);
+            return NOW - DAY;
         }
 
         /** Tracker partition 0 holds ADDs appended just before, at, and after the cutoff (offsets 10..12). */
@@ -1387,6 +1387,24 @@ class StartupValidatorTest {
             admin.topicConfigs.get(TRACKER).put("delete.retention.ms", Long.toString(4 * DAY));
 
             assertEquals("", errorsAt(round(defaultConfig()), "route.tracker"));
+        }
+
+        @Test
+        void aShortRetentionAlertsAtExactlyHalfOfIt() {
+            // delete.retention.ms = 30 min puts the cutoff 15 min before now.
+            long minute = Duration.ofMinutes(1).toMillis();
+            admin.putLog(TRACKER, 0, 10, NOW - 20 * minute, NOW - 10 * minute);
+            admin.topicConfigs.get(TRACKER).put("delete.retention.ms", Long.toString(30 * minute));
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.delay = new DelayConfig(Duration.ofMinutes(1), null, null);
+            CesiumConfig config = builder.build();
+
+            commitCursor(10); // 20 minutes old
+            String errors = errorsAt(round(config), "route.tracker");
+            assertTrue(errors.contains("committed cursor older than delete.retention.ms / 2"), errors);
+
+            commitCursor(11); // 10 minutes old
+            assertEquals("", errorsAt(round(config), "route.tracker"));
         }
 
         @Test

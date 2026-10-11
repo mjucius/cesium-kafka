@@ -359,8 +359,8 @@ class StartupChecksIT extends KafkaIT {
                         harness.dispatchGroupId(), Map.of(trackerPartition, new OffsetAndMetadata(0L)))
                 .all());
 
-        // The margin is at least an hour, so the only way to age a fresh record past
-        // delete.retention.ms / 2 + 1h (= 25 h here) is to read the round 30 h in the future.
+        // The only way to age a fresh record past delete.retention.ms / 2 (= 24 h here) is to
+        // read the round 30 h in the future.
         Clock future = Clock.offset(Clock.systemUTC(), Duration.ofHours(30));
         IdentityBlob identity = startup.identity().orElseThrow();
         Uuid trackerId = topicId(tracker);
@@ -373,7 +373,7 @@ class StartupChecksIT extends KafkaIT {
                                 && f.message().contains("committed cursor older than delete.retention.ms / 2")),
                 () -> breached.report().render());
 
-        // Raising delete.retention.ms to 4 days moves the cutoff to 19 h before now: clean again.
+        // Raising delete.retention.ms to 4 days moves the cutoff to 18 h before now: clean again.
         ConfigResource resource = new ConfigResource(ConfigResource.Type.TOPIC, tracker);
         get(ADMIN.incrementalAlterConfigs(Map.of(
                         resource,

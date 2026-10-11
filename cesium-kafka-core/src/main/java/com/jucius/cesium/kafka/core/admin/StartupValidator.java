@@ -79,7 +79,7 @@ import org.jspecify.annotations.Nullable;
  * applies an ACL. It re-runs the source, tracker, DLQ and destination checks against the live
  * cluster and adds three that only make sense on a running engine: the source and tracker topic ids
  * against the ones captured at startup (a change is the only fatal outcome, R17), the dispatch
- * group's committed tracker cursor age against {@code delete.retention.ms / 2 + 1h} (D14, on
+ * group's committed tracker cursor age against {@code delete.retention.ms / 2} (D14, on
  * instances running dispatch), and, when the source evicts by size or tier under the
  * {@code ACKNOWLEDGED} gate, whether its earliest retained record is already inside the
  * {@code delay.max + margin} window (R-11).
@@ -277,7 +277,7 @@ public final class StartupValidator {
 
     /**
      * D14's observed term (ADR-0020): the dispatch group's committed tracker cursor must be younger
-     * than {@code delete.retention.ms / 2 + 1h}. Under the {@code 2 x delay.max} floor a breach is
+     * than {@code delete.retention.ms / 2}. Under the {@code 2 x delay.max} floor a breach is
      * still safe until the cursor's age reaches the full {@code delete.retention.ms}, so this alerts
      * with half the retention left. A partition breaches when its committed offset sits below the
      * first tracker offset appended at or after the cutoff. Skipped when the cutoff would precede the
@@ -286,7 +286,7 @@ public final class StartupValidator {
     private void checkCursorAge(
             CesiumConfig config, TopicFacts tracker, long deleteRetentionMs, List<Finding> findings) {
         long nowMs = clock.millis();
-        long ageLimitMs = DelayHeaderCodec.saturatedAddMillis(deleteRetentionMs / 2, RETENTION_MARGIN.toMillis());
+        long ageLimitMs = deleteRetentionMs / 2;
         if (ageLimitMs >= nowMs) {
             return;
         }
@@ -310,8 +310,8 @@ public final class StartupValidator {
         if (!breached.isEmpty()) {
             findings.add(Finding.error(
                     "route.tracker",
-                    "dispatch group '" + groupId + "' has a committed cursor older than delete.retention.ms / 2 + "
-                            + RETENTION_MARGIN + " (" + ageLimitMs + " ms) on tracker '" + tracker.name()
+                    "dispatch group '" + groupId + "' has a committed cursor older than delete.retention.ms / 2 ("
+                            + ageLimitMs + " ms) on tracker '" + tracker.name()
                             + "' partition(s) " + breached + " (D14, ADR-0020): a replay from that cursor may need"
                             + " tombstones the cleaner can remove once the cursor's age reaches delete.retention.ms ("
                             + deleteRetentionMs + " ms), which turns a replay into duplicates. Raise"
