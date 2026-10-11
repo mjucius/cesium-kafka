@@ -1,9 +1,18 @@
 # What's new in 2.0
 
-2.0 is a cleanup release. The relay does the same job with the same exactly-once guarantees and
-writes the same bytes to Kafka. 2.0 changes the surface around it: fewer config keys, one built-in
-store, one loop of each kind per process, a smaller build, and a batch of fixes. A rolling upgrade
-from 1.1.5 is safe because 1.1.5 and 2.0 instances can run side by side.
+2.0 is a cleanup release. It is a major version because some of the cleanup breaks compatibility:
+removed config keys and system properties, stricter validation, a new fatal log line, changed health
+output, and no ACL grant when cesium creates the tracker. Each break simplifies the engine or makes
+it behave the way its docs say. For example, `dispatch.coalesce` never had any effect, the
+`*.workers` settings misbehaved above 1, and `cesium_dlq_records_total` counted only ingest-side DLQ
+writes. A break may need a change to your config, alerts or deployment, and §4 walks through each
+one. [ADR-0019](adr/0019-2-0-stability-baseline.md) records why 2.0 took the clean fix over a
+compatible one.
+
+The relay itself is unchanged. It does the same job, keeps the same exactly-once guarantees, and
+writes the same bytes to Kafka, so 1.1.5 and 2.0 instances can run side by side and a rolling
+upgrade from 1.1.5 is safe. 2.0 also folds the store into the engine, runs one loop of each kind per
+process, builds from fewer modules, and fixes a batch of bugs.
 
 The [CHANGELOG](../CHANGELOG.md) lists every change.
 
