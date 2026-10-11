@@ -232,7 +232,7 @@ an ERROR finding degrades; a `WARN`-mode finding is logged once when it appears.
 | `startup-checks.size-based-retention` | `FAIL` | When `retention.bytes != -1` or remote/tiered storage is enabled on the source, time-based validation cannot bound payload lifetime. Startup fails unless set to the explicit, named acceptance `ACKNOWLEDGED` (R13). |
 | `startup-checks.max-tolerated-outage` | `P7D` | The longest outage after which committed offsets must still exist; checked against broker `offsets.retention.minutes` (D18, R6). |
 | `startup-checks.outage-check` | `FAIL` | Strictness of the `max-tolerated-outage` vs broker offsets-retention check: `FAIL` or `WARN` only (`SKIP` is rejected). |
-| `startup-checks.revalidation-interval` | `PT5M` | How often a running engine re-runs these checks on the `cesium-admin` thread (D23, ADR-0020); must be positive. A source or tracker topic id change exits non-zero; every other error is logged at ERROR, counted in `cesium_revalidation_errors` and sets the readiness degraded flag, and dispatch continues. It never creates a topic or applies an ACL. |
+| `startup-checks.revalidation-interval` | `PT5M` | How often a running engine re-runs these checks on the `cesium-admin` thread (D23, ADR-0020); must be at least `PT0.001S`. A source or tracker topic id change exits non-zero; every other error is logged at ERROR, counted in `cesium_revalidation_errors` and sets the readiness degraded flag, and dispatch continues. It never creates a topic or applies an ACL. |
 | `startup-checks.tracker-acl` | `WARN` | Strictness of the R12 tracker write-ACL verification: `FAIL`, `WARN`, or `SKIP`. `FAIL` refuses to start unless only the cesium principal can write the tracker (it also fails on an unset `acl-principal` or a cluster without an authorizer). `FAIL` is recommended for production. |
 
 Operator-acknowledged escape hatches (`size-based-retention: ACKNOWLEDGED`, any check set to `SKIP`
@@ -244,10 +244,12 @@ or `WARN`) shift responsibility to you. They are named and logged at startup. `/
 
 ## 12. Durations and the schema
 
-All durations are ISO-8601 (`PT30S`, `PT2S`, `PT1M`, `P1D`, `P7D`). Numeric byte budgets are plain
-integers (`33554432` for 32 MiB). Enum values are case-insensitive (`DLQ`, `dlq`, and `Dlq` all
-bind); this reference writes them as shown (`DLQ`, `CLAMP`, `DISPATCH`, `BY_KEY`, `FAIL`,
-`ACKNOWLEDGED`, `classic`, ...). The `instance-id` literal `random` is case-sensitive.
+All durations are ISO-8601 (`PT30S`, `PT2S`, `PT1M`, `P1D`, `P7D`). cesium uses them in whole
+milliseconds, so each must be at least `PT0.001S`; a shorter one fails startup with exit 78.
+Numeric byte budgets are plain integers (`33554432` for 32 MiB). Enum values are case-insensitive
+(`DLQ`, `dlq`, and `Dlq` all bind); this reference writes them as shown (`DLQ`, `CLAMP`,
+`DISPATCH`, `BY_KEY`, `FAIL`, `ACKNOWLEDGED`, `classic`, ...). The `instance-id` literal `random`
+is case-sensitive.
 
 The schema is strict: any key not in the schema, at any nesting level, from YAML or the env
 overlay, fails startup with exit 78 and names the offending path. The exceptions are the open maps

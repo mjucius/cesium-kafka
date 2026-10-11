@@ -78,9 +78,11 @@ environment variable, and the error names the key.
 | `headers.accept-binary-long-values` | Remove. Control headers must be ASCII decimal; see §4.3. |
 | `-Dcesium.*` JVM properties | Move them to `CESIUM_*` environment variables or YAML. For example, `-Dcesium.instance-id=x` becomes `CESIUM_INSTANCE_ID=x`. 2.0 ignores these properties without an error, so search your JVM options and deployment manifests for `-Dcesium.` before you roll. |
 
-2.0 also enforces two ranges (exit 78 outside them):
+2.0 also enforces three ranges (exit 78 outside them):
 - `dispatch.cursor.sidecar-max-bytes` must be between 128 and 1048576. 1.x ignored this key.
 - `kafka.transactions.commit-retry` must be at least 1.
+- Every duration must be at least `PT0.001S`. 1.x accepted a positive value below 1 ms and used
+  it as 0 ms.
 
 ### 4.3 Check producers (only if you enabled binary headers)
 

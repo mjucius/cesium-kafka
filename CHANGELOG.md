@@ -80,6 +80,9 @@ rollback.
 - `kafka.transactions.commit-retry` must be at least 1 (exit 78). It counts `commitTransaction`
   attempts, so `0` behaved like `1`; it passed config load and then failed engine construction
   with exit 1.
+- Every duration key must be at least `PT0.001S` (exit 78). The engine uses durations in whole
+  milliseconds; 1.x accepted a positive value below 1 ms and truncated it to 0 ms. Without the
+  check, a sub-millisecond `startup-checks.revalidation-interval` (new in 2.0) would crash startup.
 - `headers.accept-binary-long-values` is removed (exit 78 if set). ASCII decimal is the only
   control-header encoding, and an 8-byte big-endian value is malformed. The flag was compatibility
   with the retired proof-of-concept and was never used outside a unit test.
@@ -131,10 +134,10 @@ rollback.
 
 ### Added
 - Runtime re-validation (D23, ADR-0020): a `cesium-admin` thread re-runs the environment checks every
-  `startup-checks.revalidation-interval` (new key, default `PT5M`, must be positive), plus the topic
-  identity, D14 committed-cursor age (dispatch instances only) and, under acknowledged size or tier
-  eviction, an R-11 earliest-retained-record check. It never creates topics or applies ACLs, and
-  needs no new ACL grants.
+  `startup-checks.revalidation-interval` (new key, default `PT5M`, must be at least `PT0.001S`),
+  plus the topic identity, D14 committed-cursor age (dispatch instances only) and, under
+  acknowledged size or tier eviction, an R-11 earliest-retained-record check. It never creates
+  topics or applies ACLs, and needs no new ACL grants.
 - Metric `cesium_revalidation_errors`: errors found by the last re-validation round; `0` when clean.
 - Metrics `cesium_shard_state{partition}` (0 = ASSIGNED, 1 = RECOVERING, 2 = ACTIVE) and
   `cesium_replay_remaining_records{partition}` (barrier − position while recovering), previously

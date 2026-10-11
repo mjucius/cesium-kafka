@@ -39,6 +39,9 @@ public final class CesiumConfigValidator {
      */
     static final long DEFAULT_MAX_POLL_INTERVAL_MS = 300_000L;
 
+    /** The smallest duration any key accepts. */
+    private static final Duration MIN_DURATION = Duration.ofMillis(1);
+
     /** Validates {@code config}, returning the aggregate report. */
     public ValidationReport validate(CesiumConfig config, ValidationContext context) {
         List<Finding> findings = new ArrayList<>();
@@ -174,9 +177,10 @@ public final class CesiumConfigValidator {
         }
     }
 
+    /** Every duration is consumed in whole milliseconds, so anything below 1 ms would truncate to 0. */
     private static void positiveDuration(List<Finding> findings, String path, Duration value) {
-        if (value.isZero() || value.isNegative()) {
-            findings.add(Finding.error(path, "must be a positive duration, got " + value + "."));
+        if (value.compareTo(MIN_DURATION) < 0) {
+            findings.add(Finding.error(path, "must be at least " + MIN_DURATION + " (1 ms), got " + value + "."));
         }
     }
 

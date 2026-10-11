@@ -25,7 +25,7 @@ apply to a running cluster.
 ## Decision
 
 - A dedicated `cesium-admin` daemon thread runs one re-validation round every
-  `startup-checks.revalidation-interval` (default `PT5M`, must be positive):
+  `startup-checks.revalidation-interval` (default `PT5M`, must be at least `PT0.001S`):
   `StartupValidator.revalidate`. It re-runs the source, tracker, DLQ and destination checks against
   the live cluster and never creates a topic or applies an ACL.
 - A source or tracker topic id change (or a different cluster id) is the only fatal finding. The

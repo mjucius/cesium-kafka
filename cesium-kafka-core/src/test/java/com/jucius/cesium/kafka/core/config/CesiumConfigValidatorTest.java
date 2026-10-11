@@ -480,11 +480,19 @@ class CesiumConfigValidatorTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"PT0S", "-PT1M"})
-    void revalidationIntervalMustBePositive(String interval) {
+    @ValueSource(strings = {"PT0S", "-PT1M", "PT0.000001S"})
+    void revalidationIntervalMustBeAtLeastOneMillisecond(String interval) {
+        // A sub-millisecond interval truncates to 0 ms, which scheduleWithFixedDelay rejects at startup.
         StartupChecks checks = new StartupChecks(null, null, null, null, null, Duration.parse(interval));
         CesiumConfig config = TestConfigs.withDispatch(DispatchConfig.defaults(), checks);
         assertTrue(errorPaths(validate(config)).contains("startup-checks.revalidation-interval"));
+    }
+
+    @Test
+    void oneMillisecondRevalidationIntervalIsAccepted() {
+        StartupChecks checks = new StartupChecks(null, null, null, null, null, Duration.parse("PT0.001S"));
+        CesiumConfig config = TestConfigs.withDispatch(DispatchConfig.defaults(), checks);
+        assertFalse(errorPaths(validate(config)).contains("startup-checks.revalidation-interval"));
     }
 
     @Test

@@ -841,7 +841,7 @@ Key defaults (durations ISO-8601):
 | `startup-checks.retention` | `FAIL` | §7.6 |
 | `startup-checks.size-based-retention` | unset (⇒ FAIL when size/tiered eviction detected) | explicit `ACKNOWLEDGED` to proceed |
 | `startup-checks.max-tolerated-outage` | `P7D` | checked against broker `offsets.retention.minutes`; WARN/FAIL via `startup-checks.outage-check` (default `FAIL`) |
-| `startup-checks.revalidation-interval` | `PT5M` | D23: how often a running engine re-runs the checks on `cesium-admin`; must be positive |
+| `startup-checks.revalidation-interval` | `PT5M` | D23: how often a running engine re-runs the checks on `cesium-admin`; must be at least `PT0.001S` |
 | `startup-checks.tracker-acl` | `WARN` | R12 tracker write-ACL verified at startup; `WARN` surfaces a missing/foreign/unset grant, `FAIL` (recommended for production) refuses to start when it is not in force, `SKIP` omits the check |
 | `observability.port` | 8081 | |
 | `observability.bind-address` | `0.0.0.0` | wildcard for k8s probes; set `127.0.0.1` to restrict the unauthenticated endpoints to loopback (L1) |
