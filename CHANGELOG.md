@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-11
+
 Cleanup and fixes from an over-engineering audit and a docs-versus-code audit, released as 2.0.0
 (ADR-0019): with no external users yet, the fixes take the clean form even where that breaks the
 api, testkit, config keys, metrics or log shape. Every break is listed under "Breaking changes".
@@ -13,7 +15,7 @@ Wire formats are unchanged, so a mixed 1.1.5/2.0.0 rolling restart is safe.
 HTTP bodies are the same JSON, though an escaped control character there would now use uppercase hex.
 
 ### Upgrading from 1.x
-[docs/whats-new-in-2.0.md](docs/whats-new-in-2.0.md) walks through these steps, plus dashboards and
+[docs/whats-new-in-2.0.md](https://github.com/mjucius/cesium-kafka/blob/v2.0.0/docs/whats-new-in-2.0.md) walks through these steps, plus dashboards and
 rollback.
 1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce`,
    `startup-checks.heap-budget`, `headers.accept-binary-long-values`, and the whole `store` block
@@ -530,7 +532,8 @@ delivery as observed by `read_committed` consumers of the destination.
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v1.1.5...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/mjucius/cesium-kafka/compare/v1.1.5...v2.0.0
 [1.1.5]: https://github.com/mjucius/cesium-kafka/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/mjucius/cesium-kafka/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/mjucius/cesium-kafka/compare/v1.1.2...v1.1.3
