@@ -63,7 +63,8 @@ an optional DLQ.
 > fail-fast). At runtime, ingest fails fast on the first record from a source partition that has no
 > tracker partition (I-7). Re-validation also re-checks parity every
 > `startup-checks.revalidation-interval`; a mismatch found there degrades readiness and alerts
-> (`cesium_revalidation_errors`) instead of exiting (§9, §13, ADR-0020).
+> (`cesium_revalidation_errors`) instead of exiting (§13, ADR-0020). Growing either topic still
+> needs a stop ([§9](#9-growing-partitions-runbook)).
 
 The DLQ topic's existence is validated whenever a policy routes to it. Create it with a partition
 count that suits your DLQ-drain tooling (it need not match the source).
@@ -377,23 +378,47 @@ per loop and, for dispatch, by seek-fetch I/O ([§12](#12-broker-iops-budgeting-
 
 ## 9. Growing partitions (runbook)
 
-The tracker partition count must equal the source partition count. Growing the source without
-first growing the tracker halts ingest: a source record on a new partition has no tracker partition
-to land its ADD on.
+The tracker partition count must equal the source partition count, and growing either topic needs
+the engine stopped. A new partition has no committed offset, and `auto.offset.reset=none` is locked
+(D18), so a running loop stops the moment it is assigned one: dispatch on a new tracker partition,
+ingest on a new source partition. Re-validation may report the count mismatch first
+([§14.5](#145-re-validation-errors-not-an-exit)); that finding only degrades readiness, and the loop
+still stops when it is assigned the new partition.
 
-**Grow the tracker first:**
+1. Stop every cesium instance of the application, in every role.
+2. Wait until both consumer groups, `cesium.<application-id>.ingest` and
+   `cesium.<application-id>.dispatch`, are empty. Kafka resets offsets only for an inactive group,
+   and a stopped static member stays registered until its session times out: `session.timeout.ms`
+   ([§10](#10-kubernetes-rollout-recipe)), or the broker's `group.consumer.session.timeout.ms` under
+   `kafka.group-protocol: consumer`. Run this for each group until it reports `Empty`:
 
-1. Increase the **tracker** topic partition count to the target.
-2. Increase the **source** topic partition count to the same target.
-3. (If using `route.relay.partitioning: SOURCE_PARTITION`, grow the destination to match too; it is
-   validated equal at startup.)
+   ```
+   kafka-consumer-groups.sh --bootstrap-server <brokers> --describe --group cesium.<application-id>.dispatch --state
+   ```
 
-In this order, producers never reach a new source partition before its tracker
-partition exists. The startup check fails fast on a mismatch, and at runtime ingest fails fast on
-the first record from a source partition with no tracker partition (I-7, R-7). Between steps 1 and 2
-the counts differ, and re-validation reports that as an R-7 error: readiness shows degraded and
-`cesium_revalidation_errors` is non-zero until the source catches up. It never exits on drift. Adding partitions changes key→partition hashing for new
-records; existing pending entries keep their original partition.
+3. Grow the tracker topic to the target count
+   (`kafka-topics.sh --bootstrap-server <brokers> --alter --topic <tracker> --partitions <n>`).
+4. Grow the source topic to the same count. Under `route.relay.partitioning: SOURCE_PARTITION`, grow
+   the destination too; startup validates it equal.
+5. Seed only the new partitions to earliest, in both groups. Growing from 4 to 6 partitions:
+
+   ```
+   kafka-consumer-groups.sh --bootstrap-server <brokers> --group cesium.<application-id>.dispatch \
+     --reset-offsets --topic <tracker>:4,5 --to-earliest --execute
+   kafka-consumer-groups.sh --bootstrap-server <brokers> --group cesium.<application-id>.ingest \
+     --reset-offsets --topic <source>:4,5 --to-earliest --execute
+   ```
+
+   Without `--execute` the tool prints the plan and changes nothing. Always name the partitions.
+   `--all-topics`, or `--topic` without a partition list, also rewinds the existing partitions, and
+   ingest would then deliver everything still retained on them a second time. This is the
+   [§14.3](#143-runtime-fail-fast-exit-1-readiness-false) first-run offset reset, scoped to the new
+   partitions.
+6. Restart the instances.
+
+Producers can keep writing throughout; the earliest seed picks up anything written to a new source
+partition before the restart. Adding partitions changes key→partition hashing for new records;
+existing pending entries keep their original partition.
 
 ---
 
@@ -635,7 +660,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | Condition | Expression (sketch) | Meaning / action |
 |---|---|---|
 | Loop degraded | `cesium_degraded > 0` | Park-and-degrade (§3.8): broker degradation outlasting retries. Page; check the logged cause (e.g. destination ISR shortage). Self-recovers when the dependency returns. |
-| Re-validation error | `cesium_revalidation_errors > 0` | The environment broke under a running engine: a tracker setting below the §3 floors, a committed cursor older than `delete.retention.ms / 2`, partition drift, a missing topic, a retention change, or a round that could not complete. The ERROR log on `cesium-admin` names it. Fix it live; the next clean round clears the flag ([§14.5](#145-re-validation-errors-not-an-exit)). |
+| Re-validation error | `cesium_revalidation_errors > 0` | The environment broke under a running engine: a tracker setting below the §3 floors, a committed cursor older than `delete.retention.ms / 2`, partition drift, a missing topic, a retention change, or a round that could not complete. The ERROR log on `cesium-admin` names it. Fix it live, except partition drift, which needs the offline [§9](#9-growing-partitions-runbook) procedure; the next clean round clears the flag ([§14.5](#145-re-validation-errors-not-an-exit)). |
 | Loop stalled | `time() − cesium_loop_last_iteration_timestamp_seconds > N` | A loop stopped iterating. Page; check thread/JVM health. |
 | Dispatch precision SLO | `histogram_quantile(0.99, cesium_dispatch_lag_seconds_bucket) > SLO` | Lateness over budget. Investigate commit/IO/GC tails ([performance.md](performance.md)). |
 | Poll-gap approaching eviction | `cesium_dispatch_poll_gap_seconds > 0.5 × max.poll.interval.ms/1000` | Risk of group eviction under a due-storm. Lower `dispatch.drain.max-slice` or `dispatch.batch.max-entries`. |
@@ -696,7 +721,7 @@ Discovered after config binds, against the live cluster:
 | Source `retention.ms` < `delay.max + margin` (`startup-checks.retention: FAIL`) | Raise source retention above `delay.max`, lower `delay.max`, or set the check to `WARN`/`SKIP` accepting the payload-expiry risk. |
 | Size/tier eviction detected, not acknowledged | Set `startup-checks.size-based-retention: ACKNOWLEDGED` (named acceptance) or remove `retention.bytes`/tiered storage from the source. |
 | Tracker topic missing in `FAIL` bootstrap mode | Pre-provision the tracker topic per [§1](#1-topics-and-bootstrap-create-vs-fail)/[§3](#3-tracker-settings-that-correctness-depends-on), or use `CREATE`. |
-| Tracker partition count ≠ source | Grow the tracker to match ([§9](#9-growing-partitions-runbook)). |
+| Tracker partition count ≠ source | Grow the tracker to match and seed the new partitions ([§9](#9-growing-partitions-runbook)). |
 | Tracker `cleanup.policy` ≠ `compact` (e.g. `compact,delete`) | Set `cleanup.policy=compact`; `compact,delete` causes silent loss (D4). |
 | Tracker `delete.retention.ms` below the floor | Raise it to `≥ 2 × delay.max`, or lower `delay.max` and drain ([§4](#4-lowering-delaymax-runbook)). |
 | Tracker `min.compaction.lag.ms` below floor | Raise to `≥ max(2 × transaction.timeout.ms, 1 h)`. |
@@ -712,13 +737,13 @@ Discovered after config binds, against the live cluster:
 
 | Failure (and the message) | Runbook |
 |---|---|
-| **Ingest: no committed offset**: *no committed offset for assigned source partition(s) and auto.offset.reset=none is locked: either committed offsets expired (broker offsets.retention.minutes shorter than the outage) or this is a first run; an operator must seed group offsets explicitly* | **First run:** seed the ingest group's offsets to your chosen start (typically earliest) once, e.g. `kafka-consumer-groups.sh --group cesium.<application-id>.ingest --topic <source> --reset-offsets --to-earliest --execute`. **After an outage > offsets retention:** the operator chooses the reset point explicitly (earliest = reprocess/possible duplicates; a later point = skip). Raise broker `offsets.retention.minutes` to prevent recurrence ([§7](#7-offsets-retention-vs-outage-tolerance)). |
-| **Dispatch: no committed cursor on a non-first run** | Same class as above for group B: committed cursors expired or were removed. The dispatch group seeks to beginning only on a provable first run; otherwise it fails fast. Treat as a tracker/offset integrity event ([§6](#6-tracker-disaster-recovery-runbook)). |
+| **Ingest: no committed offset**: *no committed offset for assigned source partition(s) and auto.offset.reset=none is locked: either committed offsets expired (broker offsets.retention.minutes shorter than the outage) or this is a first run; an operator must seed group offsets explicitly* | **First run:** seed the ingest group's offsets to your chosen start (typically earliest) once, e.g. `kafka-consumer-groups.sh --group cesium.<application-id>.ingest --topic <source> --reset-offsets --to-earliest --execute`. **After an outage > offsets retention:** the operator chooses the reset point explicitly (earliest = reprocess/possible duplicates; a later point = skip). Raise broker `offsets.retention.minutes` to prevent recurrence ([§7](#7-offsets-retention-vs-outage-tolerance)). **After the source grew:** the new partitions have no offset; follow [§9](#9-growing-partitions-runbook). |
+| **Dispatch: no committed cursor on a non-first run** | Same class as above for group B: committed cursors expired or were removed. The dispatch group seeks to beginning only on a provable first run; otherwise it fails fast. Treat as a tracker/offset integrity event ([§6](#6-tracker-disaster-recovery-runbook)). **After the tracker grew:** the new partitions have no cursor; follow [§9](#9-growing-partitions-runbook) instead. |
 | **Dispatch: tracker offset out of range**: *the tracker topic was truncated or recreated under the same name (§3.6 integrity, R-9). Never auto-reset — follow the tracker DR runbook* | The tracker was truncated/recreated. Follow [§6](#6-tracker-disaster-recovery-runbook). cesium will not auto-reset into an empty log. |
 | **Committed-offset identity mismatch** (source recreated) at a runtime offset fetch | Same as the startup identity mismatch ([§14.2](#142-startup-validation-against-the-cluster-exit-1)). |
 | **Topic identity change found by re-validation**: *fatal engine failure (re-validation)*, with *re-validation found the route identity changed since startup* or *the tracker topic '…' id changed* | The source or tracker was recreated under the same name while the engine ran (R17). The engine exits within one `startup-checks.revalidation-interval`. For the source, follow the startup identity mismatch row; for the tracker, follow [§6](#6-tracker-disaster-recovery-runbook). |
 | **Fatal producer error** (`ProducerFencedException`, `OutOfOrderSequenceException`, unrecoverable auth/config) | The clients close, the worker fails, the process exits non-zero (the durable log is authoritative for the successor). Restart the instance; if it recurs, check fencing (duplicate `instance-id`?), ACLs, and broker health. |
-| **Partition-count drift**: *source partition … has no tracker partition: tracker topic '…' has … partition(s) — the source partition count grew past the tracker (I-7, R-7)* | Raised by ingest on the first record from the new source partition; re-validation reports the drift earlier as a degrading error. Grow the tracker first ([§9](#9-growing-partitions-runbook)). |
+| **Partition-count drift**: *source partition … has no tracker partition: tracker topic '…' has … partition(s) — the source partition count grew past the tracker (I-7, R-7)* | Raised by ingest on the first record from a source partition the tracker lacks; re-validation may report the drift earlier as a degrading error. Stop the engine and finish the growth with [§9](#9-growing-partitions-runbook). |
 | **Recovery over heap budget**: *RECOVERY OVER HEAP BUDGET — refusing to … another pending entry for tracker partition …* (`cesium_recovery_over_budget_total`) | The durable backlog exceeds what the heap can hold. Nothing was committed. Raise `-Xmx` (the recovery budget is 25% of it) and/or shrink the backlog, then restart. |
 | **Ingest: `delay.on-*` policy FAIL fired** | A record violated the delay protocol under a `FAIL` policy; restart re-fails on the same record. Switch the policy to `DLQ`/`RELAY_IMMEDIATE` or move past the record explicitly ([§5](#5-least-privilege-deployment-tls-sasl-and-the-acl-matrix), L5). |
 

@@ -19,8 +19,9 @@ The design also said a D14 violation found at runtime should refuse rather than 
 runtime partition drift should fail fast. Stopping does not help in either case. The partitions move
 to surviving instances, which replay from the same committed cursor and meet the same finding. A
 recovery hold freezes the cursor, so a cursor-age breach could never clear. Forward dispatch is what
-shrinks the exposure, and the remedies (raise `delete.retention.ms`, finish growing the tracker)
-apply to a running cluster.
+shrinks the exposure, and raising `delete.retention.ms` works on a running cluster. Partition growth
+needs a stop either way, because a loop assigned a new partition exits on its missing committed
+offset ([operations.md §9](../operations.md#9-growing-partitions-runbook)).
 
 ## Decision
 

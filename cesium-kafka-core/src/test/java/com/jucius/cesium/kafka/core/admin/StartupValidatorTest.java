@@ -1313,7 +1313,7 @@ class StartupValidatorTest {
 
         @Test
         void partitionDriftDegradesInsteadOfStopping() {
-            // The grow-partitions runbook's intermediate state: the tracker grew first.
+            // The tracker grew ahead of the source.
             admin.topics.put(TRACKER, new TopicFacts(TRACKER, trackerId, PARTITIONS + 1));
 
             StartupValidator.Revalidation result = round(defaultConfig());

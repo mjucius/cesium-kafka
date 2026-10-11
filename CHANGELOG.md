@@ -122,11 +122,11 @@ rollback.
   `fatal engine failure (re-validation)`.
 - Other runtime re-validation errors set the `/health/ready` `degraded` flag with a short cause and
   `cesium_revalidation_errors`; readiness status is unchanged (D21) and dispatch continues. That
-  covers the D14 floor and committed-cursor age, partition drift (including the grow-partitions
-  runbook's intermediate state), the tracker `cleanup.policy` and other §2.1 settings, source
-  retention and the tracker ACL under `FAIL`, a missing topic, and a round that cannot complete.
-  Partition drift at runtime no longer fails fast in the spec (R-7); ingest's I-7 fail-fast on a
-  source partition with no tracker partition is unchanged.
+  covers the D14 floor and committed-cursor age, partition drift, the tracker `cleanup.policy` and
+  other §2.1 settings, source retention and the tracker ACL under `FAIL`, a missing topic, and a
+  round that cannot complete. Partition drift at runtime no longer fails fast in the spec (R-7);
+  ingest's I-7 fail-fast on a source partition with no tracker partition is unchanged. Growing
+  partitions still needs a stop (see Fixed).
 - D14's runtime term is now the dispatch group's committed-cursor age against
   `delete.retention.ms / 2`, and a violation degrades and alerts instead of refusing
   (ADR-0020). The oldest-pending term is dropped as subsumed.
@@ -144,6 +144,14 @@ rollback.
   listed as "not yet emitted".
 
 ### Fixed
+- The growing-partitions runbook (operations.md §9) had operators grow the tracker, then the source,
+  on a running engine, and the 2.0 text added that re-validation only degrades. A running engine
+  stops instead, because a new partition has no committed offset and, with `auto.offset.reset=none`
+  locked, the loop assigned it exits (dispatch on a new tracker partition, ingest on a new source
+  partition).
+  The runbook is now offline: stop every instance, wait for both groups to empty, grow the tracker
+  and then the source, seed only the new partitions to earliest in both groups, and restart.
+  `PartitionGrowthIT` follows it end to end.
 - After an ambiguous (in-doubt) dispatch commit, the dropped-and-readopted partitions kept two
   pieces of loop state that a revocation clears: `cesium_shard_paused{partition}` could stay at 1
   after the shard recovered below the backpressure threshold, and the partition's penalty streak
