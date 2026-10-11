@@ -213,6 +213,10 @@ rollback.
 - The startup checks now also run on a schedule, so their ERROR findings appear in a running
   engine's log as `re-validation finding <path>: …`. ADR-0002, ADR-0005 and ADR-0018 are amended by
   ADR-0020.
+- The integration suite now waits up to 5 minutes for a container image pull instead of
+  Testcontainers' 2-minute default (`pull.timeout=300` in the `cesium-kafka-it` test resources).
+  The 2026-10-11 nightly failed when ghcr.io was unreachable for about 3 minutes. Test
+  infrastructure only.
 
 ## [1.1.5] - 2026-10-06
 
