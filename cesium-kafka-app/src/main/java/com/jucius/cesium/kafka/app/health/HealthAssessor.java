@@ -1,6 +1,8 @@
 package com.jucius.cesium.kafka.app.health;
 
-import com.jucius.cesium.kafka.app.json.Json;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jucius.cesium.kafka.core.config.Role;
 import java.time.Clock;
 import java.time.Duration;
@@ -16,7 +18,7 @@ import java.util.Locale;
  * fresh (the loop is iterating, not wedged).
  *
  * <p><strong>Readiness</strong> = startup checks passed, not shutting down, and every started loop
- * is alive, holds a consumer assignment, and has a fresh heartbeat (a recent poll). <strong>Shard
+ * is alive and has a fresh heartbeat (a recent poll). <strong>Shard
  * recovery and the degraded flag are detail only</strong> (D21, §3.8): a recovering or degraded
  * instance is still ready. Readiness flips false the moment shutdown is signalled, before clients
  * close, so a preStop hook drains traffic first.
@@ -43,24 +45,19 @@ public final class HealthAssessor {
     /** Evaluates liveness: thread liveness + heartbeat freshness for every started loop. */
     public HealthSnapshot liveness() {
         boolean ok = true;
-        Json.Obj loops = Json.object();
+        ObjectNode root = JsonNodeFactory.instance.objectNode();
+        ObjectNode loops = JsonNodeFactory.instance.objectNode();
         for (Role role : startedRoles()) {
             boolean alive = health.loopAlive(role);
             boolean fresh = heartbeatFresh(role);
             ok &= alive && fresh;
-            loops.raw(
-                    roleKey(role),
-                    Json.object()
-                            .bool("alive", alive)
-                            .num("heartbeatAgeMillis", heartbeatAgeMillis(role))
-                            .bool("fresh", fresh)
-                            .end());
+            loops.putObject(roleKey(role))
+                    .put("alive", alive)
+                    .put("heartbeatAgeMillis", heartbeatAgeMillis(role))
+                    .put("fresh", fresh);
         }
-        String json = Json.object()
-                .str("status", ok ? "UP" : "DOWN")
-                .raw("loops", loops.end())
-                .end();
-        return new HealthSnapshot(ok, json);
+        root.put("status", ok ? "UP" : "DOWN").set("loops", loops);
+        return new HealthSnapshot(ok, root.toString());
     }
 
     /** Evaluates readiness, with recovery and degraded surfaced as non-gating detail. */
@@ -68,35 +65,30 @@ public final class HealthAssessor {
         boolean startupComplete = health.startupComplete();
         boolean shuttingDown = health.shuttingDown();
         boolean ok = startupComplete && !shuttingDown;
-        Json.Obj loops = Json.object();
+        ObjectNode loops = JsonNodeFactory.instance.objectNode();
         for (Role role : startedRoles()) {
             boolean alive = health.loopAlive(role);
-            boolean assigned = health.consumerAssigned(role);
             boolean fresh = heartbeatFresh(role);
-            ok &= alive && assigned && fresh;
-            loops.raw(
-                    roleKey(role),
-                    Json.object()
-                            .bool("alive", alive)
-                            .bool("assigned", assigned)
-                            .bool("fresh", fresh)
-                            .end());
+            ok &= alive && fresh;
+            loops.putObject(roleKey(role)).put("alive", alive).put("fresh", fresh);
         }
-        Json.Arr recovery = Json.array();
+        ArrayNode recovery = JsonNodeFactory.instance.arrayNode();
         for (ShardRecovery shard : health.recoveringShards()) {
-            recovery.value(shard.toJson());
+            recovery.add(shard.toJson());
         }
-        Json.Obj root = Json.object()
-                .str("status", ok ? "READY" : "NOT_READY")
-                .bool("startupComplete", startupComplete)
-                .bool("shuttingDown", shuttingDown)
-                .bool("degraded", health.degraded());
+        ObjectNode root = JsonNodeFactory.instance
+                .objectNode()
+                .put("status", ok ? "READY" : "NOT_READY")
+                .put("startupComplete", startupComplete)
+                .put("shuttingDown", shuttingDown)
+                .put("degraded", health.degraded());
         String cause = health.degradedCause();
         if (cause != null) {
-            root.str("degradedCause", cause);
+            root.put("degradedCause", cause);
         }
-        root.raw("loops", loops.end()).raw("recovery", recovery.end());
-        return new HealthSnapshot(ok, root.end());
+        root.set("loops", loops);
+        root.set("recovery", recovery);
+        return new HealthSnapshot(ok, root.toString());
     }
 
     private Iterable<Role> startedRoles() {

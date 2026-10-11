@@ -9,13 +9,12 @@ import java.util.Optional;
  * @param topic explicit tracker topic name; empty means the default
  *     {@code cesium.<applicationId>.tracker} is derived via {@link #resolvedTopic(String)}
  * @param bootstrap default {@link Bootstrap#CREATE}: bootstrap creates the topic with the §2.1
- *     configs (compaction-only cleanup, tombstone-retention floor, compaction-lag floor) and
- *     applies the ACL when {@code aclPrincipal} is set; {@link Bootstrap#FAIL} validates an
- *     existing topic instead
- * @param aclPrincipal principal granted exclusive write access by {@code CREATE} bootstrap.
- *     Tracker write access restricted to the cesium principal is a normative deployment
- *     requirement (R12): a forged ADD is a duplicate-injection primitive and a forged tombstone is
- *     a data-loss primitive
+ *     configs (compaction-only cleanup, tombstone-retention floor, compaction-lag floor);
+ *     {@link Bootstrap#FAIL} validates an existing topic instead
+ * @param aclPrincipal the cesium principal the R12 tracker write-ACL check verifies is the only
+ *     writer (cesium never grants it). Tracker write access restricted to the cesium principal is
+ *     a normative deployment requirement (R12): a forged ADD is a duplicate-injection primitive and
+ *     a forged tombstone is a data-loss primitive
  */
 public record TrackerConfig(String topic, Bootstrap bootstrap, Optional<String> aclPrincipal) {
 

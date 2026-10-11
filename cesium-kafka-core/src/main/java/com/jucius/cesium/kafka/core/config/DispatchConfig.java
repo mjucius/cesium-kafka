@@ -11,12 +11,8 @@ import java.util.Objects;
  * <p>Boxed numeric component types are deliberate: binding layers pass {@code null} for absent
  * keys and the compact constructor materializes the documented default.
  *
- * @param workers number of dispatch threads, each owning a tracker consumer, dispatch producer,
- *     seek consumer, and disjoint shards (§6); default 1, useful N ≤ tracker partitions fleet-wide
  * @param batch per-transaction batch bounds (D8)
  * @param drain time-sliced drain settings (§6, R2)
- * @param coalesce intentional dispatch coalescing window; default {@code PT0S} — never early,
- *     never deliberately late
  * @param idleCursorInterval how long a partition may go untouched before its cursor advances in a
  *     records-free transaction (§3.5); default {@code PT30S}
  * @param cursor committed-cursor v2 settings (§3.5)
@@ -24,15 +20,13 @@ import java.util.Objects;
  * @param onUnfetchablePayload policy for provably-expired payloads (§7.4); default DLQ
  * @param maxPendingPerPartition pause/resume backpressure threshold for ACTIVE shards (§5.3);
  *     default 2,000,000
- * @param maxPendingTotal global pending cap; {@link #AUTO_MAX_PENDING_TOTAL} (the default) derives
+ * @param maxPendingTotal process-wide pending cap; {@link #AUTO_MAX_PENDING_TOTAL} (the default) derives
  *     it from the heap budget — ≈ 25% of {@code Xmx} ÷ {@value #INDEX_BYTES_PER_ENTRY} B/entry
  *     (§5.3, R18; 64 B/entry per the post-approval fastutil revision)
  */
 public record DispatchConfig(
-        Integer workers,
         Batch batch,
         Drain drain,
-        Duration coalesce,
         Duration idleCursorInterval,
         Cursor cursor,
         Fetch fetch,
@@ -52,18 +46,13 @@ public record DispatchConfig(
     /** The index heap budget is 25% of max heap — i.e. max heap divided by this (§5.3). */
     public static final long HEAP_BUDGET_DIVISOR = 4L;
 
-    /** Default worker count (§8 defaults table). */
-    public static final int DEFAULT_WORKERS = 1;
-
     /** Default backpressure threshold per partition (§8 defaults table). */
     public static final long DEFAULT_MAX_PENDING_PER_PARTITION = 2_000_000L;
 
     /** Materializes the §8 defaults for absent components. */
     public DispatchConfig {
-        workers = Objects.requireNonNullElse(workers, DEFAULT_WORKERS);
         batch = Objects.requireNonNullElse(batch, Batch.defaults());
         drain = Objects.requireNonNullElse(drain, Drain.defaults());
-        coalesce = Objects.requireNonNullElse(coalesce, Duration.ZERO);
         idleCursorInterval = Objects.requireNonNullElse(idleCursorInterval, Duration.ofSeconds(30));
         cursor = Objects.requireNonNullElse(cursor, Cursor.defaults());
         fetch = Objects.requireNonNullElse(fetch, Fetch.defaults());
@@ -75,10 +64,8 @@ public record DispatchConfig(
     /** Returns a {@code DispatchConfig} populated entirely from the §8 defaults table. */
     public static DispatchConfig defaults() {
         return new DispatchConfig(
-                DEFAULT_WORKERS,
                 Batch.defaults(),
                 Drain.defaults(),
-                Duration.ZERO,
                 Duration.ofSeconds(30),
                 Cursor.defaults(),
                 Fetch.defaults(),
@@ -93,7 +80,7 @@ public record DispatchConfig(
     }
 
     /**
-     * The effective global pending cap: the configured value, or — when {@code AUTO} — the heap
+     * The effective process-wide pending cap: the configured value, or — when {@code AUTO} — the heap
      * budget divided by {@value #INDEX_BYTES_PER_ENTRY} B/entry (≈ 25% of {@code Xmx} ÷ 64).
      */
     public long resolveMaxPendingTotal(long maxHeapBytes) {
@@ -156,13 +143,21 @@ public record DispatchConfig(
     /**
      * Committed-cursor v2 settings (§3.5, D16).
      *
-     * @param sidecarMaxBytes encoded pinned-entry sidecar budget in the offset metadata; default
-     *     3072, validated ≤ broker {@code offset.metadata.max.bytes} at startup
+     * @param sidecarMaxBytes encoded pinned-entry sidecar budget in the offset metadata, in
+     *     {@code [MIN_SIDECAR_MAX_BYTES, MAX_SIDECAR_MAX_BYTES]}; default 3072 (≈ 200–300 pinned
+     *     entries); checked against broker {@code offset.metadata.max.bytes} at startup and clamped
+     *     (with a warning) when larger
      */
     public record Cursor(Integer sidecarMaxBytes) {
 
         /** Default sidecar budget in bytes (§8 defaults table). */
         public static final int DEFAULT_SIDECAR_MAX_BYTES = 3072;
+
+        /** Smallest accepted sidecar budget: room for the identity header plus a few entries. */
+        public static final int MIN_SIDECAR_MAX_BYTES = 128;
+
+        /** Largest accepted sidecar budget (1 MiB). */
+        public static final int MAX_SIDECAR_MAX_BYTES = 1 << 20;
 
         /** Materializes the §8 defaults for absent components. */
         public Cursor {

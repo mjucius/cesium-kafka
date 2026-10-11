@@ -14,7 +14,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Signals are reported per {@linkplain Role loop role}; {@link #roles()} returns only the loops
  * this instance actually runs (an ingest-only deployment has no dispatch loop, so its readiness must
- * not wait on a dispatch consumer assignment).
+ * not wait on a dispatch heartbeat).
  */
 public interface EngineHealth {
 
@@ -35,13 +35,6 @@ public interface EngineHealth {
      */
     long lastHeartbeatMillis(Role role);
 
-    /**
-     * Whether {@code role}'s consumer currently holds a partition assignment (group A for ingest,
-     * group B for dispatch). A readiness signal: an instance whose consumers hold nothing is not
-     * yet doing useful work. Mid-rebalance this may briefly be false.
-     */
-    boolean consumerAssigned(Role role);
-
     /** Whether startup validation and the environment startup checks passed (a readiness gate). */
     boolean startupComplete();
 
@@ -54,8 +47,9 @@ public interface EngineHealth {
 
     /**
      * Whether any loop is parked-and-degraded (§3.8/R15): broker degradation outlasting retries, the
-     * loop holding membership and retrying. Surfaced as readiness <em>detail</em> with a {@link
-     * #degradedCause() cause} — it never fails a probe (the instance is alive and a member).
+     * loop holding membership and retrying; or the last runtime re-validation round found errors
+     * (D23, ADR-0020). Surfaced as readiness <em>detail</em> with a {@link #degradedCause() cause} —
+     * it never fails a probe (the instance is alive and a member).
      */
     boolean degraded();
 

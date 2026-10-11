@@ -1,7 +1,7 @@
 package com.jucius.cesium.kafka.core.admin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -118,7 +118,7 @@ class IdentityBlobTest {
         void matchingIdentity() {
             IdentityBlob recorded = new IdentityBlob(KRAFT_CLUSTER_ID, TOPIC_ID);
             IdentityBlob live = IdentityBlob.decode(recorded.encode());
-            assertTrue(recorded.matches(live));
+            assertEquals(recorded, live);
             assertEquals("identity matches", recorded.describeMismatch(live));
         }
 
@@ -126,7 +126,7 @@ class IdentityBlobTest {
         void recreatedSourceTopicNamed() {
             IdentityBlob recorded = new IdentityBlob(KRAFT_CLUSTER_ID, TOPIC_ID);
             IdentityBlob live = new IdentityBlob(KRAFT_CLUSTER_ID, Uuid.fromString("zNxfPVBLRzWGDfFGAfMyLQ"));
-            assertFalse(recorded.matches(live));
+            assertNotEquals(recorded, live);
             String description = recorded.describeMismatch(live);
             assertTrue(description.contains("source topic id changed"), description);
             assertTrue(description.contains("recreated"), description);

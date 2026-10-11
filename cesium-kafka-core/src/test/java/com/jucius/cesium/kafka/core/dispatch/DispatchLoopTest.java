@@ -14,9 +14,11 @@ import com.jucius.cesium.kafka.core.fetch.SeekFetcher;
 import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
 import com.jucius.cesium.kafka.core.headers.RelayTimestampPolicy;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
 import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import com.jucius.cesium.kafka.core.testing.CrashPoints;
+import com.jucius.cesium.kafka.testkit.ArrayDueBatch;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -38,6 +40,7 @@ import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.MockConsumer;
+import org.apache.kafka.clients.consumer.NoOffsetForPartitionException;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.MockProducer;
@@ -167,12 +170,26 @@ class DispatchLoopTest {
     }
 
     @Test
+    void noOffsetFromPollStillGoesThroughTheFirstRunProof() {
+        // poll() surfaces the missing position before resolveCursor runs; the provisional seek
+        // must not bypass the first-run proof, which still decides in the same iteration.
+        Harness h = new Harness();
+        h.admin.groupHasOffsets = true;
+        h.start(0);
+        h.consumer.setPollException(new NoOffsetForPartitionException(tracker(0)));
+
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
+        assertTrue(failure.getMessage().contains("offset-reset runbook"), failure.getMessage());
+        assertTrue(h.store.recoveries.isEmpty(), "never auto-reset (D18)");
+    }
+
+    @Test
     void missingCommittedOffsetWithGroupHistoryIsFailFast() {
         Harness h = new Harness();
         h.admin.groupHasOffsets = true; // the group committed before: this is expiry, not first run
         h.start(0);
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("offset-reset runbook"), failure.getMessage());
         assertTrue(h.store.recoveries.isEmpty(), "never auto-reset (D18)");
     }
@@ -184,7 +201,7 @@ class DispatchLoopTest {
         h.start(0);
         h.consumer.updateBeginningOffsets(Map.of(tracker(0), 10L)); // tracker truncated
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("below the partition beginning"), failure.getMessage());
     }
 
@@ -195,7 +212,7 @@ class DispatchLoopTest {
         h.admin.barrierValues.put(0, 10L); // live end below the committed cursor: recreated
         h.start(0);
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("exceeds the live end offset"), failure.getMessage());
     }
 
@@ -206,7 +223,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         h.store.cursorAt(0, 21L);
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.events.clear();
         h.loop.runOnce();
 
@@ -243,7 +260,7 @@ class DispatchLoopTest {
         h.startActive(0, 1);
         h.store.cursorAt(0, 11L);
         h.store.cursorAt(1, 22L);
-        h.store.dueQueue.add(TestBatch.builder()
+        h.store.dueQueue.add(ArrayDueBatch.builder()
                 .add(0, 1, NOW, 10, false)
                 .add(1, 7, NOW, 70, false)
                 .build());
@@ -259,7 +276,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         h.fetcher.classify(0, 2, FetchOutcome.GONE);
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2, 3));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2, 3));
         h.loop.runOnce();
 
         assertEquals(2, h.store.encodeCalls.size(), "one encodeCompletions call per CompletionReason");
@@ -273,6 +290,7 @@ class DispatchLoopTest {
         assertEquals(1L, h.events.stream().filter(("send:" + DLQ)::equals).count(), "GONE ⇒ one DLQ loss notice (D-9)");
         assertEquals(2.0, h.counterValue("cesium.dispatch.records", "outcome", "dispatched"));
         assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "payload_expired"));
+        assertEquals(1.0, h.counterValue("cesium.dlq.records", "reason", "payload-expired"));
         assertRows(
                 h.store.committedBatches.get(0), new long[][] {{0, 1}, {0, 2}, {0, 3}}, "full settled set finalized");
     }
@@ -282,7 +300,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         h.store.dueQueue.add(
-                TestBatch.builder().add(0, 5, NOW, 50, true).build()); // CLAMP survived the durable round trip
+                ArrayDueBatch.builder().add(0, 5, NOW, 50, true).build()); // CLAMP survived the durable round trip
         h.loop.runOnce();
 
         ProducerRecord<byte[], byte[]> relay = h.producer().history().get(0);
@@ -295,18 +313,19 @@ class DispatchLoopTest {
         Harness drop = new Harness(config(c -> c.policy = UnfetchablePayloadPolicy.DROP));
         drop.startActive(0);
         drop.fetcher.classify(0, 1, FetchOutcome.GONE);
-        drop.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        drop.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         drop.loop.runOnce();
         assertFalse(drop.events.contains("send:" + DLQ), "DROP writes no loss notice");
         assertEquals(CompletionReason.DROPPED, drop.store.encodeCalls.get(0).reason());
         assertEquals(1.0, drop.counterValue("cesium.dispatch.records", "outcome", "dropped"));
+        assertEquals(0.0, drop.counterValue("cesium.dlq.records", "reason", "payload-expired"), "DROP writes no DLQ");
         assertEquals(1, drop.producer().commitCount(), "the COMPLETE is still written — never a poison loop (§7.4)");
 
         Harness fail = new Harness(config(c -> c.policy = UnfetchablePayloadPolicy.FAIL));
         fail.startActive(0);
         fail.fetcher.classify(0, 1, FetchOutcome.GONE);
-        fail.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, fail.loop::runOnce);
+        fail.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
+        LoopFatalException failure = assertThrows(LoopFatalException.class, fail.loop::runOnce);
         assertTrue(failure.getMessage().contains("FAIL"), failure.getMessage());
         assertFalse(fail.events.contains("begin"), "nothing is produced before the FAIL stop");
         assertRows(fail.store.abortedBatches.get(0), new long[][] {{0, 1}}, "restore is definitive: no txn existed");
@@ -319,7 +338,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         h.fetcher.classify(0, 3, FetchOutcome.CARRY_OVER); // budget-truncated
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2, 3));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2, 3));
         h.events.clear();
         h.loop.runOnce();
 
@@ -337,7 +356,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0, 1);
         h.fetcher.classify(1, 7, FetchOutcome.TRANSIENT);
-        h.store.dueQueue.add(TestBatch.builder()
+        h.store.dueQueue.add(ArrayDueBatch.builder()
                 .add(0, 1, NOW, 10, false)
                 .add(1, 7, NOW, 70, false)
                 .build());
@@ -351,7 +370,7 @@ class DispatchLoopTest {
 
         // A second consecutive TRANSIENT pass doubles the partition's penalty.
         h.fetcher.classify(1, 8, FetchOutcome.TRANSIENT);
-        h.store.dueQueue.add(TestBatch.builder()
+        h.store.dueQueue.add(ArrayDueBatch.builder()
                 .add(0, 2, NOW, 20, false)
                 .add(1, 8, NOW, 80, false)
                 .build());
@@ -359,7 +378,7 @@ class DispatchLoopTest {
         assertEquals(NOW + 100, h.store.penalties.get(1)[1], "exponential per-partition backoff");
 
         // A clean pass for the partition clears the penalty (stamp in the past).
-        h.store.dueQueue.add(TestBatch.onPartition(1, NOW, 9));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(1, NOW, 9));
         h.loop.runOnce();
         long[] last = h.store.penalties.get(h.store.penalties.size() - 1);
         assertEquals(1L, last[0]);
@@ -372,7 +391,7 @@ class DispatchLoopTest {
         h.startActive(0);
         h.fetcher.classify(0, 1, FetchOutcome.TRANSIENT);
         h.fetcher.classify(0, 2, FetchOutcome.TRANSIENT);
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.loop.runOnce();
 
         assertFalse(h.events.contains("begin"), "never open an empty transaction");
@@ -385,7 +404,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         h.fetcher.failure = new KafkaException("seek consumer transport failure");
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.loop.runOnce();
 
         assertFalse(h.events.contains("begin"), "pre-transaction failure: nothing produced");
@@ -393,7 +412,7 @@ class DispatchLoopTest {
         assertFalse(h.store.penalties.isEmpty(), "park machinery stamps a not-before");
 
         // The drain is gated until the backoff elapses.
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.loop.runOnce();
         assertEquals(0, h.producer().commitCount());
         h.clock.advanceMillis(101);
@@ -408,7 +427,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         h.producer().failSendOffsetsTimes = 1; // e.g. CommitFailedException: rebalance won the race
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.loop.runOnce();
 
         assertTrue(h.events.contains("abort"));
@@ -423,7 +442,7 @@ class DispatchLoopTest {
                 h.counterValue("cesium.dispatch.records", "outcome", "dispatched"),
                 "per-record counters reflect committed dispositions only (§9)");
 
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.clock.advanceMillis(101);
         h.loop.runOnce();
         assertEquals(1, h.producer().commitCount());
@@ -435,9 +454,9 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         h.producer().fenceProducer();
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
 
-        assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertFalse(h.events.contains("abort"), "fatal path never tries to abort a fenced producer");
         assertTrue(h.store.abortedBatches.isEmpty(), "no restore on fatal — the durable log is authoritative");
         assertTrue(h.store.committedBatches.isEmpty());
@@ -453,7 +472,7 @@ class DispatchLoopTest {
         // The destination PERMANENTLY rejects the relay (too large). The entry must not relay forever.
         h.producer().sendCallbackError = new RecordTooLargeException("relay exceeds max.message.bytes");
         h.producer().failSendCallbackAt = 0; // the relay is the batch's first send
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
 
         h.loop.runOnce(); // attempt: relay permanently rejected ⇒ abort, restore, remember
         assertTrue(h.events.contains("abort"), "a permanent rejection aborts the (uncommitted) batch");
@@ -464,6 +483,7 @@ class DispatchLoopTest {
         assertEquals(
                 1.0,
                 h.counterValue("cesium.transactions", "loop", "dispatch", "result", "aborted", "cause", "unrelayable"));
+        assertEquals(0.0, h.counterValue("cesium.dlq.records", "reason", "unrelayable"));
 
         // The §3.8 I-8 retry (the entry re-drains): poison ⇒ DLQ notice + REJECTED tombstone + cursor,
         // all in ONE committed transaction — the partition advances past it. Clear the recordings
@@ -472,7 +492,7 @@ class DispatchLoopTest {
         h.store.encodeCalls.clear();
         h.store.committedBatches.clear();
         h.store.abortedBatches.clear();
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         h.events.clear();
         h.loop.runOnce();
 
@@ -491,6 +511,7 @@ class DispatchLoopTest {
         assertRows(h.store.encodeCalls.get(0).entries(), new long[][] {{0, 1}});
         assertRows(h.store.committedBatches.get(0), new long[][] {{0, 1}}, "the entry is finalized — never replays");
         assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "unrelayable"));
+        assertEquals(1.0, h.counterValue("cesium.dlq.records", "reason", "unrelayable"), "dispatch-side DLQ counted");
         assertEquals(
                 0.0,
                 h.counterValue("cesium.dispatch.records", "outcome", "dispatched"),
@@ -503,14 +524,14 @@ class DispatchLoopTest {
         h.startActive(0);
         h.producer().sendCallbackError = new RecordTooLargeException("too large");
         h.producer().failSendCallbackAt = 0;
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         h.loop.runOnce(); // attempt 1: rejected ⇒ remember as DROP, restore
 
         h.producer().failSendCallbackAt = -1;
         h.store.encodeCalls.clear();
         h.store.committedBatches.clear();
         h.store.abortedBatches.clear();
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         h.events.clear();
         h.loop.runOnce(); // attempt 2: dropped — REJECTED tombstone + cursor, no DLQ notice
 
@@ -520,6 +541,45 @@ class DispatchLoopTest {
         assertRows(
                 h.store.committedBatches.get(0), new long[][] {{0, 1}}, "the entry is still resolved — never replays");
         assertEquals(1.0, h.counterValue("cesium.dispatch.records", "outcome", "unrelayable"));
+        assertEquals(0.0, h.counterValue("cesium.dlq.records", "reason", "unrelayable"), "DROP writes no DLQ");
+    }
+
+    @Test
+    void dispatchDlqCountsReflectCommittedTransactionsOnly() {
+        // payload-expired: the DLQ notice's transaction aborts, then the retry commits.
+        Harness expired = new Harness();
+        expired.startActive(0);
+        expired.fetcher.classify(0, 1, FetchOutcome.GONE);
+        expired.producer().failSendOffsetsTimes = 1;
+        expired.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
+        expired.loop.runOnce();
+        assertTrue(expired.events.contains("send:" + DLQ), "the notice was sent in the aborted transaction");
+        assertEquals(0.0, expired.counterValue("cesium.dlq.records", "reason", "payload-expired"), "aborted");
+        expired.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
+        expired.clock.advanceMillis(101);
+        expired.loop.runOnce();
+        assertEquals(1, expired.producer().commitCount());
+        assertEquals(1.0, expired.counterValue("cesium.dlq.records", "reason", "payload-expired"), "committed once");
+
+        // unrelayable: rejected attempt, then the DLQ-routing retry aborts, then it commits.
+        Harness poison = new Harness();
+        poison.startActive(0);
+        poison.producer().sendCallbackError = new RecordTooLargeException("too large");
+        poison.producer().failSendCallbackAt = 0;
+        poison.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
+        poison.loop.runOnce();
+        poison.producer().failSendCallbackAt = -1;
+        poison.producer().failSendOffsetsTimes = 1;
+        poison.events.clear();
+        poison.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
+        poison.loop.runOnce();
+        assertTrue(poison.events.contains("send:" + DLQ), "the notice was sent in the aborted transaction");
+        assertEquals(0.0, poison.counterValue("cesium.dlq.records", "reason", "unrelayable"), "aborted");
+        poison.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
+        poison.clock.advanceMillis(101);
+        poison.loop.runOnce();
+        assertEquals(1, poison.producer().commitCount());
+        assertEquals(1.0, poison.counterValue("cesium.dlq.records", "reason", "unrelayable"), "committed once");
     }
 
     @Test
@@ -528,9 +588,9 @@ class DispatchLoopTest {
         h.startActive(0);
         h.producer().sendCallbackError = new RecordTooLargeException("too large");
         h.producer().failSendCallbackAt = 0;
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
 
-        DispatchLoopFatalException failure = assertThrows(DispatchLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("on-unrelayable=FAIL"), failure.getMessage());
         assertTrue(h.events.contains("abort"), "FAIL aborts before stopping");
         assertRows(h.store.abortedBatches.get(0), new long[][] {{0, 1}}, "restore is definitive: nothing committed");
@@ -542,7 +602,7 @@ class DispatchLoopTest {
         Harness h = new Harness(); // commitRetryLimit = 3
         h.startActive(0);
         h.producer().commitExceptionQueue.add(new TimeoutException("ambiguous"));
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.loop.runOnce();
 
         assertEquals(2L, h.events.stream().filter("commit"::equals).count(), "the timed-out commit is retried");
@@ -557,7 +617,7 @@ class DispatchLoopTest {
         h.startActive(0);
         h.producer().commitExceptionQueue.add(new TimeoutException("ambiguous"));
         h.producer().commitExceptionQueue.add(new TransactionAbortableException("broker: not committed"));
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.loop.runOnce();
 
         // KIP-890 TRANSACTION_ABORTABLE is the broker-affirmed "did not commit": definitive.
@@ -574,7 +634,7 @@ class DispatchLoopTest {
         h.startActive(0);
         h.store.cursorAt(0, 2L);
         h.producer().commitTransactionException = new TimeoutException("ambiguous forever");
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1, 2));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1, 2));
         h.events.clear();
         h.loop.runOnce();
 
@@ -605,12 +665,35 @@ class DispatchLoopTest {
     }
 
     @Test
+    void ambiguousCommitResetsPauseAndPenaltyStateLikeARevocation() {
+        // The I9 shard drop must clear every piece of loop-side shard state a revocation clears;
+        // it used to leave the paused gauge at 1 and the penalty streak counted.
+        Harness h = new Harness(config(c -> c.maxPendingPerPartition = 10));
+        h.startActive(0);
+        h.fetcher.classify(0, 5, FetchOutcome.TRANSIENT);
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 5));
+        h.loop.runOnce();
+        assertEquals(1.0, h.gaugeValue("cesium.fetch.penalized.partitions"));
+        h.store.pendingCounts.put(0, 11L);
+        h.loop.runOnce();
+        assertEquals(1.0, h.gaugeValue("cesium.shard.paused", "partition", "0"));
+
+        h.producer().commitTransactionException = new TimeoutException("ambiguous forever");
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 6));
+        h.loop.runOnce();
+
+        assertTrue(h.events.contains("lost:[0]"), "the in-doubt procedure dropped the shard");
+        assertEquals(0.0, h.gaugeValue("cesium.shard.paused", "partition", "0"));
+        assertEquals(0.0, h.gaugeValue("cesium.fetch.penalized.partitions"));
+    }
+
+    @Test
     void transientProducerReplacementFailureRetriesInsteadOfDying() {
         Harness h = new Harness();
         h.startActive(0);
         h.failProducerInits = 1; // the same broker degradation that caused the ambiguity
         h.producer().commitTransactionException = new TimeoutException("ambiguous forever");
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         h.loop.runOnce(); // must NOT throw (R15)
 
         assertEquals(2, h.producers.size(), "first replacement attempt failed at initTransactions");
@@ -626,17 +709,17 @@ class DispatchLoopTest {
         h.startActive(0);
         h.producer().failSendOffsetsTimes = 2;
 
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         h.loop.runOnce(); // failure 1: bounded retry, not yet parked
         assertFalse(h.loop.isDegraded());
 
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         h.clock.advanceMillis(101);
         h.loop.runOnce(); // failure 2 = parkThreshold: parked-and-degraded
         assertTrue(h.loop.isDegraded(), "retry exhaustion parks the loop instead of crash-looping (R15)");
         assertFalse(h.store.penalties.isEmpty(), "parked entries sit behind a penalty not-before");
 
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
         h.clock.advanceMillis(201);
         h.loop.runOnce(); // success: clear degraded
         assertFalse(h.loop.isDegraded(), "degraded clears on the first successful commit");
@@ -655,7 +738,7 @@ class DispatchLoopTest {
         int perBatch = 1_000; // 100k-due storm
         long offset = 1;
         for (int b = 0; b < batches; b++) {
-            TestBatch.Builder builder = TestBatch.builder();
+            ArrayDueBatch.Builder builder = ArrayDueBatch.builder();
             for (int i = 0; i < perBatch; i++) {
                 builder.add(0, offset, NOW, offset * 10, false);
                 offset++;
@@ -772,7 +855,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         CrashPoints.install(crashAt(CrashPoints.DISPATCH_BEFORE_BEGIN));
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
 
         assertThrows(CrashPoints.SimulatedCrash.class, h.loop::runOnce);
         assertFalse(h.events.contains("begin"), "D-1: before beginTransaction — nothing produced");
@@ -785,7 +868,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         CrashPoints.install(crashAt(CrashPoints.DISPATCH_AFTER_SENDS));
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
 
         assertThrows(CrashPoints.SimulatedCrash.class, h.loop::runOnce);
         assertTrue(h.events.contains("sendOffsets"), "D-2 fires after the sends and offsets");
@@ -799,7 +882,7 @@ class DispatchLoopTest {
         Harness h = new Harness();
         h.startActive(0);
         CrashPoints.install(crashAt(CrashPoints.DISPATCH_DURING_COMMIT));
-        h.store.dueQueue.add(TestBatch.onPartition(0, NOW, 1));
+        h.store.dueQueue.add(ArrayDueBatch.onPartition(0, NOW, 1));
 
         assertThrows(CrashPoints.SimulatedCrash.class, h.loop::runOnce);
         assertEquals(1, h.producer().commitCount(), "the broker resolved the commit");
@@ -868,7 +951,7 @@ class DispatchLoopTest {
                 b.policy,
                 b.onUnrelayable,
                 b.maxPendingPerPartition,
-                0L,
+                Long.MAX_VALUE,
                 3,
                 b.parkThreshold,
                 Duration.ofMillis(100),
@@ -1194,11 +1277,6 @@ class DispatchLoopTest {
                         throw new IllegalStateException("record(" + i + ") on outcome " + outs[i]);
                     }
                     return record;
-                }
-
-                @Override
-                public List<PartitionSummary> partitionSummaries() {
-                    return List.of();
                 }
             };
         }

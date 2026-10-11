@@ -3,9 +3,6 @@ package com.jucius.cesium.kafka.core.ingest;
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
@@ -13,12 +10,14 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Ingest-side stand-in for the tracker store: {@link #encodeSchedule} records the refs the loop
  * handed over and returns a deterministic test encoding; everything the ingest loop must never
- * touch throws — the loop talks to the {@link SchedulerStore} SPI through this one method only.
+ * touch throws — the loop talks to the {@link TrackerBackedStore} through this one method only.
  */
 final class FakeTrackerStore implements TrackerBackedStore {
 
@@ -46,26 +45,6 @@ final class FakeTrackerStore implements TrackerBackedStore {
     public void close() {}
 
     // --- everything below is dispatch/lifecycle surface the ingest loop must never call ---
-
-    @Override
-    public void configure(StoreContext context) {
-        throw offLimits();
-    }
-
-    @Override
-    public StoreCapabilities capabilities() {
-        throw offLimits();
-    }
-
-    @Override
-    public void validate() {
-        throw offLimits();
-    }
-
-    @Override
-    public void start() {
-        throw offLimits();
-    }
 
     @Override
     public void onPartitionsAssigned(Set<Integer> partitions) {
@@ -123,7 +102,8 @@ final class FakeTrackerStore implements TrackerBackedStore {
     }
 
     @Override
-    public void onTrackerRecord(int partition, long trackerOffset, byte[] recordKey, byte[] recordValue) {
+    public void onTrackerRecord(
+            int partition, long trackerOffset, byte[] recordKey, byte @Nullable [] recordValue, Headers headers) {
         throw offLimits();
     }
 
@@ -134,6 +114,16 @@ final class FakeTrackerStore implements TrackerBackedStore {
 
     @Override
     public TrackerCursor committedCursor(int partition, DueBatch inFlight) {
+        throw offLimits();
+    }
+
+    @Override
+    public void onTrackerPosition(int partition, long position) {
+        throw offLimits();
+    }
+
+    @Override
+    public void penalizeSourcePartition(int sourcePartition, long notBeforeMs) {
         throw offLimits();
     }
 

@@ -6,6 +6,230 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+Cleanup and fixes from an over-engineering audit and a docs-versus-code audit, released as 2.0.0
+(ADR-0019): with no external users yet, the fixes take the clean form even where that breaks the
+api, testkit, config keys, metrics or log shape. Every break is listed under "Breaking changes".
+Wire formats are unchanged, so a mixed 1.1.5/2.0.0 rolling restart is safe.
+HTTP bodies are the same JSON, though an escaped control character there would now use uppercase hex.
+
+### Upgrading from 1.x
+[docs/whats-new-in-2.0.md](docs/whats-new-in-2.0.md) walks through these steps, plus dashboards and
+rollback.
+1. Remove keys 2.0.0 rejects at startup (exit 78): `dispatch.coalesce`,
+   `startup-checks.heap-budget`, `headers.accept-binary-long-values`, and the whole `store` block
+   (`store.type`, `store.properties`). Move a `store.properties.cursor.sidecar-max-bytes` value to
+   `dispatch.cursor.sidecar-max-bytes`. Remove `ingest.workers`, `ingest.max-batch` and
+   `dispatch.workers` (the whole `ingest` block); scale either loop by adding instances. Move any
+   `-Dcesium.*` JVM properties to `CESIUM_*` environment variables; 2.0.0 ignores them.
+2. Roll instances one at a time. The tracker wire format, committed-cursor offset metadata and
+   worker-0 `group.instance.id`s are unchanged, so 1.1.5 and 2.0.0 instances can run side by side.
+3. Expect runtime re-validation (every `startup-checks.revalidation-interval`, default PT5M) to set
+   `/health` degraded for conditions 1.x only checked at startup; see operations.md §14.5.
+4. `CREATE` bootstrap no longer grants the tracker write ACL. A tracker 1.x created keeps its ACL;
+   for new deployments, create it yourself first (operations.md, "Tracker write ACL").
+5. Store implementers: there is no store SPI any more (ADR-0021); the store is part of the engine.
+
+### Breaking changes
+- The release is 2.0.0 (ADR-0019). Every Java module is internal, with no compatibility promise:
+  the pluggable store SPI is retired and `KafkaTrackerStore` is the only store (ADR-0021).
+- Build: the `cesium-kafka-api`, `cesium-kafka-store-kafka` and `cesium-kafka-store-testkit`
+  modules are folded into `cesium-kafka-core`, with their package names unchanged; the store
+  contract kit is now part of core's test sources. None of them was ever published as an artifact
+  (ADR-0017), so this only affects source builds. The build has four modules: core, app, it,
+  benchmarks.
+- SPI: `ExternalSchedulerStore`, its contract kit (`ExternalSchedulerStoreContract`,
+  `ExternalStoreHarness`) and the testkit's `InMemoryExternalSchedulerStore` are removed. The engine
+  never had a dispatch loop for the external archetype and rejected such a store at startup.
+- SPI: `StoreCapabilities` and `SchedulerStore.capabilities()` are removed. The engine never branched
+  on them. `/info` (with `observability.detailed-info: true`) loses its `store.capabilities` object.
+- SPI: `OwnershipEpoch`, `StoreContext.epoch()` and `StoreContext.clock()` are removed; no store read
+  them. The testkit's `MutableClock` is removed with them.
+- SPI: the headers-blind `TrackerBackedStore.onTrackerRecord(int, long, byte[], byte[])` overload is
+  removed. The engine always called the headers variant, and the overload applied reason-less
+  tombstones that the engine's path counts and skips (R12).
+- `ingest.workers` and `dispatch.workers` are removed (exit 78 if set): each instance runs at most
+  one ingest loop and one dispatch loop, selected by `roles`; scale either by adding instances.
+  1.x let `dispatch.workers` exceed 1, but every dispatch loop in a process shared one
+  single-threaded store and `drainDue` did not filter by owned partition, so a second worker raced
+  the first; extra ingest workers shared one `group.instance.id`, so the broker fenced all but one,
+  and they overwrote each other's degraded and heartbeat gauges. The transactional ids keep their 1.x
+  worker-0 form (`cesium.<app>.<role>.<instance>.0`) and the thread names stay
+  `cesium-ingest-0`/`cesium-dispatch-0`, so a rolling upgrade still fences its predecessor.
+- `dispatch.coalesce` is removed (YAML and `CESIUM_DISPATCH__COALESCE`).
+  Setting it is now an unknown-key error (exit 78). It never had any effect.
+- Config: `store.type` and `store.properties` are removed; setting either is an unknown-key error
+  (exit 78). The store's keys go with them: `cursor.sidecar-max-bytes` is now
+  `dispatch.cursor.sidecar-max-bytes` (already the documented key), `heap-budget-bytes` is derived
+  from 25% of `-Xmx` like `dispatch.max-pending-total`, `index.stale-rebuild-floor` and
+  `index.completed-sweep-floor` are fixed at their defaults, and `max-pending-per-partition` was
+  already a duplicate of `dispatch.max-pending-per-partition`.
+- `dispatch.cursor.sidecar-max-bytes` must be in [128, 1048576] (exit 78). 1.x accepted any value
+  of at least 1 and silently ignored it.
+- SPI: `SchedulerStore`, `SchedulerStoreProvider` and its `META-INF/services` registration,
+  `StoreContext`, `ConfigView`/`MapConfigView` and `RouteDescriptor` are removed.
+  `TrackerBackedStore` is an engine-internal interface, and `KafkaTrackerStore` takes its identity,
+  budgets and meter registry in its constructor instead of `configure → validate → start`.
+- `/info` drops its `store` object (`store.type`).
+- `startup-checks.heap-budget` is removed, together with the startup check it controlled; setting
+  it is an unknown-key error (exit 78). That check required `source partitions ×
+  dispatch.max-pending-per-partition × 64 B` to fit in 25% of the heap, so at the 2,000,000 default
+  it needed `-Xmx` of at least 512 MiB per source partition. The runtime bounds already cover it: the
+  AUTO `dispatch.max-pending-total` pauses ACTIVE shards at the same budget, and the store's H1
+  ceiling bounds RECOVERING shards. An explicit `dispatch.max-pending-total` larger than the budget
+  is now a warning instead of an error. The store's own repeat of the check is gone too.
+- `kafka.transactions.commit-retry` must be at least 1 (exit 78). It counts `commitTransaction`
+  attempts, so `0` behaved like `1`; it passed config load and then failed engine construction
+  with exit 1.
+- Every duration key must be at least `PT0.001S` (exit 78). The engine uses durations in whole
+  milliseconds; 1.x accepted a positive value below 1 ms and truncated it to 0 ms. Without the
+  check, a sub-millisecond `startup-checks.revalidation-interval` (new in 2.0) would crash startup.
+- `headers.accept-binary-long-values` is removed (exit 78 if set). ASCII decimal is the only
+  control-header encoding, and an 8-byte big-endian value is malformed. The flag was compatibility
+  with the retired proof-of-concept and was never used outside a unit test.
+- The `-Dcesium.*` system-property config overlay is removed; precedence is now
+  `defaults < YAML < CESIUM_* environment`. Set the same keys through the environment
+  (`-Dcesium.instance-id=x` becomes `CESIUM_INSTANCE_ID=x`) or YAML. `-Dcesium.*` properties are now
+  ignored rather than rejected. This also removes the clash between the overlay prefix and the
+  test-only `cesium.testing.crashpoints` switch, which an app JVM would have rejected as an unknown key.
+- `route.tracker.bootstrap: CREATE` no longer grants the tracker write ACL to
+  `route.tracker.acl-principal`. Create the ACL yourself; a literal ACL can exist before the topic.
+  `startup-checks.tracker-acl` still verifies it at startup and on every re-validation round, and
+  the cesium principal no longer needs `Cluster:ALTER`. A failed grant can no longer fail startup.
+  The startup finding for a missing ACL now says to create it yourself rather than suggesting `CREATE`.
+- The startup log line `cesium engine started` loses its `ingestWorkers`/`dispatchWorkers` fields.
+- `ingest.max-batch` is removed (exit 78 if set). It only set the ingest consumer's
+  `max.poll.records`, which keeps its tuned default of 2000; override it through
+  `kafka.ingest-consumer.properties`.
+- `/health/ready` loop detail loses its `assigned` field, and readiness no longer has an
+  "assignment" term. The engine only ever set it alongside the heartbeat, so it never changed the
+  verdict.
+- `dispatch.max-pending-total` is process-wide; 1.x enforced it once per dispatch worker.
+- `cesium_dlq_records_total` gains `reason="payload-expired"`, and `reason="unrelayable"` now
+  includes dispatch-side DLQ copies. Names and tags are unchanged; only the values move.
+- Logs: JSON lines from the loop threads (`cesium-ingest-0`, `cesium-dispatch-0`) now carry an
+  `mdc` object with `applicationId`, `loop` and `txn`, and lines from the main, `cesium-shutdown`
+  and `cesium-admin` threads carry `{applicationId}`. The never-populated `partition` key is removed from the documented
+  shape, and `txn` is the loop's transactional id, which includes the instance id.
+- Logs: the fatal log changes from `fatal {role} loop failure — initiating engine shutdown` to
+  `fatal engine failure ({source}) — initiating engine shutdown` (for example `(ingest loop)`), and
+  the exit line from `engine exited on a fatal loop failure` to
+  `engine exited on a fatal engine failure`.
+- Core (internal): `ClusterAdmin` gains `offsetsAtOrAfter`, and `StartupValidator` gains
+  `revalidate` and a `(ClusterAdmin, Clock)` constructor. Out-of-tree `ClusterAdmin` implementations
+  must add the method.
+- A running engine now exits non-zero within `startup-checks.revalidation-interval` (default
+  `PT5M`) when the source or tracker topic id (or the cluster id) changes (R17, ADR-0020). The log is
+  `fatal engine failure (re-validation)`.
+- Other runtime re-validation errors set the `/health/ready` `degraded` flag with a short cause and
+  `cesium_revalidation_errors`; readiness status is unchanged (D21) and dispatch continues. That
+  covers the D14 floor and committed-cursor age, partition drift, the tracker `cleanup.policy` and
+  other §2.1 settings, source retention and the tracker ACL under `FAIL`, a missing topic, and a
+  round that cannot complete. Partition drift at runtime no longer fails fast in the spec (R-7);
+  ingest's I-7 fail-fast on a source partition with no tracker partition is unchanged. Growing
+  partitions still needs a stop (see Fixed).
+- D14's runtime term is now the dispatch group's committed-cursor age against
+  `delete.retention.ms / 2`, and a violation degrades and alerts instead of refusing
+  (ADR-0020). The oldest-pending term is dropped as subsumed.
+- Core (internal): `StartupChecks` gains `revalidationInterval` and loses `heapBudget`.
+
+### Added
+- Runtime re-validation (D23, ADR-0020): a `cesium-admin` thread re-runs the environment checks every
+  `startup-checks.revalidation-interval` (new key, default `PT5M`, must be at least `PT0.001S`),
+  plus the topic identity, D14 committed-cursor age (dispatch instances only) and, under
+  acknowledged size or tier eviction, an R-11 earliest-retained-record check. It never creates
+  topics or applies ACLs, and needs no new ACL grants.
+- Metric `cesium_revalidation_errors`: errors found by the last re-validation round; `0` when clean.
+- Metrics `cesium_shard_state{partition}` (0 = ASSIGNED, 1 = RECOVERING, 2 = ACTIVE) and
+  `cesium_replay_remaining_records{partition}` (barrier − position while recovering), previously
+  listed as "not yet emitted".
+
+### Fixed
+- The growing-partitions runbook (operations.md §9) had operators grow the tracker, then the source,
+  on a running engine, and the 2.0 text added that re-validation only degrades. A running engine
+  stops instead, because a new partition has no committed offset and, with `auto.offset.reset=none`
+  locked, the loop assigned it exits (dispatch on a new tracker partition, ingest on a new source
+  partition).
+  The runbook is now offline: stop every instance, wait for both groups to empty, grow the tracker
+  and then the source, seed only the new partitions to earliest in both groups, and restart.
+  `PartitionGrowthIT` follows it end to end.
+- After an ambiguous (in-doubt) dispatch commit, the dropped-and-readopted partitions kept two
+  pieces of loop state that a revocation clears: `cesium_shard_paused{partition}` could stay at 1
+  after the shard recovered below the backpressure threshold, and the partition's penalty streak
+  stayed counted in `cesium_fetch_penalized_partitions`. The in-doubt path now resets shard state
+  through the same code as a revocation.
+- `dispatch.cursor.sidecar-max-bytes` had no effect: the store read its own
+  `store.properties.cursor.sidecar-max-bytes` instead. It is now the store's only sidecar budget.
+- The documented startup check against broker `offset.metadata.max.bytes` did not exist. Startup
+  now reads it and, when the sidecar budget exceeds it, warns and clamps the budget so cursor commits
+  pin fewer entries instead of failing at commit time. It only ever warns.
+- `/health/ready` always reported `"recovery": []`. The per-shard recovery detail (state,
+  records remaining, ETA) is now fed from the store's shard-state gauges. Recovery still never affects
+  readiness (D21).
+- `cesium_pinned_entries`, `cesium_cursor_sidecar_bytes` and `cesium_pending_entries` raced the
+  dispatch thread. Scrapes read the store's unsynchronized per-partition map and the index directly,
+  so a scrape during a rebalance could report a wrong value or NaN. The gauges now read volatile
+  per-partition snapshots; `cesium_pending_entries` is refreshed every dispatch-loop iteration.
+- Docs claimed a `past_due` relay reason that was never emitted anywhere; reworded.
+- Docs and javadoc described startup admin calls as running on a `cesium-admin` thread; they run on
+  the thread that calls `start()` (`cesium-admin` now exists only for re-validation, see Added). They
+  also claimed the integration suite runs cesium instances as separate JVMs (they run in-JVM; the
+  SIGKILL crash-loop soak is not built). The DLQ reason lists in
+  `CesiumHeaders.ERROR_REASON`, `RouteConfig`, design §2.1 and the header-protocol §5.1 table now
+  include `unrelayable`.
+- The perf ITs ignored their `-Dperf.*` knobs: Gradle set them only in its own JVM, not in the forked
+  test JVM, so every run used the CI defaults. The `cesium-kafka-it` build now forwards every
+  `-Dperf.*` and `-Dsoak.*` property to its test tasks as a configuration-cache input.
+- `cesium_dlq_records_total` counted only ingest-side DLQ writes. The dispatch loop's
+  `payload-expired` loss notices and its `unrelayable` DLQ copies are now counted too, once per
+  committed transaction (an aborted attempt counts nothing).
+- The documented log MDC keys (`applicationId`, `loop`, `txn`) were never set, so JSON lines had no
+  `mdc` object and plain lines no context. The engine now sets them once per loop thread, and
+  `applicationId` on the main and shutdown threads.
+- The `startup-checks.size-based-retention: ACKNOWLEDGED` warning pointed operators at
+  `cesium_retention_margin_seconds`, a metric that was never emitted. It now cites
+  `cesium_fetch_unfetchable_total`, `dispatch.on-unfetchable-payload` and broker-side monitoring of
+  the source's earliest-record age.
+
+### Removed
+- `dispatch.coalesce`: validated but never read by the dispatch loop (see Breaking changes).
+- `store.type`, `store.properties` and the store-selection SPI (see Breaking changes).
+- `startup-checks.heap-budget` and the startup footprint check, in both the engine and the store
+  (see Breaking changes).
+- `ExternalSchedulerStore` and its contract kit, `StoreCapabilities`, `OwnershipEpoch`,
+  `StoreContext.epoch()`/`clock()`, the testkit's `MutableClock`, and the headers-blind
+  `onTrackerRecord` overload (see Breaking changes).
+- `docs/store-spi.md`: there is no store SPI to implement against (ADR-0021).
+- From the spec (never emitted): `cesium_retention_margin_seconds` and its earliest-age probe, the
+  periodic tracker-size monitor, and `cesium_tracker_cursor_lag` /
+  `cesium_tracker_cursor_age_seconds`. Watch tracker size and source earliest-record age with
+  broker-side metrics (ADR-0020).
+
+### Changed
+- The ingest and dispatch loops share one implementation of the transactional producer mechanics
+  (`LoopTransactions`: send with failure capture, the bounded commit retry and in-doubt
+  classification, abort-or-replace, producer replacement) instead of two copies that had drifted.
+  One behavior change follows: a `TransactionAbortableException` (KIP-890) after an ambiguous ingest
+  commit now aborts and rewinds the batch, as dispatch already did, instead of running the heavier
+  in-doubt procedure. Both are exactly-once; the broker has affirmed the transaction did not commit.
+- Internal simplification, about −470 lines net with the fixes included. Highlights:
+  - The observability server is started directly instead of through a single-provider `ServiceLoader`.
+  - The three HTTP handlers are merged into one.
+  - The hand-rolled JSON writer is replaced by the Jackson already shipped; log lines stay
+    byte-identical.
+  - Transaction helpers duplicated between the ingest and dispatch loops are shared, as is one
+    cause-chain walker.
+  - The two loop-fatal exception types are merged.
+  - Dead fetch summaries and test-only tracker-index surface are removed.
+- Plain log lines now end with the thread's MDC (`%X`), for example
+  `applicationId=orders-delay, loop=ingest, txn=cesium.orders-delay.ingest.cesium-0.0`.
+- The startup checks now also run on a schedule, so their ERROR findings appear in a running
+  engine's log as `re-validation finding <path>: …`. ADR-0002, ADR-0005 and ADR-0018 are amended by
+  ADR-0020.
+- The integration suite now waits up to 5 minutes for a container image pull instead of
+  Testcontainers' 2-minute default (`pull.timeout=300` in the `cesium-kafka-it` test resources).
+  The 2026-10-11 nightly failed when ghcr.io was unreachable for about 3 minutes. Test
+  infrastructure only.
+
 ## [1.1.5] - 2026-10-06
 
 Dependency refresh. No engine source changed. The runtime libraries that ship inside the
@@ -24,7 +248,7 @@ archives' contents differ; the build moves to Gradle 9.8.0.
 
 ## [1.1.4] - 2026-09-25
 
-CI-infrastructure only — no executable line of the engine and no shipped dependency changed, so the
+CI infrastructure only. No executable line of the engine and no shipped dependency changed, so the
 distribution archives are functionally identical to 1.1.3. The SHA-pinned `actions/setup-java` moves
 to v6.0.1, and the release lane now enforces JDK signature verification explicitly.
 
@@ -34,27 +258,27 @@ to v6.0.1, and the release lane now enforces JDK signature verification explicit
   there too), and the upstream compare is a clean eight-commit fast-forward matching the release
   notes. The one behaviour change is to Temurin signature verification: v6.0.0 checked a downloaded
   archive's GPG signature by default and failed the step on a bad signature, a missing signature URL
-  or a missing `gpg`; v6.0.1 still checks by default but only **warns** on those failures unless
-  `verify-signature: true` is set explicitly. That is inert today — every lane resolves JDK 21/25
+  or a missing `gpg`; v6.0.1 still checks by default but only warns on those failures unless
+  `verify-signature: true` is set explicitly. That has no effect today: every lane resolves JDK 21/25
   from the hosted runner tool cache (the PR's JDK 25 lane logs `Resolved Java 25.0.4+1 from
   tool-cache` / `Resolved Java 21.0.12+1 from tool-cache`), and setup-java verifies nothing on that
-  path — but `release.yml` now sets `verify-signature: true` so that a JDK download in the lane that
+  path. Even so, `release.yml` now sets `verify-signature: true` so that a JDK download in the lane that
   builds shipped artifacts fails closed. The CI and nightly lanes keep the warn-only default so an
   Adoptium signing-key rotation the action has not yet picked up cannot break routine builds. The
   unit lane's `JAVA_HOME` ordering is unchanged: 21 is still installed last and remains the default.
 
 ## [1.1.3] - 2026-09-08
 
-Dependency and build-infrastructure only — no executable line of the engine changed, no behaviour
-difference. The runtime libraries that ship inside the distribution archives (jackson, logback,
+Dependency and build infrastructure only. No executable line of the engine changed, and behaviour
+is the same. The runtime libraries that ship inside the distribution archives (jackson, logback,
 slf4j, micrometer) move to current patch releases, and a latent Gradle plugin-classloader defect
 that had been misdiagnosed as a Spotless incompatibility is fixed, unpinning the formatter.
 
 ### Fixed
-- **The benchmarks module was splitting the Gradle plugin classloader**, which had held Spotless at
+- The benchmarks module was splitting the Gradle plugin classloader, which had held Spotless at
   7.x since 2026-06-07. Gradle caches one plugin classloader per distinct plugin classpath.
-  `cesium-kafka-benchmarks` was the only module applying a plugin its siblings lacked — it added
-  `alias(libs.plugins.jmh)` on top of the shared `cesium.java-conventions` — so it received its own
+  `cesium-kafka-benchmarks` was the only module applying a plugin its siblings lacked (it added
+  `alias(libs.plugins.jmh)` on top of the shared `cesium.java-conventions`), so it received its own
   classloader, and `SpotlessTaskService` (a build-scoped Gradle `BuildService`) was loaded twice.
   Spotless 8.x checks for exactly this and failed the build at configuration time
   (`Cannot set the value of task ':cesium-kafka-benchmarks:spotlessJava' property 'taskService' …
@@ -62,19 +286,19 @@ that had been misdiagnosed as a Spotless incompatibility is fixed, unpinning the
   …project-cesium-kafka-api`); 7.x never performed the check, so the defect sat latent and was
   misread as a Spotless incompatibility. The JMH plugin now reaches the module through a new
   `cesium.jmh-conventions` precompiled script plugin in `build-logic`, putting it on the runtime
-  classpath every subproject already shares — one classpath, one classloader, one
+  classpath every subproject already shares: one classpath, one classloader, one
   `SpotlessTaskService`. The `[plugins]` block in `gradle/libs.versions.toml` is gone; every plugin
   jar is now a build-logic `implementation` dependency, and the catalog comment says why.
 
 ### Changed
-- **Spotless 7.0.4 → 8.10.2**, and the `ignore:` rule holding it at 7.x is removed from
-  `.github/dependabot.yml` — the classloader fix above was the real blocker. (That rule was not doing
+- Spotless 7.0.4 → 8.10.2, and the `ignore:` rule holding it at 7.x is removed from
+  `.github/dependabot.yml`; the classloader fix above was the real blocker. (That rule was not doing
   its job regardless: it was added 2026-06-07 yet Dependabot still opened a major-version Spotless PR
   on 2026-08-23.) Nothing in the 8.x breaking-change list reaches this build: the renamed
   `removeWildcardImports`, the root-only `spotlessInstallGitPrePushHook`, the `LintSuppression` path
   change and the ktfmt/ktlint changes are all unused, and the raised floors (Gradle 8.1, Java 17) sit
   below this project's. `palantirJavaFormat` stays pinned to the catalog's 2.68.0 rather than tracking
-  the plugin default, so **no source file was reformatted** — `spotlessApply` on 8.10.2 is a no-op
+  the plugin default, so no source file was reformatted: `spotlessApply` on 8.10.2 is a no-op
   against the 7.0.4 output.
 - Dependency refresh (grouped Dependabot PRs [#20], [#22] and [#24]). Runtime: micrometer 1.17.0 →
   1.17.1, jackson 2.22.0 → 2.22.2, logback 1.6.2 → 1.6.3, slf4j 2.0.18 → 2.0.19. Build/test only:
@@ -87,45 +311,45 @@ that had been misdiagnosed as a Spotless incompatibility is fixed, unpinning the
   v3.0.3 through its annotated tag object). `gradle-wrapper.jar` is byte-identical between 9.7.0 and
   9.7.1, so Dependabot was right to leave it untouched.
 - `actions/setup-java` v6.0.0 is a major bump, but it preserves the `JAVA_HOME` ordering the unit
-  lane depends on. `ci.yml` installs the matrix test JVM **and** 21 with 21 *last*, so Gradle — and
-  therefore Spotless/palantir-java-format, which hooks javac internals that newer JDKs change —
+  lane depends on. `ci.yml` installs the matrix test JVM and 21, with 21 last, so Gradle (and
+  therefore Spotless/palantir-java-format, which hooks javac internals that newer JDKs change)
   always runs on 21, while the suites run on the matrix JVM via `-PtestToolchain`. The JDK 25 lane of
   [#22] confirms the ordering survives v6: `JAVA_HOME` resolves to the 21 toolchain with 25 installed
-  alongside. v6's split of the wrapper cache from the dependency cache does not reach this repo — no
+  alongside. v6's split of the wrapper cache from the dependency cache does not affect this repo: no
   workflow passes setup-java a `cache:` input, since caching is `gradle/actions/setup-gradle`.
 
 ## [1.1.2] - 2026-08-25
 
-Documentation only — no executable line changed, no behaviour difference. Three places where the
-docs described intended design as though it were shipped behaviour, or stated a Kafka semantic
-backwards. Each is the kind of claim a reader would act on: write an alert, implement against an
-SPI, or size an offsets-retention budget.
+Documentation only. No executable line changed, and behaviour is the same. Fixes three places where
+the docs described intended design as though it were shipped behaviour, or stated a Kafka semantic
+backwards. A reader would act on each of these claims: write an alert, implement against an SPI, or
+size an offsets-retention budget.
 
 ### Fixed
-- **`docs/delivery-semantics.md` §8.1 stated KIP-211's offset-expiry semantics backwards.** It said
-  the retention clock "runs from the last commit, even for a live-but-idle group" — that is the
-  *pre*-KIP-211 behaviour the KIP removed in Kafka 2.1. For a subscribing group the clock starts when
-  the group becomes **empty**; a group with live members does not lose its offsets however idle its
+- `docs/delivery-semantics.md` §8.1 stated KIP-211's offset-expiry semantics backwards. It said
+  the retention clock "runs from the last commit, even for a live-but-idle group", which is the
+  pre-KIP-211 behaviour the KIP removed in Kafka 2.1. For a subscribing group the clock starts when
+  the group becomes empty; a group with live members does not lose its offsets however idle its
   partitions. Both cesium groups `subscribe()`, so expiry can only begin once cesium is fully down,
-  which is precisely why the guard is an outage budget (`startup-checks.max-tolerated-outage`) and
-  not a commit-interval floor. The surrounding section already assumed the correct model, so only the
-  parenthetical was wrong — but an operator reading it could have concluded that a healthy, idle
+  which is why the guard is an outage budget (`startup-checks.max-tolerated-outage`) rather than a
+  commit-interval floor. The surrounding section already assumed the correct model, so only the
+  parenthetical was wrong, but an operator reading it could have concluded that a healthy, idle
   deployment was at risk of silent offset expiry.
 
 ### Changed
-- **The two-dispatch-loop `switch` in design §4.2 and [`docs/store-spi.md`](docs/store-spi.md) §2 is
-  now labelled as design intent rather than current code.** Both showed
+- The two-dispatch-loop `switch` in design §4.2 and `docs/store-spi.md` §2 (removed in 2.0.0) is
+  now labelled as design intent rather than current code. Both showed
   `switch (store) { case TrackerBackedStore -> new TrackerDispatchLoop(...); case
   ExternalSchedulerStore -> new ExternalDispatchLoop(...); }`. Neither loop type exists: there is one
   `DispatchLoop`, and `CesiumEngine.resolveStore` narrows to `TrackerBackedStore` and rejects any
   other archetype at startup ("this app build orchestrates tracker-backed stores only"). The snippets
-  are kept — sealing the hierarchy ([ADR-0003](docs/adr/0003-sealed-two-archetype-store-spi.md)) is
-  what makes that the wiring when the external archetype lands — but each now carries an as-shipped
-  note, and store-spi.md states plainly that a store must implement `TrackerBackedStore` to be
+  are kept, since sealing the hierarchy ([ADR-0003](docs/adr/0003-sealed-two-archetype-store-spi.md))
+  makes that the wiring when the external archetype lands, but each now carries an as-shipped note,
+  and store-spi.md states that a store must implement `TrackerBackedStore` to be
   runnable by the shipped app today.
-- **Design §9's metric inventory now agrees with [`docs/operations.md`](docs/operations.md) §13 about
-  which series exist.** operations.md has always carried the honest "not yet emitted (deferred past
-  M8)" block; design §9 listed the same nine series with no marker, so the two documents disagreed
+- Design §9's metric inventory now agrees with [`docs/operations.md`](docs/operations.md) §13 about
+  which series exist. operations.md has always carried a "not yet emitted (deferred past M8)"
+  block; design §9 listed the same nine series with no marker, so the two documents disagreed
   and the design doc read as a promise of live telemetry. The nine deferred series (`cesium_lso_lag`,
   `cesium_shard_state`, `cesium_replay_remaining_records`, `cesium_store_recovery_duration_seconds`,
   `cesium_store_replay_records_total`, `cesium_retention_margin_seconds`, `cesium_tracker_cursor_lag`
@@ -143,16 +367,16 @@ SPI, or size an offsets-retention budget.
   happened to be in, and `make: *** No rule to make target 'demo'` was the first thing they saw.
 - Startup no longer fails when the tracker topic it just created is not yet visible in the metadata a
   broker serves. `CreateTopics` is acknowledged by the KRaft controller, but the broker answering the
-  next describe publishes that record asynchronously — a normal, usually sub-millisecond window that
+  next describe publishes that record asynchronously: a normal, usually sub-millisecond window that
   a loaded cluster can stretch. cesium now waits it out (bounded: 10 s, capped-exponential backoff)
   wherever a topic's existence is already proven, and any wait above 1 s is surfaced as a startup
   warning rather than absorbed silently. The error text no longer misdiagnoses this as a degraded
-  cluster. Topics cesium did **not** create — source, DLQ, destination, and the `FAIL`-mode tracker —
+  cluster. Topics cesium did not create (source, DLQ, destination, and the `FAIL`-mode tracker)
   still fail fast on the first answer, so a genuinely missing topic is still reported immediately.
   See [ADR-0018](docs/adr/0018-bounded-wait-for-proven-topic-metadata.md).
 - The nightly integration and soak lanes no longer resolve `UP-TO-DATE`/`FROM-CACHE`. Gradle's `Test`
   task is cacheable, but a broker-backed run's real inputs (Docker, the KRaft container, wall-clock)
-  are not modelled — so an unchanged commit produced a guaranteed-wrong cache hit. Seven consecutive
+  are not modelled, so an unchanged commit produced a guaranteed-wrong cache hit. Seven consecutive
   nightlies (2026-07-24 … 07-30) reported green in under 95 s without executing a single integration
   test.
 
@@ -171,20 +395,20 @@ SPI, or size an offsets-retention budget.
   v5.2.0 → v5.7.0, gradle/actions v6.1.0 → v6.3.0, action-gh-release v3.0.0 → v3.0.2). No API
   change: per [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md) this project
   publishes distribution archives only, so micrometer's minor bump is not a transitive compile
-  surface for any consumer — hence a patch release. Every pin was verified against upstream before
+  surface for any consumer, hence a patch release. Every pin was verified against upstream before
   merge: the Gradle distribution and `gradle-wrapper.jar` against Gradle's published SHA-256s, and
   each action SHA dereferenced to its release tag.
 - Error Prone 2.50.0 newly reports `ReferenceEquality` at all six self-referential-cause guards
   (`t.getCause() == t`, which stops a Throwable whose cause is itself from looping forever). Identity
   is the intended comparison and the suggested `.equals()` rewrite would be incorrect, so each is
-  suppressed at its method with the reasoning recorded. Annotations and comments only — no executable
-  line changed, and the taxonomy classifiers behave exactly as before.
+  suppressed at its method with the reasoning recorded. Annotations and comments only: no executable
+  line changed, and the taxonomy classifiers behave as before.
 
 ## [1.1.0] - 2026-07-22
 
 ### Added
 - One-command self-driving demo (`make demo`): submits five out-of-order delayed notifications and
-  watches them arrive re-ordered and on schedule, exactly once — needs only Docker (a `kcat`
+  watches them arrive re-ordered and on schedule, exactly once. Needs only Docker (a `kcat`
   sidecar provides the tooling). Added a `Makefile` (`demo`/`up`/`down`/`logs`/`build`/`test`/
   `image`), `config/demo/run-demo.sh`, and a `demo`-profile service in `config/docker-compose.yaml`.
 - `startup-checks.tracker-acl` config knob (`WARN`|`FAIL`|`SKIP`, default `WARN`): opt into `FAIL` to
@@ -203,106 +427,106 @@ SPI, or size an offsets-retention budget.
   derive the version from the git tag.
 
 ### Security
-Security hardening from an internal audit. **No default is changed in a backward-incompatible way** —
+Security hardening from an internal audit. No default is changed in a backward-incompatible way:
 the two controls that would break an existing deployment (the observability bind address and the
 tracker-ACL strictness) are opt-in, so an upgrade with an unchanged config behaves as before. The
 fixes below either add defence in depth for a normally-operating deployment or close a fail-open path
 that only a non-conforming producer / external offset reset could reach.
 
-- **`delay.max` now bounds the absolute dispatch instant on the `cesium-delay-ms` path**, matching the
+- `delay.max` now bounds the absolute dispatch instant on the `cesium-delay-ms` path, matching the
   `cesium-deliver-at` path. A producer-controlled future-dated record timestamp with an in-range delay
   can no longer schedule a record beyond `now + delay.max`; over-bound records take the configured
   `on-over-max` policy (DLQ by default). Conforming producers are unaffected.
-- **Config errors no longer echo values into logs.** `MapConfigView` type-mismatch messages and YAML
+- Config errors no longer echo values into logs. `MapConfigView` type-mismatch messages and YAML
   parse errors now report the key/expected type and the structured source location without quoting the
   offending value or source line, which could carry a secret.
-- **Optional hardening (opt-in, see Added):** `startup-checks.tracker-acl: FAIL` makes a missing R12
+- Optional hardening (opt-in, see Added): `startup-checks.tracker-acl: FAIL` makes a missing R12
   tracker ACL a startup failure, and `observability.bind-address: 127.0.0.1` restricts the
-  unauthenticated endpoints to loopback. Both are **recommended for production** and documented in
+  unauthenticated endpoints to loopback. Both are recommended for production and documented in
   [SECURITY.md](SECURITY.md); neither is the default, so existing deployments are unaffected until you
   opt in.
 
 ## [1.0.0] - 2026-06-06
 
 First public release. cesium-kafka is a Kafka delayed-message relay: it consumes a source topic and
-re-delivers each record to a destination topic **at the time the producer asked for**, with
-**exactly-once delivery as observed by `read_committed` consumers of the destination**.
+re-delivers each record to a destination topic at the time the producer asked for, with exactly-once
+delivery as observed by `read_committed` consumers of the destination.
 
 ### Scope of this release
 
-- The **runnable application** (`cesium-kafka-app`, shipped as the distribution archives on this
-  Release and as a Docker image you build from the included `Dockerfile`) is the **supported v1
-  product surface**.
-- The **store SPI** (`cesium-kafka-api`) and its **contract test kit** (`cesium-kafka-store-testkit`)
-  are a **stable, semver-governed surface** for third-party store implementers from 1.0.
-- The engine's programmatic API (`cesium-kafka-core`) is **internal-until-1.x** — usable, but not yet
-  a compatibility-guaranteed surface.
-- **Publishing is repo-only for v1.0**: this Release carries the `distTar`/`distZip` archives. There
+- The runnable application (`cesium-kafka-app`, shipped as the distribution archives on this
+  Release and as a Docker image you build from the included `Dockerfile`) is the supported v1
+  product.
+- The store SPI (`cesium-kafka-api`) and its contract test kit (`cesium-kafka-store-testkit`) are
+  stable and semver-governed for third-party store implementers from 1.0.
+- The engine's programmatic API (`cesium-kafka-core`) is internal-until-1.x: usable, but not yet a
+  compatibility-guaranteed surface.
+- Publishing is repo-only for v1.0: this Release carries the `distTar`/`distZip` archives. There
   is no Maven Central artifact and no published container image in v1 (see ADR-0017).
 
 ### Added
 
-- **Exactly-once delayed relay.** Both the ingest and dispatch loops are Kafka read-process-write
+- Exactly-once delayed relay. Both the ingest and dispatch loops are Kafka read-process-write
   transactions with KIP-447 group-metadata fencing, so the destination's `read_committed` consumers
-  observe each record exactly once. Delivery is **at-or-after** the requested instant (never early;
-  bounded lateness). Producers request a delay with one header — `cesium-delay-ms` (relative to the
+  observe each record exactly once. Delivery is at or after the requested instant (never early;
+  bounded lateness). Producers request a delay with one header: `cesium-delay-ms` (relative to the
   source timestamp) or `cesium-deliver-at` (absolute epoch-millis). Key, value, and all non-`cesium-*`
   headers are preserved byte-for-byte.
-- **Pointer-only memory model.** A pending message holds only `(partition, offset, dispatchAt)` in
+- Pointer-only memory model. A pending message holds only `(partition, offset, dispatchAt)` in
   the in-memory index; payloads stay in the source topic and are re-fetched at dispatch time. The
   index is a fastutil-backed primitive structure (arrival ring + binary search, no per-entry object),
   measured at ~40.5 B/entry.
-- **Pluggable scheduler store SPI** (`cesium-kafka-api`) with two sealed archetypes — the
-  tracker-backed store and the external (e.g. JDBC) store — and a published **contract test kit**
+- Pluggable scheduler store SPI (`cesium-kafka-api`) with two sealed archetypes (the
+  tracker-backed store and the external, e.g. JDBC, store) and a published contract test kit
   (`cesium-kafka-store-testkit`) that is the executable specification a conforming store is written
   against (`TrackerBackedStoreContract`, `ExternalSchedulerStoreContract`).
-- **Tracker store** (`cesium-kafka-store-kafka`): the flagship store, an internal compacted tracker
-  topic holding scheduler state. Restarts and rebalances replay a **bounded** window via the
+- Tracker store (`cesium-kafka-store-kafka`): the main store, an internal compacted tracker
+  topic holding scheduler state. Restarts and rebalances replay a bounded window via the
   committed-cursor-v2 design (consumer position + a pinned-entry sidecar in the offset-metadata
   channel), not the full history. The high-watermark replay barrier and snapshot ordering (I8)
   guarantee no duplicate or dropped delivery across recovery.
-- **Runnable app** (`cesium-kafka-app`): YAML + environment configuration with validation and locked
+- Runnable app (`cesium-kafka-app`): YAML + environment configuration with validation and locked
   keys, graceful lifecycle, a multi-stage `Dockerfile`, and a `config/docker-compose.yaml` 5-minute
   quickstart.
-- **Observability**: decoupled liveness/readiness health endpoints (ready can be served while
+- Observability: decoupled liveness/readiness health endpoints (ready can be served while
   recovery is still in progress), a Prometheus `/metrics` endpoint with the `cesium_*` inventory, a
   `/info` build-info endpoint, and one-line JSON logging.
-- **Hardening**: cooperative rebalance + `onPartitionsLost` handling, zombie-producer fencing
+- Hardening: cooperative rebalance + `onPartitionsLost` handling, zombie-producer fencing
   (including static-membership ids), ACTIVE-only backpressure pause/resume, a per-partition penalty
   box with enforced fetch byte/time budgets, the in-doubt-commit recovery taxonomy, and admin-time
   startup validation (topic identity/parity, retention, compaction settings, `auto.offset.reset=none`).
-- **Test suite**: ~47 Testcontainers integration tests against Kafka 4.3.0 (representative PR lane +
+- Test suite: ~47 Testcontainers integration tests against Kafka 4.3.0 (representative PR lane +
   heavy nightly Toxiproxy/compaction/multi-instance/KIP-848/soak lanes), property-based index and
   store-contract suites, and a JMH hot-path benchmark module.
-- **Documentation**: the implementation-ready [`docs/design.md`](docs/design.md) plus audience-targeted
+- Documentation: the implementation-ready [`docs/design.md`](docs/design.md) plus focused
   guides (architecture, delivery semantics, header protocol, operations, configuration, store SPI,
   performance, migration-from-PoC), ADRs 0001–0017, and the failure-matrix coverage map.
 
-### Known limitations / what is owed
+### Known limitations
 
-- **Performance numbers are honestly re-documented, not all on-target.** Per
-  [`docs/performance.md`](docs/performance.md), measured-on-a-single-localhost-broker dev-box numbers
-  miss two classes of design `§11.4` target — the `drainDue`/ring-binary-search JMH hot paths
+- Not all performance numbers meet their targets. Per
+  [`docs/performance.md`](docs/performance.md), dev-box numbers measured on a single localhost broker
+  miss two classes of design `§11.4` target: the `drainDue`/ring-binary-search JMH hot paths
   (memory-latency bound) and the dispatch `dispatch_lag` p99 + scattered-due throughput
-  (seek/fetch-I/O bound). A **server-class, multi-broker re-measurement is owed** before any
+  (seek/fetch-I/O bound). A server-class, multi-broker re-measurement is owed before any
   dedicated-hardware or 100M-scale throughput claim; the original targets are retained as projections.
-- The JMH **>10% regression gate is aspirational/non-blocking** in v1 (it needs a low-variance
+- The JMH >10% regression gate is aspirational and non-blocking in v1 (it needs a low-variance
   dedicated runner before it can gate CI).
-- The **KIP-848 consumer protocol** lane runs nightly as non-blocking (`continue-on-error`); the
+- The KIP-848 consumer protocol lane runs nightly as non-blocking (`continue-on-error`); the
   classic protocol is the default until the ADR-0006 promotion criteria are met.
-- **`/metrics` exposes the engine's `cesium_*` inventory only.** The design `§9` Micrometer binders —
-  `KafkaClientMetrics` per producer/consumer, the JVM/process binders, and the `application_id`/`role`
-  common tags — are **deferred** and not wired in v1, so `kafka_*` / JVM / process series are absent
+- `/metrics` exposes the engine's `cesium_*` inventory only. The design `§9` Micrometer binders
+  (`KafkaClientMetrics` per producer/consumer, the JVM/process binders, and the `application_id`/`role`
+  common tags) are deferred and not wired in v1, so `kafka_*` / JVM / process series are absent
   (obtain them via a JMX-to-Prometheus exporter sidecar). The deferred-metric series likewise listed
   in design `§9` (`cesium_shard_state`, `cesium_replay_remaining_records`, `cesium_retention_margin_seconds`)
   are not emitted either. See [`docs/operations.md`](docs/operations.md) §13.
-- **No Maven Central artifacts and no published container image** in v1 (repo-only publishing,
+- No Maven Central artifacts and no published container image in v1 (repo-only publishing,
   ADR-0017); a cancellation API and external (JDBC) store implementation are reserved for a later
   release (the SPI for both is fixed now so it cannot drift).
 
 ### Security
 
-- The internal tracker topic **requires a write-restricting ACL**: without it, forged ADD/tombstone
+- The internal tracker topic **requires a write-restricting ACL**. Without it, forged ADD/tombstone
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 

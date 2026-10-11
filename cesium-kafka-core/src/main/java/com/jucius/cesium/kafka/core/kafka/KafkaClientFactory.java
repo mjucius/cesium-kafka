@@ -34,7 +34,7 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
  *   <li>static membership: {@code group.instance.id = cesium.<applicationId>.ingest.<instanceId>},
  *       omitted when the operator opted into {@code instance-id: random} (static membership is
  *       pointless for a non-stable id)
- *   <li>transactional id: {@code cesium.<applicationId>.ingest.<instanceId>.<workerOrdinal>} —
+ *   <li>transactional id: {@code cesium.<applicationId>.ingest.<instanceId>.0} —
  *       stable across restarts so {@code initTransactions()} immediately fences a predecessor's
  *       dangling transaction instead of waiting out {@code transaction.timeout.ms}; under the
  *       {@code random} opt-in the instance component is a per-process random token (unique among
@@ -60,6 +60,15 @@ public final class KafkaClientFactory {
 
     /** Tuned ingest-consumer default: {@code max.partition.fetch.bytes} 4 MiB (§8). */
     static final String INGEST_MAX_PARTITION_FETCH_BYTES = "4194304";
+
+    /** Ingest consumer {@code max.poll.records}: records per poll, so per ingest transaction (§8). */
+    static final String INGEST_MAX_POLL_RECORDS = "2000";
+
+    /**
+     * Suffix of both transactional ids: the 1.x worker-0 ordinal, kept so 2.x ids stay byte-identical
+     * to the ids a 1.x instance used (one loop per role since 2.0).
+     */
+    private static final String TRANSACTIONAL_ID_SUFFIX = ".0";
 
     /** Tuned tracker-consumer default: {@code max.poll.records} (§8 — tracker records are ≤ 26 B). */
     static final String TRACKER_MAX_POLL_RECORDS = "10000";
@@ -105,27 +114,25 @@ public final class KafkaClientFactory {
     }
 
     /**
-     * Group A's static membership id, or empty under the {@code instance-id: random} opt-in
-     * (design D21: static membership is default on, keyed by the stable deployment-slot id).
+     * Group A's static membership id, or empty under the {@code instance-id: random} opt-in (design
+     * D21: static membership is default on, keyed by the stable deployment-slot id).
      */
     public Optional<String> ingestGroupInstanceId() {
-        if (config.instanceId().isRandom()) {
-            return Optional.empty();
-        }
-        return Optional.of(ingestGroupId() + "." + effectiveInstanceId);
+        return groupInstanceId(ingestGroupId());
     }
 
     /**
-     * The ingest transactional id for one worker:
-     * {@code cesium.<applicationId>.ingest.<instanceId>.<workerOrdinal>} (design §3.3, D10).
+     * The ingest transactional id: {@code cesium.<applicationId>.ingest.<instanceId>.0} (design
+     * §3.3, D10). The trailing {@code .0} is the 1.x worker ordinal, kept so a rolling upgrade's new
+     * producer fences its predecessor's dangling transaction on {@code initTransactions()}.
      */
-    public String ingestTransactionalId(int workerOrdinal) {
-        return ingestGroupId() + "." + effectiveInstanceId + "." + workerOrdinal;
+    public String ingestTransactionalId() {
+        return ingestGroupId() + "." + effectiveInstanceId + TRANSACTIONAL_ID_SUFFIX;
     }
 
     /**
-     * Properties for the group-A source consumer: tuned defaults ({@code max.poll.records} from
-     * {@code ingest.max-batch}, 4 MiB partition fetch), common map, ingest-consumer overlay, then
+     * Properties for the group-A source consumer: tuned defaults ({@code max.poll.records} 2000,
+     * 4 MiB partition fetch), common map, ingest-consumer overlay, then
      * the locked keys — byte-array deserialization, auto-commit off,
      * {@code isolation.level=read_committed} (D17), {@code auto.offset.reset=none} (D18), the
      * derived group id and static-membership id.
@@ -133,32 +140,19 @@ public final class KafkaClientFactory {
     public Properties ingestConsumerProperties() {
         Properties props = new Properties();
         // 1. Tuned defaults (§8) — overridable by operator maps.
-        props.setProperty(
-                ConsumerConfig.MAX_POLL_RECORDS_CONFIG,
-                String.valueOf(config.ingest().maxBatch()));
+        props.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, INGEST_MAX_POLL_RECORDS);
         props.setProperty(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, INGEST_MAX_PARTITION_FETCH_BYTES);
         // 2. Common passthrough, then 3. the per-client overlay (overlay wins).
-        putAll(props, config.kafka().properties());
-        putAll(props, config.kafka().ingestConsumer().properties());
+        props.putAll(config.kafka().properties());
+        props.putAll(config.kafka().ingestConsumer().properties());
         // The typed kafka.group-protocol knob outranks a raw group.protocol in a passthrough map
         // (mirrors transactions.timeout): the engine's rebalance-listener semantics and the §11
         // CI matrix key off the typed value, so an overlay must never silently flip the real
         // protocol while config.kafka().groupProtocol() reports otherwise.
         applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
-        props.setProperty(ConsumerConfig.GROUP_ID_CONFIG, ingestGroupId());
-        Optional<String> groupInstanceId = ingestGroupInstanceId();
-        if (groupInstanceId.isPresent()) {
-            props.setProperty(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG, groupInstanceId.get());
-        } else {
-            // random opt-in: a leaked static-membership id would fence the next process (D21).
-            props.remove(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG);
-        }
-        props.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        props.setProperty(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
-        props.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
-        props.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
-        props.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        lockGroup(props, ingestGroupId(), ingestGroupInstanceId());
+        lockConsumer(props);
         return props;
     }
 
@@ -168,27 +162,8 @@ public final class KafkaClientFactory {
      * {@code kafka.transactions.timeout}, then the locked keys — the derived transactional id,
      * idempotence on, byte-array serialization.
      */
-    public Properties ingestProducerProperties(int workerOrdinal) {
-        Properties props = new Properties();
-        // 1. Tuned defaults (§8) — overridable by operator maps.
-        props.setProperty(ProducerConfig.LINGER_MS_CONFIG, PRODUCER_LINGER_MS);
-        props.setProperty(ProducerConfig.BATCH_SIZE_CONFIG, PRODUCER_BATCH_SIZE);
-        props.setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, PRODUCER_COMPRESSION);
-        props.setProperty(ProducerConfig.BUFFER_MEMORY_CONFIG, PRODUCER_BUFFER_MEMORY);
-        // 2. Common passthrough, then 3. the per-client overlay (overlay wins).
-        putAll(props, config.kafka().properties());
-        putAll(props, config.kafka().ingestProducer().properties());
-        // The typed kafka.transactions.timeout key is the documented knob (D9); it outranks a raw
-        // transaction.timeout.ms in a passthrough map so commit-retry math never desyncs from it.
-        props.setProperty(
-                ProducerConfig.TRANSACTION_TIMEOUT_CONFIG,
-                String.valueOf(config.kafka().transactions().timeout().toMillis()));
-        // 4. Locked keys last — they always win (§8).
-        props.setProperty(ProducerConfig.TRANSACTIONAL_ID_CONFIG, ingestTransactionalId(workerOrdinal));
-        props.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
-        props.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-        props.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-        return props;
+    public Properties ingestProducerProperties() {
+        return producerProperties(config.kafka().ingestProducer().properties(), ingestTransactionalId());
     }
 
     /**
@@ -212,21 +187,18 @@ public final class KafkaClientFactory {
      * partitions and replay happens on the returning member).
      */
     public Optional<String> dispatchGroupInstanceId() {
-        if (config.instanceId().isRandom()) {
-            return Optional.empty();
-        }
-        return Optional.of(dispatchGroupId() + "." + effectiveInstanceId);
+        return groupInstanceId(dispatchGroupId());
     }
 
     /**
-     * The dispatch transactional id for one worker:
-     * {@code cesium.<applicationId>.dispatch.<instanceId>.<workerOrdinal>} (design §3.3, D10) —
-     * stable across restarts so {@code initTransactions()} fences a predecessor's dangling
-     * transaction immediately instead of stalling the tracker LSO (and with it every replay
-     * barrier) for {@code transaction.timeout.ms}.
+     * The dispatch transactional id: {@code cesium.<applicationId>.dispatch.<instanceId>.0} (design
+     * §3.3, D10) — stable across restarts so {@code initTransactions()} fences a predecessor's
+     * dangling transaction immediately instead of stalling the tracker LSO (and with it every
+     * replay barrier) for {@code transaction.timeout.ms}. The {@code .0} is the 1.x worker ordinal,
+     * kept byte-identical for rolling upgrades.
      */
-    public String dispatchTransactionalId(int workerOrdinal) {
-        return dispatchGroupId() + "." + effectiveInstanceId + "." + workerOrdinal;
+    public String dispatchTransactionalId() {
+        return dispatchGroupId() + "." + effectiveInstanceId + TRANSACTIONAL_ID_SUFFIX;
     }
 
     /**
@@ -247,27 +219,16 @@ public final class KafkaClientFactory {
             props.setProperty(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, TRACKER_ASSIGNOR);
         }
         // 2. Common passthrough, then 3. the per-client overlay (overlay wins).
-        putAll(props, config.kafka().properties());
-        putAll(props, config.kafka().trackerConsumer().properties());
+        props.putAll(config.kafka().properties());
+        props.putAll(config.kafka().trackerConsumer().properties());
         // The typed kafka.group-protocol knob outranks a raw group.protocol overlay (see the
         // ingest consumer); under the consumer protocol the classic-only client keys (the assignor
         // list set as a tuned default above, plus any passthrough session/heartbeat timers) are
         // stripped — they are broker-side under KIP-848 and the client rejects them otherwise.
         applyGroupProtocol(props);
         // 4. Locked keys last — they always win (D17/D18, §8).
-        props.setProperty(ConsumerConfig.GROUP_ID_CONFIG, dispatchGroupId());
-        Optional<String> groupInstanceId = dispatchGroupInstanceId();
-        if (groupInstanceId.isPresent()) {
-            props.setProperty(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG, groupInstanceId.get());
-        } else {
-            // random opt-in: a leaked static-membership id would fence the next process (D21).
-            props.remove(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG);
-        }
-        props.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        props.setProperty(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
-        props.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
-        props.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
-        props.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        lockGroup(props, dispatchGroupId(), dispatchGroupInstanceId());
+        lockConsumer(props);
         return props;
     }
 
@@ -277,27 +238,8 @@ public final class KafkaClientFactory {
      * dispatch-producer overlay, the typed {@code kafka.transactions.timeout}, then the locked
      * keys — the derived dispatch transactional id, idempotence on, byte-array serialization.
      */
-    public Properties dispatchProducerProperties(int workerOrdinal) {
-        Properties props = new Properties();
-        // 1. Tuned defaults (§8) — overridable by operator maps.
-        props.setProperty(ProducerConfig.LINGER_MS_CONFIG, PRODUCER_LINGER_MS);
-        props.setProperty(ProducerConfig.BATCH_SIZE_CONFIG, PRODUCER_BATCH_SIZE);
-        props.setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, PRODUCER_COMPRESSION);
-        props.setProperty(ProducerConfig.BUFFER_MEMORY_CONFIG, PRODUCER_BUFFER_MEMORY);
-        // 2. Common passthrough, then 3. the per-client overlay (overlay wins).
-        putAll(props, config.kafka().properties());
-        putAll(props, config.kafka().dispatchProducer().properties());
-        // The typed kafka.transactions.timeout key outranks a raw passthrough value (D9): the
-        // commit-retry budget and the D-11 batch sizing key off the typed value.
-        props.setProperty(
-                ProducerConfig.TRANSACTION_TIMEOUT_CONFIG,
-                String.valueOf(config.kafka().transactions().timeout().toMillis()));
-        // 4. Locked keys last — they always win (§8).
-        props.setProperty(ProducerConfig.TRANSACTIONAL_ID_CONFIG, dispatchTransactionalId(workerOrdinal));
-        props.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
-        props.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-        props.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-        return props;
+    public Properties dispatchProducerProperties() {
+        return producerProperties(config.kafka().dispatchProducer().properties(), dispatchTransactionalId());
     }
 
     /**
@@ -327,18 +269,14 @@ public final class KafkaClientFactory {
         props.setProperty(ConsumerConfig.FETCH_MAX_BYTES_CONFIG, SEEK_FETCH_MAX_BYTES);
         props.setProperty(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, SEEK_MAX_PARTITION_FETCH_BYTES);
         // 2. Common passthrough, then 3. the per-client overlay (overlay wins).
-        putAll(props, config.kafka().properties());
-        putAll(props, config.kafka().seekConsumer().properties());
+        props.putAll(config.kafka().properties());
+        props.putAll(config.kafka().seekConsumer().properties());
         // 4. Locked keys last — they always win (D17/D18, §8). Group keys are removed, not set:
         // this consumer is group-less (§7).
         props.remove(ConsumerConfig.GROUP_ID_CONFIG);
         props.remove(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG);
         props.remove(ConsumerConfig.GROUP_PROTOCOL_CONFIG);
-        props.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        props.setProperty(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
-        props.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
-        props.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
-        props.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        lockConsumer(props);
         return props;
     }
 
@@ -348,8 +286,8 @@ public final class KafkaClientFactory {
     }
 
     /** Creates one ingest worker's transactional producer. The caller's thread owns it (§6). */
-    public Producer<byte[], byte[]> newIngestProducer(int workerOrdinal) {
-        return new KafkaProducer<>(ingestProducerProperties(workerOrdinal));
+    public Producer<byte[], byte[]> newIngestProducer() {
+        return new KafkaProducer<>(ingestProducerProperties());
     }
 
     /** Creates the group-B tracker consumer. The owning dispatch thread holds it for life (§6). */
@@ -358,8 +296,8 @@ public final class KafkaClientFactory {
     }
 
     /** Creates one dispatch worker's transactional producer. The caller's thread owns it (§6). */
-    public Producer<byte[], byte[]> newDispatchProducer(int workerOrdinal) {
-        return new KafkaProducer<>(dispatchProducerProperties(workerOrdinal));
+    public Producer<byte[], byte[]> newDispatchProducer() {
+        return new KafkaProducer<>(dispatchProducerProperties());
     }
 
     /** Creates the group-less payload seek consumer (§7). The owning dispatch thread holds it (§6). */
@@ -391,9 +329,64 @@ public final class KafkaClientFactory {
         }
     }
 
-    private static void putAll(Properties props, Map<String, String> map) {
-        for (Map.Entry<String, String> entry : map.entrySet()) {
-            props.setProperty(entry.getKey(), entry.getValue());
+    /**
+     * The shared transactional-producer recipe: tuned defaults (linger 10 ms, 256 KiB batches, lz4,
+     * 64 MiB buffer), common map, the per-client overlay, the typed {@code kafka.transactions.timeout}
+     * (D9: it outranks a raw passthrough value so commit-retry math never desyncs from it), then the
+     * locked keys.
+     */
+    private Properties producerProperties(Map<String, String> overlay, String transactionalId) {
+        Properties props = new Properties();
+        // 1. Tuned defaults (§8) — overridable by operator maps.
+        props.setProperty(ProducerConfig.LINGER_MS_CONFIG, PRODUCER_LINGER_MS);
+        props.setProperty(ProducerConfig.BATCH_SIZE_CONFIG, PRODUCER_BATCH_SIZE);
+        props.setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, PRODUCER_COMPRESSION);
+        props.setProperty(ProducerConfig.BUFFER_MEMORY_CONFIG, PRODUCER_BUFFER_MEMORY);
+        // 2. Common passthrough, then 3. the per-client overlay (overlay wins).
+        props.putAll(config.kafka().properties());
+        props.putAll(overlay);
+        props.setProperty(
+                ProducerConfig.TRANSACTION_TIMEOUT_CONFIG,
+                String.valueOf(config.kafka().transactions().timeout().toMillis()));
+        // 4. Locked keys last — they always win (§8).
+        props.setProperty(ProducerConfig.TRANSACTIONAL_ID_CONFIG, transactionalId);
+        props.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+        props.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        props.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        return props;
+    }
+
+    /**
+     * The static-membership id {@code <groupId>.<instanceId>} for this instance's consumer in
+     * {@code groupId}, or empty under the {@code instance-id: random} opt-in.
+     */
+    private Optional<String> groupInstanceId(String groupId) {
+        if (config.instanceId().isRandom()) {
+            return Optional.empty();
         }
+        return Optional.of(groupId + "." + effectiveInstanceId);
+    }
+
+    /** Locks the group id and static-membership id (removed under the random opt-in, D21). */
+    private static void lockGroup(Properties props, String groupId, Optional<String> groupInstanceId) {
+        props.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        if (groupInstanceId.isPresent()) {
+            props.setProperty(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG, groupInstanceId.get());
+        } else {
+            // random opt-in: a leaked static-membership id would fence the next process (D21).
+            props.remove(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG);
+        }
+    }
+
+    /**
+     * The consumer keys every cesium consumer locks (D17/D18): auto-commit off,
+     * {@code read_committed}, {@code auto.offset.reset=none}, byte-array deserialization.
+     */
+    private static void lockConsumer(Properties props) {
+        props.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.setProperty(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
+        props.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
+        props.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        props.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
     }
 }

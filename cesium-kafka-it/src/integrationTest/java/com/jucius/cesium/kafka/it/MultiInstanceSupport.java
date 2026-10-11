@@ -31,7 +31,7 @@ import org.apache.kafka.common.TopicPartition;
  * scenarios.
  *
  * <p><strong>Process-model fidelity gap (documented per the task).</strong> The design specifies
- * <em>separate JVMs</em> so SIGKILL is real (§11.3). These v1 instances are in-JVM:
+ * <em>separate JVMs</em> so SIGKILL is real (§11.3). These instances are in-JVM:
  * {@link #kill(String)} is {@link EngineHarness#kill()} (interrupt the loop threads, drop the
  * in-memory store) &mdash; a faithful stand-in for "process died without a graceful commit", but not
  * an OS {@code SIGKILL}. This is sound for fencing because the guarantees rest on
@@ -39,7 +39,7 @@ import org.apache.kafka.common.TopicPartition;
  * {@code transactional.id}, {@code TxnOffsetCommit} rejection on a stale member/generation epoch, a
  * duplicate {@code group.instance.id} join fencing the prior static member, and session-timeout
  * eviction. None depend on OS process semantics. The crash-loop soak (§11.3-12), which needs true
- * SIGKILL, forks JVMs separately; the fencing scenarios built on this harness do not.
+ * SIGKILL, is not built; no IT in this suite forks a JVM.
  */
 final class MultiInstanceSupport implements AutoCloseable {
 

@@ -92,13 +92,6 @@ class YamlBindingTest {
                   on-malformed-header: relay_immediate
                 headers:
                   stamp-provenance: false
-                store:
-                  type: kafka-tracker
-                  properties:
-                    hmac.key: secret
-                ingest:
-                  workers: 2
-                  max-batch: 1000
                 dispatch:
                   batch:
                     max-entries: 5000
@@ -121,6 +114,7 @@ class YamlBindingTest {
                 startup-checks:
                   retention: WARN
                   max-tolerated-outage: P3D
+                  revalidation-interval: PT30S
                 """);
 
         CesiumConfig config = LoaderTestSupport.loader(Map.of()).load(file).config();
@@ -150,9 +144,6 @@ class YamlBindingTest {
         assertEquals(MalformedHeaderPolicy.RELAY_IMMEDIATE, config.delay().onMalformedHeader());
 
         assertFalse(config.headers().stampProvenance());
-        assertEquals("secret", config.store().properties().get("hmac.key"));
-        assertEquals(2, config.ingest().workers());
-        assertEquals(1000, config.ingest().maxBatch());
 
         DispatchConfig dispatch = config.dispatch();
         assertEquals(5000, dispatch.batch().maxEntries());
@@ -169,12 +160,11 @@ class YamlBindingTest {
         assertEquals("127.0.0.1", config.observability().bindAddress());
         assertTrue(config.observability().detailedInfo());
         assertEquals(Duration.ofDays(3), config.startupChecks().maxToleratedOutage());
+        assertEquals(Duration.ofSeconds(30), config.startupChecks().revalidationInterval());
 
         // Untouched keys keep their §8 defaults.
         assertEquals(Duration.ofSeconds(2), dispatch.fetch().partitionTimeFloor());
         assertEquals(Duration.ofSeconds(10), dispatch.fetch().penalty().backoffMax());
-        assertEquals(Duration.ZERO, dispatch.coalesce());
-        assertFalse(config.headers().acceptBinaryLongValues());
     }
 
     @Test
@@ -186,7 +176,6 @@ class YamlBindingTest {
         assertEquals(10_000, config.dispatch().batch().maxEntries());
         assertEquals(32L * 1024 * 1024, config.dispatch().batch().maxBytes());
         assertEquals(3072, config.dispatch().cursor().sidecarMaxBytes());
-        assertEquals("kafka-tracker", config.store().type());
         assertEquals(8081, config.observability().port());
     }
 

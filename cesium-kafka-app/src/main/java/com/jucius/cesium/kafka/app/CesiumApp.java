@@ -2,9 +2,11 @@ package com.jucius.cesium.kafka.app;
 
 import com.jucius.cesium.kafka.app.config.CesiumConfigLoader;
 import com.jucius.cesium.kafka.app.config.CesiumConfigLoader.LoadedConfig;
+import com.jucius.cesium.kafka.app.health.HealthAssessor;
 import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine;
 import com.jucius.cesium.kafka.app.lifecycle.EngineStartupException;
 import com.jucius.cesium.kafka.app.metrics.BuildInfo;
+import com.jucius.cesium.kafka.app.metrics.ObservabilityServer;
 import com.jucius.cesium.kafka.app.metrics.ServiceInfo;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.ConfigValidationException;
@@ -13,6 +15,7 @@ import com.jucius.cesium.kafka.core.config.ValidationContext;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -20,15 +23,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Properties;
-import java.util.ServiceLoader;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 /**
  * Entry point for the cesium-kafka service (design §6, §9, §10). {@link #main(String[])} is a thin
- * wrapper over the testable {@link #run(String[], Map, Properties, Clock)} body, which returns the
+ * wrapper over the testable {@link #run(String[], Map, Clock)} body, which returns the
  * process exit code instead of calling {@link System#exit} so the config and exit-code paths are
  * unit-testable without forking a JVM.
  *
@@ -39,7 +41,7 @@ import org.slf4j.LoggerFactory;
  * {@link CesiumEngine} → start the observability HTTP server (before the engine, so probes answer
  * during startup) → install a SIGTERM/SIGINT hook calling {@code engine.stop(shutdown.timeout)} →
  * start the engine → block in {@link CesiumEngine#awaitDone()} → exit {@code 0} on a clean shutdown,
- * non-zero on a fatal loop failure or shutdown-budget overrun.
+ * non-zero on a fatal engine failure or shutdown-budget overrun.
  *
  * <p><strong>Exit codes.</strong> {@code 0} normal, {@value CesiumConfigLoader#EX_CONFIG} config
  * (BSD {@code EX_CONFIG}), {@value #EX_FATAL} any other fatal (startup validation, engine failure).
@@ -75,27 +77,29 @@ public final class CesiumApp {
      */
     static final Duration LIVENESS_STALE_AFTER = Duration.ofSeconds(90);
 
+    /** The MDC key tagging main- and shutdown-thread log lines with the application id (design §9). */
+    private static final String APPLICATION_ID_MDC = "applicationId";
+
     private CesiumApp() {}
 
     public static void main(String[] args) {
-        System.exit(run(args, System.getenv(), System.getProperties(), Clock.systemUTC()));
+        System.exit(run(args, System.getenv(), Clock.systemUTC()));
     }
 
     /**
      * The testable {@code main} body: resolves and loads config, builds and runs the engine, and
-     * returns the process exit code (never calls {@link System#exit}). Environment and system
-     * properties are injected so tests run hermetically.
+     * returns the process exit code (never calls {@link System#exit}). The environment is injected
+     * so tests run hermetically.
      *
      * @return {@code 0} clean, {@value CesiumConfigLoader#EX_CONFIG} config error, {@value #EX_FATAL}
      *     any other fatal
      */
-    public static int run(String[] args, Map<String, String> environment, Properties systemProperties, Clock clock) {
+    public static int run(String[] args, Map<String, String> environment, Clock clock) {
         final LoadedConfig loaded;
         try {
             Path configPath = Path.of(resolveConfigPath(args, environment));
             log.info("loading configuration from {}", configPath);
-            loaded = new CesiumConfigLoader(environment, systemProperties, ValidationContext.runtime(1))
-                    .load(configPath);
+            loaded = new CesiumConfigLoader(environment, ValidationContext.runtime()).load(configPath);
         } catch (ConfigValidationException e) {
             log.error("configuration is invalid:\n{}", e.report().render());
             return CesiumConfigLoader.EX_CONFIG;
@@ -103,28 +107,40 @@ public final class CesiumApp {
             log.error("invalid command line: {}", e.getMessage());
             return CesiumConfigLoader.EX_CONFIG;
         }
-        printFindings(loaded.report());
         CesiumConfig config = loaded.config();
+        // Main-thread lines from here on carry applicationId (design §9). The scope wraps the whole
+        // engine run, including its catch blocks, so "engine refused to start" is tagged too.
+        try (MDC.MDCCloseable ignored = MDC.putCloseable(APPLICATION_ID_MDC, config.applicationId())) {
+            printFindings(loaded.report());
+            return runEngine(config, clock);
+        }
+    }
 
+    /** Builds, starts and awaits the engine; returns the exit code. Runs inside the applicationId MDC scope. */
+    private static int runEngine(CesiumConfig config, Clock clock) {
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         CesiumEngine engine = new CesiumEngine(config, registry, clock, SHUTDOWN_TIMEOUT);
-        AutoCloseable observability = () -> {};
+        ObservabilityServer observability = new ObservabilityServer(
+                config.observability().bindAddress(),
+                config.observability().port(),
+                config.observability().detailedInfo(),
+                registry::scrape,
+                new HealthAssessor(engine.health(), clock, LIVENESS_STALE_AFTER),
+                serviceInfoSupplier(config));
         try {
-            ObservabilityRuntime runtime = new ObservabilityRuntime(
-                    config.observability().bindAddress(),
-                    config.observability().port(),
-                    config.observability().detailedInfo(),
-                    registry,
-                    engine.health(),
-                    clock,
-                    LIVENESS_STALE_AFTER,
-                    serviceInfoSupplier(config, engine));
-            observability = startObservability(runtime);
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> engine.stop(SHUTDOWN_TIMEOUT), "cesium-shutdown"));
+            startObservability(observability, config.observability().port());
+            String applicationId = config.applicationId();
+            Runtime.getRuntime()
+                    .addShutdownHook(new Thread(
+                            () -> {
+                                MDC.put(APPLICATION_ID_MDC, applicationId);
+                                engine.stop(SHUTDOWN_TIMEOUT);
+                            },
+                            "cesium-shutdown"));
             engine.start();
             boolean clean = engine.awaitDone();
             if (!clean) {
-                engine.fatalCause().ifPresent(cause -> log.error("engine exited on a fatal loop failure", cause));
+                engine.fatalCause().ifPresent(cause -> log.error("engine exited on a fatal engine failure", cause));
                 return EX_FATAL;
             }
             log.info("cesium engine stopped cleanly");
@@ -176,11 +192,10 @@ public final class CesiumApp {
     }
 
     /**
-     * The {@code /info} supplier: build provenance + applicationId + lower-cased roles + store type
-     * and (once the store is up) its capabilities + the named startup acknowledgments. Re-evaluated
-     * per request so capabilities appear as soon as the engine resolves the store.
+     * The {@code /info} supplier: build provenance + applicationId + lower-cased roles + the named
+     * startup acknowledgments.
      */
-    private static Supplier<ServiceInfo> serviceInfoSupplier(CesiumConfig config, CesiumEngine engine) {
+    private static Supplier<ServiceInfo> serviceInfoSupplier(CesiumConfig config) {
         BuildInfo build = BuildInfo.load();
         List<String> roles = config.roles().stream()
                 .map(role -> role.name().toLowerCase(Locale.ROOT))
@@ -190,30 +205,17 @@ public final class CesiumApp {
         if (config.startupChecks().sizeBasedRetention() == StartupChecks.SizeBasedRetention.ACKNOWLEDGED) {
             acknowledgments.add("size-based-retention");
         }
-        String storeType = config.store().type();
-        String applicationId = config.applicationId();
-        return () ->
-                new ServiceInfo(build, applicationId, roles, storeType, engine.storeCapabilities(), acknowledgments);
+        ServiceInfo info = new ServiceInfo(build, config.applicationId(), roles, acknowledgments);
+        return () -> info;
     }
 
-    private static AutoCloseable startObservability(ObservabilityRuntime runtime) {
-        List<ObservabilityServerFactory> factories = new ArrayList<>();
-        ServiceLoader.load(ObservabilityServerFactory.class).forEach(factories::add);
-        if (factories.isEmpty()) {
-            log.warn("no ObservabilityServerFactory registered; running without the HTTP observability surface"
-                    + " (/metrics, /health/live, /health/ready, /info)");
-            return () -> {};
-        }
-        if (factories.size() > 1) {
-            throw new IllegalStateException("multiple ObservabilityServerFactory providers registered: " + factories);
-        }
+    /** Starts the HTTP server before the engine so probes answer during startup; a bind failure is fatal. */
+    private static void startObservability(ObservabilityServer server, int port) {
         try {
-            AutoCloseable server = factories.get(0).start(runtime);
-            log.info("observability HTTP server listening on port {}", runtime.port());
-            return server;
-        } catch (Exception e) {
-            throw new IllegalStateException(
-                    "failed to start the observability HTTP server on port " + runtime.port(), e);
+            server.start();
+            log.info("observability HTTP server listening on port {}", port);
+        } catch (IOException e) {
+            throw new IllegalStateException("failed to start the observability HTTP server on port " + port, e);
         }
     }
 

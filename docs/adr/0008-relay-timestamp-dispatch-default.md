@@ -6,19 +6,19 @@
 
 ## Context
 
-When a delayed record is finally relayed, what timestamp should the destination record carry — the
+When a delayed record is finally relayed, which timestamp should the destination record carry: the
 original source `CreateTime`, or the dispatch instant? A delayed record can sit pending for hours
 or a day (`delay.max` default `P1D`). Relaying it with its hours-old original timestamp can violate
 the destination topic's `message.timestamp.difference.max.ms`, and it skews time-based retention
 and any consumer that reasons about event time from the record timestamp. The original time must
-nonetheless remain recoverable.
+still remain recoverable.
 
 ## Decision
 
-`route.relay.timestamp` defaults to **`DISPATCH`** — the relay carries the dispatch instant (now).
+`route.relay.timestamp` defaults to `DISPATCH`: the relay carries the dispatch instant (now).
 `SOURCE` is an explicit opt-in for pipelines that need the original event time on the record
 timestamp itself. In both modes the original source timestamp is preserved out-of-band in the
-`cesium-source-timestamp` provenance header (default on), so `DISPATCH` never destroys information.
+`cesium-source-timestamp` provenance header (default on), so `DISPATCH` loses no information.
 
 ## Consequences
 

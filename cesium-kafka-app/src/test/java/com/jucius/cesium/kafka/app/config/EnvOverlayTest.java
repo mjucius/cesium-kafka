@@ -10,7 +10,6 @@ import com.jucius.cesium.kafka.core.config.Role;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,21 +32,6 @@ class EnvOverlayTest {
                 .config();
         assertEquals("env-topic", config.route().source().topic());
         assertEquals(Duration.ofHours(2), config.delay().max());
-    }
-
-    @Test
-    void systemPropertiesOverrideEnv() {
-        Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
-        Properties properties = new Properties();
-        properties.setProperty("cesium.route.source.topic", "prop-topic");
-        properties.setProperty("cesium.delay.on-over-max", "CLAMP");
-        CesiumConfig config = LoaderTestSupport.loader(Map.of("CESIUM_ROUTE__SOURCE__TOPIC", "env-topic"), properties)
-                .load(file)
-                .config();
-        assertEquals("prop-topic", config.route().source().topic());
-        assertEquals(
-                com.jucius.cesium.kafka.core.policy.OverMaxPolicy.CLAMP,
-                config.delay().onOverMax());
     }
 
     @Test
@@ -105,16 +89,6 @@ class EnvOverlayTest {
     }
 
     @Test
-    void instanceIdIsSettableViaSystemProperty() {
-        Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
-        Properties properties = new Properties();
-        properties.setProperty("cesium.instance-id", "slot-9");
-        CesiumConfig config =
-                LoaderTestSupport.loader(Map.of(), properties).load(file).config();
-        assertEquals("slot-9", config.instanceId().value());
-    }
-
-    @Test
     void instanceIdValueSubpathIsRejectedAsUnknown() {
         // The record component is not addressable below the scalar leaf: CESIUM_INSTANCE_ID__VALUE
         // would write {instance-id: {value: ...}}, which the scalar deserializer cannot bind.
@@ -134,17 +108,6 @@ class EnvOverlayTest {
                         .load(file));
         assertTrue(exception.getMessage().contains("CESIUM_DELAY__MAXIMUM"), exception::getMessage);
         assertTrue(exception.getMessage().contains("delay.maximum"), exception::getMessage);
-    }
-
-    @Test
-    void unknownSystemPropertyUnderThePrefixFails() {
-        Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
-        Properties properties = new Properties();
-        properties.setProperty("cesium.delay.maximum", "PT1H");
-        ConfigValidationException exception =
-                assertThrows(ConfigValidationException.class, () -> LoaderTestSupport.loader(Map.of(), properties)
-                        .load(file));
-        assertTrue(exception.getMessage().contains("cesium.delay.maximum"), exception::getMessage);
     }
 
     @Test

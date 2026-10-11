@@ -4,12 +4,12 @@
 # A complete, commented configuration for the delayed-message relay. Every key
 # shown here is OPTIONAL except the four marked "required"; the documented §8
 # defaults materialise for anything you omit. Precedence is
-# defaults < this file < environment < -D system properties, so you can mount
-# this file read-only and override per-deployment values from the environment:
+# defaults < this file < environment, so you can mount this file read-only and
+# override per-deployment values from the environment:
 #
 #   CESIUM_ROUTE__SOURCE__TOPIC=orders            # '__' separates path segments
 #   CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS=kafka:9092
-#   -Dcesium.instance-id=cesium-0
+#   CESIUM_INSTANCE_ID=cesium-0
 #
 # Secrets stay out of the file via ${env:VAR} interpolation inside any value.
 # Unknown keys (here or under the CESIUM_ prefix) are startup errors (exit 78).
@@ -31,7 +31,7 @@ instance-id: cesium-0
 roles: [ingest, dispatch]
 
 kafka:
-  # classic (default) or consumer (KIP-848). classic is the v1 default.
+  # classic (default) or consumer (KIP-848). classic is the default.
   group-protocol: classic
   # Common client passthrough applied to every cesium client. Correctness-
   # critical keys (group.id, transactional.id, isolation.level, auto.offset.reset,
@@ -61,7 +61,7 @@ route:
   tracker:
     bootstrap: CREATE
     # topic: cesium.orders-delay.tracker
-    # acl-principal: User:cesium     # exclusive tracker write access (R12)
+    # acl-principal: User:cesium     # the principal you grant tracker write/read/describe (R12)
   # Dead-letter topic. Required whenever any policy routes to DLQ (the defaults do).
   dlq:
     topic: orders-dlq
@@ -85,33 +85,17 @@ delay:
 
 headers:
   stamp-provenance: true            # stamp cesium-relayed-at / cesium-source-* on relay
-  accept-binary-long-values: false  # canonical ASCII-decimal header values (design D1)
 
-store:
-  # The ServiceLoader-registered scheduler store. kafka-tracker (default) is the
-  # in-memory index durably backed by the tracker topic.
-  type: kafka-tracker
-  properties:
-    # Store-side per-partition pending cap. Sized small for the quickstart so the
-    # worst-case index footprint (partitions x cap x ~64 B) trivially fits a small
-    # container heap (design §5.3). Production routes raise this toward 2,000,000.
-    max-pending-per-partition: 100000
-
-ingest:
-  workers: 1        # ingest threads, each owning a source consumer + txn producer
-  max-batch: 2000   # = source consumer max.poll.records
-
+# Each instance runs at most one ingest and one dispatch loop (see roles); scale by adding instances.
 dispatch:
-  workers: 1        # dispatch threads, each owning tracker consumer + producer + seek consumer
   batch:
     max-entries: 10000
     max-bytes: 33554432        # 32 MiB decompressed payload budget per dispatch txn
   drain:
     max-slice: PT1M            # time-sliced drain; capped at max.poll.interval.ms / 3 (design §6)
-  coalesce: PT0S               # off: never early, never deliberately late
   idle-cursor-interval: PT30S  # cursor advancement cadence for quiet partitions (§3.5)
   cursor:
-    sidecar-max-bytes: 3072    # validated <= broker offset.metadata.max.bytes at startup
+    sidecar-max-bytes: 3072    # clamped (with a warning) to broker offset.metadata.max.bytes at startup
   fetch:
     timeout: PT30S
     partition-time-floor: PT2S
@@ -119,11 +103,8 @@ dispatch:
       backoff: PT0.05S
       backoff-max: PT10S
   on-unfetchable-payload: DLQ  # DLQ (default) | DROP | FAIL
-  # Pause/resume backpressure high-water mark per ACTIVE shard. Quickstart-sized
-  # (see store.properties.max-pending-per-partition above); production default is
-  # 2,000,000.
-  max-pending-per-partition: 100000
-  # max-pending-total: 0       # 0 = AUTO (heap-derived, ~25% of Xmx / 64 B)
+  # max-pending-per-partition: 2000000  # pause/resume high-water per ACTIVE shard (design §5.3)
+  # max-pending-total: 0       # process-wide; 0 = AUTO (heap-derived, ~25% of Xmx / 64 B)
 
 observability:
   # HTTP port for /metrics, /health/live, /health/ready, /info (design §9).
@@ -133,8 +114,8 @@ observability:
   # sidecar scrape (recommended when off-host probes are not required), or keep 0.0.0.0 and apply a k8s
   # NetworkPolicy scoping 8081 to the monitoring namespace (security L1).
   # bind-address: 127.0.0.1
-  # /info is unauthenticated. By default it exposes only version/build + store type. Set to true to
-  # also disclose applicationId (the fencing-id seed), roles, store capabilities, and acknowledgments
+  # /info is unauthenticated. By default it exposes only version/build. Set to true to
+  # also disclose applicationId (the fencing-id seed), roles, and acknowledgments
   # — only behind a network-restricted endpoint (security M3).
   # detailed-info: false
 
@@ -143,4 +124,5 @@ startup-checks:
   size-based-retention: FAIL       # FAIL when size/tier eviction is detected; ACKNOWLEDGED to proceed (R13)
   max-tolerated-outage: P7D        # checked against broker offsets.retention.minutes (design D18, R6)
   outage-check: FAIL               # FAIL | WARN
-  heap-budget: FAIL                # worst-case index footprint vs heap budget: FAIL | WARN
+  # tracker-acl: WARN              # R12 tracker write-ACL check: FAIL | WARN | SKIP (FAIL recommended in production)
+  # revalidation-interval: PT5M    # re-run the checks while running (D23): identity change exits, other errors degrade

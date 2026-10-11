@@ -7,7 +7,6 @@ description = "Runnable cesium-kafka service: configuration, lifecycle, health a
 
 dependencies {
     implementation(project(":cesium-kafka-core"))
-    implementation(project(":cesium-kafka-store-kafka"))
     implementation(libs.jackson.yaml)
     // Optional<T> record components (route.dlq, tracker.acl-principal) bind via the Jdk8Module.
     implementation(libs.jackson.jdk8)
@@ -26,7 +25,7 @@ application {
 
 // Build-info resource for the /info endpoint (design §9): version (the Gradle project version) and
 // the short git commit when available. Read at runtime by com.jucius.cesium.kafka.app.metrics.BuildInfo
-// from the classpath; a clean fallback to the jar manifest / "unknown" keeps the app runnable when
+// from the classpath; a clean fallback to "unknown" keeps the app runnable when
 // the resource or git is absent.
 val generateBuildInfo by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/build-info")
@@ -35,7 +34,7 @@ val generateBuildInfo by tasks.registering {
     // Declare the version as a task INPUT so up-to-date checks (and the Gradle build cache that CI's
     // setup-gradle restores) re-run this when -PcesiumVersion changes. Without it the task stays
     // "up-to-date" across a version change and the stale build-info — e.g. ...-SNAPSHOT during a
-    // tagged 1.0.0 release — gets packaged, so /info would report the wrong version.
+    // tagged release — gets packaged, so /info would report the wrong version.
     inputs.property("version", projectVersion)
     outputs.dir(outputDir)
     doLast {

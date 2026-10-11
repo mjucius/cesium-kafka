@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.core.config.Role;
-import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
 import java.time.Duration;
 import java.util.List;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -75,11 +74,9 @@ class BurstPerfIT extends KafkaIT {
                 .source(source)
                 .destination(destination)
                 .dlq(dlq)
-                // Hold the whole simultaneously-due burst resident: raise the §5.3 high-water and store
-                // hard cap above the per-partition burst so backpressure never pauses intake mid-stage.
+                // Hold the whole simultaneously-due burst resident: raise the §5.3 high-water above
+                // the per-partition burst so backpressure never pauses intake mid-stage.
                 .maxPendingPerPartition(STAGE_HIGH_WATER)
-                .storeProperty(
-                        KafkaTrackerStore.MAX_PENDING_PER_PARTITION_KEY, Long.toString(STAGE_HIGH_WATER + 20_000))
                 .build();
         harness.start();
 

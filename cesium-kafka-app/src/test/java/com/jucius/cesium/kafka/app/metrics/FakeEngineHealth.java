@@ -19,7 +19,6 @@ final class FakeEngineHealth implements EngineHealth {
     private final Set<Role> roles;
 
     boolean loopAlive = true;
-    boolean consumerAssigned = true;
     boolean heartbeatFresh = true;
     boolean startupComplete = true;
     boolean shuttingDown = false;
@@ -46,11 +45,6 @@ final class FakeEngineHealth implements EngineHealth {
     @Override
     public long lastHeartbeatMillis(Role role) {
         return heartbeatFresh ? System.currentTimeMillis() : Long.MIN_VALUE;
-    }
-
-    @Override
-    public boolean consumerAssigned(Role role) {
-        return consumerAssigned;
     }
 
     @Override

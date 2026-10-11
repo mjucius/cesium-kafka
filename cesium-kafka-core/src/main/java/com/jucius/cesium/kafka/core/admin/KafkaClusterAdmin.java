@@ -2,6 +2,7 @@ package com.jucius.cesium.kafka.core.admin;
 
 import java.time.Duration;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -9,15 +10,19 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.ConfigEntry;
+import org.apache.kafka.clients.admin.ListOffsetsOptions;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
@@ -31,7 +36,6 @@ import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.resource.PatternType;
-import org.apache.kafka.common.resource.ResourcePattern;
 import org.apache.kafka.common.resource.ResourcePatternFilter;
 import org.apache.kafka.common.resource.ResourceType;
 import org.slf4j.Logger;
@@ -39,8 +43,9 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The production {@link ClusterAdmin}: a thin synchronous adapter over a real
- * {@link Admin} client with a per-call timeout. Owns no client lifecycle — the caller (the
- * {@code cesium-admin} thread, §6) creates and closes the {@code Admin}.
+ * {@link Admin} client with a per-call timeout. Owns no client lifecycle: CesiumEngine creates the
+ * {@code Admin} in start() and closes it at shutdown. Startup validation calls it on the start()
+ * thread and re-validation on the {@code cesium-admin} thread; {@code Admin} is thread-safe.
  */
 public final class KafkaClusterAdmin implements ClusterAdmin {
 
@@ -166,20 +171,6 @@ public final class KafkaClusterAdmin implements ClusterAdmin {
     }
 
     @Override
-    public void grantTrackerWriteAcl(String topic, String principal) {
-        ResourcePattern pattern = new ResourcePattern(ResourceType.TOPIC, topic, PatternType.LITERAL);
-        List<AclBinding> bindings = List.of(
-                new AclBinding(
-                        pattern, new AccessControlEntry(principal, "*", AclOperation.WRITE, AclPermissionType.ALLOW)),
-                new AclBinding(
-                        pattern, new AccessControlEntry(principal, "*", AclOperation.READ, AclPermissionType.ALLOW)),
-                new AclBinding(
-                        pattern,
-                        new AccessControlEntry(principal, "*", AclOperation.DESCRIBE, AclPermissionType.ALLOW)));
-        await(admin.createAcls(bindings).all(), "createAcls(" + topic + ")");
-    }
-
-    @Override
     public Set<String> describeTrackerWritePrincipals(String topic) {
         // PatternType.MATCH returns every ACL whose resource pattern matches the literal name:
         // a LITERAL grant on this exact topic, a LITERAL '*' wildcard, and any PREFIXED pattern
@@ -196,6 +187,30 @@ public final class KafkaClusterAdmin implements ClusterAdmin {
             }
         }
         return Set.copyOf(writePrincipals);
+    }
+
+    @Override
+    public Map<Integer, Long> offsetsAtOrAfter(String topic, int partitions, long timestampMs) {
+        ListOffsetsOptions options = new ListOffsetsOptions(IsolationLevel.READ_COMMITTED);
+        Map<TopicPartition, OffsetSpec> query = new HashMap<>();
+        for (int partition = 0; partition < partitions; partition++) {
+            query.put(new TopicPartition(topic, partition), OffsetSpec.forTimestamp(timestampMs));
+        }
+        String operation = "listOffsets(" + topic + ", " + timestampMs + ")";
+        Map<Integer, Long> offsets = new TreeMap<>();
+        Map<TopicPartition, OffsetSpec> noneThatNew = new HashMap<>();
+        await(admin.listOffsets(query, options).all(), operation).forEach((partition, info) -> {
+            if (info.offset() < 0) {
+                noneThatNew.put(partition, OffsetSpec.latest()); // -1: no retained record that new
+            } else {
+                offsets.put(partition.partition(), info.offset());
+            }
+        });
+        if (!noneThatNew.isEmpty()) {
+            await(admin.listOffsets(noneThatNew, options).all(), operation + ".latest")
+                    .forEach((partition, info) -> offsets.put(partition.partition(), info.offset()));
+        }
+        return Map.copyOf(offsets);
     }
 
     private <T> T await(KafkaFuture<T> future, String operation) {

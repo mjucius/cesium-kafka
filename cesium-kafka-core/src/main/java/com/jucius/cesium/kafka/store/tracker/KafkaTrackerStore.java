@@ -1,0 +1,856 @@
+package com.jucius.cesium.kafka.store.tracker;
+
+import com.jucius.cesium.kafka.api.store.CompletionReason;
+import com.jucius.cesium.kafka.api.store.DueBatch;
+import com.jucius.cesium.kafka.api.store.ScheduledRef;
+import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
+import com.jucius.cesium.kafka.api.store.TrackerCursor;
+import com.jucius.cesium.kafka.api.store.TrackerRecordData;
+import com.jucius.cesium.kafka.store.tracker.index.IndexDueBatch;
+import com.jucius.cesium.kafka.store.tracker.index.PartitionShard;
+import com.jucius.cesium.kafka.store.tracker.index.TrackerIndex;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.header.Headers;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The flagship scheduler store (design §5, D13): the fastutil-backed in-memory
+ * {@link TrackerIndex} durably backed by the Kafka tracker topic, speaking the
+ * {@link TrackerWireFormat} and committing the §3.5 cursor-v2 ({@link SidecarCodec} sidecar)
+ * through the engine's transactions.
+ *
+ * <p><strong>Division of labor.</strong> The engine owns every Kafka client, the transactions and
+ * fencing (I1–I9), the replay barrier protocol (§3.6) and dispatch timing; this store owns the
+ * wire format, the replay rules R1/R2, the in-memory index, and the per-partition committed
+ * cursor (offset + sidecar). The store never creates Kafka clients — its durable writes are bytes
+ * the engine produces inside its own transactions (design §4.3).
+ *
+ * <p><strong>Threading</strong> (per the {@link TrackerBackedStore}
+ * contract): {@link #encodeSchedule} is ingest-thread and pure; everything else runs on the
+ * single dispatch thread owning the affected partitions, so no method here locks. All time
+ * decisions arrive as {@code nowMs} arguments from the engine's clock; the store keeps no clock
+ * state of its own.
+ *
+ * <p><strong>Recovery (I4).</strong> {@link #onPartitionsAssigned} creates shards gated
+ * dispatch-<em>ineligible</em>; {@link #beginRecovery} seeds the sidecar's pinned entries first
+ * (they are the oldest, in encoded order, with their original tracker ADD offsets all below the
+ * cursor — preserving the arrival log's double sortedness) and records the barrier;
+ * {@link #onTrackerRecord} is the single code path for replay and live tailing (§1.2). The shard
+ * promotes ACTIVE when {@code position ≥ barrier}, where position advances on delivered records
+ * <em>and</em> on the engine's {@link #onTrackerPosition} consumer-position reports — tracker
+ * offsets are not dense (transaction control records and aborted batches occupy undelivered
+ * offsets, I1), so the offsets directly below the barrier are typically a commit marker and only
+ * the position report can carry the shard across them.
+ */
+public final class KafkaTrackerStore implements TrackerBackedStore {
+
+    /**
+     * Worst-case planning bytes per pending entry (post-approval revision 1: 64 B typical with
+     * fastutil doubling growth, 80 B worst; the JOL gate holds the structures to ≤ 56 B).
+     */
+    public static final long WORST_CASE_BYTES_PER_ENTRY = 64;
+
+    /** Metric: recovery replays refused because the backlog would exceed the heap budget (H1). */
+    public static final String RECOVERY_OVER_BUDGET_METRIC = "cesium.recovery.over.budget";
+
+    /**
+     * Metric: per-partition shard state (design §3.6) — {@code 0} ASSIGNED (recovery not yet
+     * begun), {@code 1} RECOVERING (replaying toward the barrier), {@code 2} ACTIVE.
+     */
+    public static final String SHARD_STATE_METRIC = "cesium.shard.state";
+
+    /**
+     * Metric: per-partition records left to replay, {@code max(0, barrier - position)} while
+     * RECOVERING; {@code 0} when ASSIGNED (barrier not yet known) or ACTIVE.
+     */
+    public static final String REPLAY_REMAINING_METRIC = "cesium.replay.remaining.records";
+
+    private static final Logger log = LoggerFactory.getLogger(KafkaTrackerStore.class);
+
+    /**
+     * L7 length cap for the attacker-influenced {@code cesium-completion-reason} header when it is
+     * echoed into a log line — comfortably above any real reason-constant name.
+     */
+    static final int MAX_LOGGED_REASON_CHARS = 64;
+
+    private final Wiring wiring;
+
+    /**
+     * Builds the store for one route. Broker-side checks (partition parity, the tombstone retention
+     * floor, {@code offset.metadata.max.bytes} vs the sidecar budget, topic identity, compaction
+     * settings) are the engine's {@code StartupValidator} job; the sidecar budget's range is the
+     * config validator's.
+     *
+     * <p><strong>Recovery ceiling (H1, design §5.3/§5.4).</strong> The engine's process-wide pending
+     * cap bounds the <em>steady-state</em> ACTIVE shards against the heap budget; it does
+     * <em>not</em> bound recovery, because a RECOVERING shard is never paused (it must replay to
+     * the barrier, I4). {@code heapBudgetBytes} is therefore divided by
+     * {@value #WORST_CASE_BYTES_PER_ENTRY} B/entry into a runtime resident-pending ceiling
+     * ({@code Wiring.maxResidentEntries}) that the seed/replay paths enforce — so a durable backlog
+     * larger than the heap can hold fails fast and attributably ({@link
+     * RecoveryHeapBudgetExceededException} + the {@value #RECOVERY_OVER_BUDGET_METRIC} counter)
+     * instead of allocating into an {@code OutOfMemoryError} crash-loop.
+     *
+     * @param clusterId the cluster id bound into every committed sidecar (R17)
+     * @param sourceTopicId the source topic id bound into every committed sidecar
+     * @param trackerTopicId the tracker topic id bound into every committed sidecar (R11)
+     * @param sidecarMaxBytes the committed-cursor sidecar budget (Base64 bytes, §3.5)
+     * @param heapBudgetBytes the index heap budget (the engine passes 25% of max heap)
+     * @param registry the meter registry for the store's metrics
+     * @throws IllegalArgumentException when the sidecar identity header does not fit the budget
+     */
+    public KafkaTrackerStore(
+            String clusterId,
+            Uuid sourceTopicId,
+            Uuid trackerTopicId,
+            int sidecarMaxBytes,
+            long heapBudgetBytes,
+            MeterRegistry registry) {
+        // The identity header must fit the budget; the encoder enforces exactly the encode-time rule.
+        SidecarCodec.encoder(clusterId, sourceTopicId, trackerTopicId, sidecarMaxBytes);
+        // Runtime recovery ceiling (H1): the most resident pending entries the heap budget can hold
+        // at the worst-case per-entry footprint. The seed/replay paths refuse to allocate past it
+        // (controlled fail, not OOM). It counts every owned shard, so with the engine's budget it
+        // equals the process-wide dispatch.max-pending-total AUTO (25% of Xmx / 64 B). >= 1 so a
+        // budget below one entry still admits the trip rather than silently flooring to zero.
+        long maxResidentEntries = Math.max(1L, heapBudgetBytes / WORST_CASE_BYTES_PER_ENTRY);
+        log.info(
+                "kafka-tracker store: heap budget {} B; sidecar budget {} B; recovery resident-pending ceiling {}"
+                        + " entries",
+                heapBudgetBytes,
+                sidecarMaxBytes,
+                maxResidentEntries);
+        this.wiring = new Wiring(
+                clusterId,
+                sourceTopicId,
+                trackerTopicId,
+                registry,
+                sidecarMaxBytes,
+                heapBudgetBytes,
+                maxResidentEntries,
+                new TrackerIndex());
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Ingest side (ingest thread; pure — no shared state with the dispatch-side index, §5.1)
+    // ------------------------------------------------------------------------------------------
+
+    @Override
+    public TrackerRecordData encodeSchedule(ScheduledRef ref) {
+        return TrackerWireFormat.encodeAdd(ref.sourceOffset(), ref.dispatchAtMs(), ref.clamped());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Pure function of the batch view: handles any sub-batch the engine's per-reason grouping
+     * produces (one call per {@link CompletionReason} group; the engine obligation per the
+     * {@link TrackerBackedStore#encodeCompletions} contract).
+     */
+    @Override
+    public List<TrackerRecordData> encodeCompletions(DueBatch dispatched, CompletionReason reason) {
+        List<TrackerRecordData> completions = new ArrayList<>(dispatched.size());
+        for (int i = 0; i < dispatched.size(); i++) {
+            completions.add(TrackerWireFormat.encodeCompletion(dispatched.sourceOffset(i), reason));
+        }
+        return completions;
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Partition lifecycle (dispatch thread)
+    // ------------------------------------------------------------------------------------------
+
+    @Override
+    public void onPartitionsAssigned(Set<Integer> partitions) {
+        Wiring w = wiring();
+        for (int partition : partitions) {
+            if (w.states.containsKey(partition)) {
+                continue; // idempotent / incremental re-delivery (KIP-848)
+            }
+            w.index.assignPartition(partition);
+            w.index.setDispatchEligible(partition, false); // I4: ASSIGNED shards are gated until promoted
+            PartitionState state = new PartitionState();
+            registerGauges(w, partition, state);
+            w.states.put(partition, state);
+        }
+    }
+
+    @Override
+    public void onPartitionsRevoked(Set<Integer> partitions) {
+        dropPartitions(partitions);
+    }
+
+    @Override
+    public void onPartitionsLost(Set<Integer> partitions) {
+        dropPartitions(partitions); // same as revoked: drop state, no flush (a new owner may be live)
+    }
+
+    private void dropPartitions(Set<Integer> partitions) {
+        Wiring w = wiring();
+        for (int partition : partitions) {
+            PartitionState state = w.states.remove(partition);
+            if (state == null) {
+                continue;
+            }
+            // Final monotonic snapshot before the shard's plain counters drop with it.
+            drainShardCounters(w, partition, state);
+            w.index.revokePartition(partition); // O(1) drop; pending entries are durable in the tracker
+            removeGauges(w, state);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Recovery (dispatch thread; engine drives the §3.6 protocol, the store executes)
+    // ------------------------------------------------------------------------------------------
+
+    @Override
+    public void beginRecovery(int partition, TrackerCursor committed, long barrierOffset) {
+        Wiring w = wiring();
+        PartitionState state = requireState(w, partition);
+        if (state.recoveryBegun || w.index.pendingCount(partition) > 0 || w.index.inFlightCount(partition) > 0) {
+            // Idempotent re-recovery (D-6, §4.4 item 6): reset the shard so re-seeding from the
+            // same cursor converges to exactly the same pending set.
+            drainShardCounters(w, partition, state);
+            w.index.revokePartition(partition);
+            w.index.assignPartition(partition);
+            w.index.setDispatchEligible(partition, false);
+            // The fresh shard's plain counters restart at zero; the old totals were just pushed
+            // into the monotonic counters above, so the baselines must restart too — stale
+            // baselines would swallow the new shard's first N events (exactly the post-incident
+            // moment the R1/R16 anomaly canary matters most).
+            state.lastAnomalies = 0;
+            state.lastHeapRebuilds = 0;
+            state.lastLogSweeps = 0;
+        }
+
+        String metadata = committed.metadata();
+        if (!metadata.isEmpty()) {
+            // Corrupt or unknown-version sidecars throw — the engine fail-fasts (§3.6); a
+            // corrupted committed cursor is never silently ignored.
+            SidecarCodec.DecodedSidecar decoded = SidecarCodec.decode(metadata);
+            validateSidecarIdentity(w, partition, decoded);
+            // Seed FIRST: the pinned entries are the oldest, in encoded (tracker-ADD-offset)
+            // order with their ORIGINAL offsets all below the cursor — appending them before any
+            // replayed record preserves the arrival log's double sortedness (§5.2).
+            for (SidecarCodec.SidecarEntry entry : decoded.entries()) {
+                if (entry.trackerAddOffset() >= committed.offset()) {
+                    throw new IllegalStateException("corrupt cursor sidecar for tracker partition " + partition
+                            + ": seeded entry at tracker offset " + entry.trackerAddOffset()
+                            + " is not below the cursor offset " + committed.offset()
+                            + " (I5); refusing to recover from a corrupted cursor (§3.6)");
+                }
+                requireRecoveryHeadroom(w, partition, "sidecar seed"); // H1: bound the seed too
+                w.index.applyAdd(
+                        partition,
+                        entry.sourceOffset(),
+                        entry.dispatchAtMs(),
+                        entry.trackerAddOffset(),
+                        entry.clamped());
+            }
+        }
+
+        state.active = false;
+        state.barrierOffset = barrierOffset;
+        state.position = committed.offset();
+        state.recoveryBegun = true; // last: a gauge reader that sees it also sees barrier/position
+        state.lastCommittedOffset = committed.offset();
+        state.lastCommittedMetadata = metadata;
+        state.hasProposal = false;
+        maybePromote(w, partition, state); // barrier <= cursor: nothing to replay, immediately ACTIVE
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Single code path for replay and live tailing (§1.2), enforcing the full §2.2 wire-format
+     * posture via {@link TrackerWireFormat#decode}: a tombstone whose completion-reason header is
+     * missing or null-valued matches the R12 forged-tombstone shape and is counted + skipped
+     * (never applied — the forged tombstone is the data-loss primitive); a tombstone with a
+     * <em>present but unrecognized</em> reason still applies the completion (the M4 decision —
+     * skipping it would convert a newer writer's reason constant into a duplicate dispatch) and
+     * is surfaced under a dedicated novelty counter.
+     */
+    @Override
+    public void onTrackerRecord(
+            int partition, long trackerOffset, byte[] key, byte @Nullable [] value, Headers headers) {
+        Wiring w = wiring();
+        PartitionState state = requireState(w, partition);
+        switch (TrackerWireFormat.decode(key, value, headers)) {
+            case TrackerDecodeResult.Add(long dispatchAtMs, boolean clamped) -> {
+                // H1: a RECOVERING shard's replay is never backpressure-paused (it must reach the
+                // barrier, I4), so the hard resident-pending ceiling is its only OOM guard. The
+                // live ACTIVE path is governed by dispatch-side backpressure instead, so the ceiling
+                // is enforced only while the shard is still recovering.
+                if (!state.active) {
+                    requireRecoveryHeadroom(w, partition, "replay");
+                }
+                // R1 (duplicate-ADD anomaly handling) lives inside the index.
+                w.index.applyAdd(partition, TrackerWireFormat.decodeKey(key), dispatchAtMs, trackerOffset, clamped);
+            }
+            case TrackerDecodeResult.Complete ignored ->
+                w.index.applyComplete(partition, TrackerWireFormat.decodeKey(key)); // R2: absent = silent no-op
+            case TrackerDecodeResult.CompleteUnknownReason(String rawReason) -> {
+                // The completion must still apply (M4 decision); the novelty is surfaced. The
+                // reason bytes are chosen by whoever can write the tracker topic (a missing/weak
+                // R12 ACL), so the value is sanitized before logging (L7) — see sanitizeReasonForLog.
+                w.unknownReasonRecords.increment();
+                log.warn(
+                        "tracker tombstone with unrecognized completion reason '{}' applied:"
+                                + " partition {} offset {} (a newer writer's reason constant?)",
+                        sanitizeReasonForLog(rawReason),
+                        partition,
+                        trackerOffset);
+                w.index.applyComplete(partition, TrackerWireFormat.decodeKey(key));
+            }
+            case TrackerDecodeResult.Cancel ignored -> {
+                // Reserved type 0x02 (D15): no cancellation support — counted no-op, not
+                // corruption (supportsCancellation=false).
+                w.cancelRecords.increment();
+            }
+            case TrackerDecodeResult.Invalid(String detail) -> recordInvalid(w, partition, trackerOffset, detail);
+        }
+        advancePosition(w, partition, state, trackerOffset);
+    }
+
+    /**
+     * Sanitizes the attacker-influenced {@code cesium-completion-reason} header before it is logged
+     * (L7). The header bytes are chosen by whoever can write the tracker topic (the R12 ACL is the
+     * only control) and are decoded as US-ASCII, so CR/LF and other control characters survive into
+     * {@code rawReason}; logged verbatim under the default plain encoder ({@code %msg}, no escaping)
+     * they would forge log lines (CRLF log-injection). Every {@linkplain Character#isISOControl(char)
+     * ISO control character} is replaced with {@code '?'} and the result is capped at
+     * {@value #MAX_LOGGED_REASON_CHARS} characters (an ellipsis marks truncation) so a crafted
+     * oversized reason cannot bloat the line either.
+     */
+    static String sanitizeReasonForLog(String rawReason) {
+        int limit = Math.min(rawReason.length(), MAX_LOGGED_REASON_CHARS);
+        StringBuilder sb = new StringBuilder(limit + 1);
+        for (int i = 0; i < limit; i++) {
+            char c = rawReason.charAt(i);
+            sb.append(Character.isISOControl(c) ? '?' : c);
+        }
+        if (rawReason.length() > MAX_LOGGED_REASON_CHARS) {
+            sb.append('…');
+        }
+        return sb.toString();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The reported position is the recovery-promotion carrier across undelivered offsets
+     * (transaction control records, aborted batches — I1 makes them universal at the log tail):
+     * the record-derived position alone stalls strictly below the barrier behind the previous
+     * transaction's commit marker. It also keeps the all-encoded committed cursor's
+     * position-tracking offset exact on idle partitions.
+     */
+    @Override
+    public void onTrackerPosition(int partition, long position) {
+        Wiring w = wiring();
+        PartitionState state = requireState(w, partition);
+        if (position > state.position) {
+            state.position = position;
+            maybePromote(w, partition, state);
+        }
+    }
+
+    @Override
+    public boolean isRecovering(int partition) {
+        Wiring w = wiring();
+        PartitionState state = w.states.get(partition);
+        return state != null && !state.active;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Computed "as if" <em>exactly</em> the entries of the given {@code inFlight} batch were
+     * complete — sound because precisely their tombstones commit atomically with this cursor.
+     * The index's in-flight state is deliberately NOT trusted as the as-if-complete set: under
+     * truncate-and-carry-over (§3.2/§7-2c, D8) and TRANSIENT exclusion (D-8) the transaction
+     * settles a strict subset of the drained batch, and any drained-but-unsettled entry is still
+     * pending durable truth — so the visitation walks pending <em>and</em> in-flight entries in
+     * tracker-ADD-offset order and skips only the given batch's entries (resolved by
+     * {@code (partition, sourceOffset)}, valid for the store's own batch and engine sub-views
+     * alike); every other entry is offered to the sidecar encoder or bounds the overflow cut.
+     * On abort the entries are restored and {@link #onBatchAborted} discards the proposal, so
+     * the monotonic floor only ever advances on a definitive commit.
+     *
+     * <p><strong>I5 guard.</strong> The greedy encode makes I5 hold by construction (every
+     * unsettled entry is either encoded or has {@code trackerAddOffset ≥} the overflow cut; in
+     * the all-encoded case every unsettled offset is below the live position). The residual
+     * failure modes — a computed offset below the monotonic floor, or an out-of-order visitation
+     * — are engine/store bugs and degrade safely: ERROR log + {@code cesium_cursor_guard_violations}
+     * + the last definitively committed cursor is returned, never a corrupted one.
+     */
+    @Override
+    public TrackerCursor committedCursor(int partition, DueBatch inFlight) {
+        Wiring w = wiring();
+        PartitionState state = requireState(w, partition);
+        if (!state.recoveryBegun) {
+            throw new IllegalStateException("committedCursor for tracker partition " + partition
+                    + " before beginRecovery: the cursor position is undefined");
+        }
+        try {
+            SidecarCodec.Encoder encoder =
+                    SidecarCodec.encoder(w.clusterId, w.sourceTopicId, w.trackerTopicId, w.sidecarMaxBytes);
+            PartitionShard shard = w.index.shard(partition);
+            LongOpenHashSet settling = settlingOffsets(inFlight, partition);
+            w.index.oldestUnsettled(partition, (slotId, sourceOffset, dispatchAtMs, trackerAddOffset) -> {
+                if (settling != null && settling.contains(sourceOffset)) {
+                    return true; // in the committing batch: its tombstone commits with this cursor
+                }
+                return encoder.offer(trackerAddOffset, sourceOffset, dispatchAtMs, shard.clamped(slotId));
+            });
+            SidecarCodec.EncodedCursor encoded = encoder.finish(state.position);
+            if (encoded.cursorOffset() < state.lastCommittedOffset) {
+                return degradeToLastSafeCursor(
+                        w,
+                        partition,
+                        state,
+                        "computed cursor offset " + encoded.cursorOffset() + " below the monotonic floor "
+                                + state.lastCommittedOffset);
+            }
+            state.pinnedEntries = encoded.encodedCount();
+            state.sidecarBytes = encoded.encodedBytes();
+            state.proposedOffset = encoded.cursorOffset();
+            state.proposedMetadata = encoded.metadata();
+            state.hasProposal = true;
+            return new TrackerCursor(encoded.cursorOffset(), encoded.metadata());
+        } catch (IllegalStateException e) {
+            return degradeToLastSafeCursor(w, partition, state, e.getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Hot path (dispatch thread)
+    // ------------------------------------------------------------------------------------------
+
+    @Override
+    public DueBatch pollDue(long nowMs, int maxBatch) {
+        // Per-partition recovery gating (I4) is the index's eligibility gate — no global gate,
+        // so ACTIVE shards keep dispatching while others recover (§3.6).
+        return wiring().index.drainDue(nowMs, maxBatch);
+    }
+
+    @Override
+    public long nextDeadlineMs() {
+        return wiring().index.nextDeadlineMs();
+    }
+
+    @Override
+    public long pendingCount(int partition) {
+        return wiring().index.pendingCount(partition);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Deliberately overridden (never the no-op default): the penalty box is the §7/D22 fetch
+     * isolation — inheriting the default would re-poll penalized entries immediately and
+     * hot-spin degraded source partitions.
+     */
+    @Override
+    public void penalizeSourcePartition(int sourcePartition, long notBeforeMs) {
+        wiring().index.penalizeSourcePartition(sourcePartition, notBeforeMs);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The store's own {@code pollDue} batch resolves by slot id (with a drain-generation check
+     * against post-I9-drop staleness); engine-synthesized sub-batch views (truncate-and-carry-over,
+     * §3.2/§7) resolve by {@code (partition, sourceOffset)} ring binary search of in-flight slots.
+     *
+     * <p>Also promotes the cursors proposed by {@link #committedCursor} since the last
+     * resolution to the monotonic floor: the engine runs one transaction at a time (I3), so
+     * every outstanding proposal belongs to the transaction that just committed — including the
+     * records-free idle-advancement transaction, whose batch is empty.
+     *
+     * <p><strong>I9 (engine obligation, restated):</strong> this method is called only after a
+     * <em>definitive</em> commit. After an in-doubt commit the engine calls neither this nor
+     * {@link #onBatchAborted} — it drops the affected partitions and re-enters recovery; the
+     * durable log is authoritative.
+     */
+    @Override
+    public void onBatchCommitted(DueBatch batch) {
+        Wiring w = wiring();
+        if (batch instanceof IndexDueBatch indexBatch) {
+            w.index.onBatchCommitted(indexBatch);
+        } else if (batch.size() > 0) {
+            w.index.onForeignBatchCommitted(batch);
+        }
+        for (Int2ObjectMap.Entry<PartitionState> entry : w.states.int2ObjectEntrySet()) {
+            PartitionState state = entry.getValue();
+            if (state.hasProposal) {
+                state.lastCommittedOffset = state.proposedOffset;
+                state.lastCommittedMetadata = state.proposedMetadata;
+                state.hasProposal = false;
+            }
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Restores the batch to pending — the definitive-abort path and the truncate-and-carry-over
+     * restore path alike (the carry-over may arrive as an engine-synthesized sub-batch view,
+     * resolved by {@code (partition, sourceOffset)} like {@link #onBatchCommitted}) — and discards
+     * every cursor proposed by {@link #committedCursor} for the aborted transaction: the proposals
+     * never became durable, so promoting them would corrupt the monotonic floor.
+     *
+     * <p><strong>I9 (engine obligation, restated):</strong> called only after a
+     * <em>definitive</em> abort. Restoring after an ambiguous commit outcome is the duplicate
+     * vector — the engine drops the shards and re-recovers instead (§3.8).
+     */
+    @Override
+    public void onBatchAborted(DueBatch batch) {
+        Wiring w = wiring();
+        if (batch instanceof IndexDueBatch indexBatch) {
+            w.index.onBatchAborted(indexBatch);
+        } else if (batch.size() > 0) {
+            w.index.onForeignBatchAborted(batch);
+        }
+        for (Int2ObjectMap.Entry<PartitionState> entry : w.states.int2ObjectEntrySet()) {
+            entry.getValue().hasProposal = false;
+        }
+    }
+
+    @Override
+    public void maintenance() {
+        Wiring w = wiring();
+        w.index.maintenance();
+        // Monotonic counter wiring by per-partition snapshot/delta: the shards' plain counters
+        // drop with revoked shards, so deltas are drained here (and once more at drop time).
+        for (Int2ObjectMap.Entry<PartitionState> entry : w.states.int2ObjectEntrySet()) {
+            drainShardCounters(w, entry.getIntKey(), entry.getValue());
+        }
+    }
+
+    @Override
+    public void close() {
+        Wiring w = wiring;
+        if (w == null) {
+            return; // never validated — nothing to release
+        }
+        for (Int2ObjectMap.Entry<PartitionState> entry : w.states.int2ObjectEntrySet()) {
+            // Final monotonic snapshot: a scrape racing close() must not lose the last deltas.
+            if (w.index.isAssigned(entry.getIntKey())) {
+                drainShardCounters(w, entry.getIntKey(), entry.getValue());
+            }
+            removeGauges(w, entry.getValue());
+        }
+        w.states.clear();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Internals
+    // ------------------------------------------------------------------------------------------
+
+    private void advancePosition(Wiring w, int partition, PartitionState state, long trackerOffset) {
+        // Position tracks the consumer's applied position; invalid records were still consumed.
+        // Deliberately NOT max(): an engine misfeed below the live position must surface through
+        // the cursor monotonic guard rather than be silently absorbed (the position-report path,
+        // onTrackerPosition, is the high-water-mark one).
+        state.position = trackerOffset + 1;
+        maybePromote(w, partition, state);
+    }
+
+    private void maybePromote(Wiring w, int partition, PartitionState state) {
+        if (!state.active && state.recoveryBegun && state.position >= state.barrierOffset) {
+            state.active = true;
+            w.index.setDispatchEligible(partition, true); // I4 gate lifts: RECOVERING -> ACTIVE
+            log.info(
+                    "tracker partition {} recovered: position {} reached barrier {}",
+                    partition,
+                    state.position,
+                    state.barrierOffset);
+        }
+    }
+
+    /**
+     * The H1 recovery OOM guard: refuse to seed/replay another pending entry once the global
+     * resident pending count (across every owned shard) has reached the heap-budget ceiling.
+     *
+     * <p>Checked only on the uncapped seed/replay paths (a RECOVERING shard is never
+     * backpressure-paused, §5.3); the live ACTIVE path is bounded by dispatch-side backpressure. A
+     * trip is a controlled, attributable fail-fast — counter + runbook ERROR + a dedicated
+     * exception — replacing the silent {@link OutOfMemoryError} crash-loop. Nothing is committed and
+     * no shard is promoted before its barrier, so the durable log stays authoritative (I4/I8).
+     */
+    private void requireRecoveryHeadroom(Wiring w, int partition, String phase) {
+        long resident = w.index.totalPendingCount();
+        if (resident < w.maxResidentEntries) {
+            return;
+        }
+        w.recoveryOverBudget.increment();
+        log.error(
+                "RECOVERY OVER HEAP BUDGET — refusing to {} another pending entry for tracker partition {}:"
+                        + " {} entries already resident across {} owned shard(s) have reached the ceiling of {}"
+                        + " entries (heap budget {} B / {} B per entry). The durable tracker backlog exceeds what"
+                        + " this heap can hold in memory; nothing has been committed and the durable log is intact."
+                        + " ACTION: raise -Xmx (the budget is 25% of it) and/or reduce the backlog (lower delay.max,"
+                        + " drain the source, or shorten source retention), then restart. This is a controlled"
+                        + " fail-fast that replaces an OutOfMemoryError crash-loop (security finding H1, design"
+                        + " §5.3/§5.4).",
+                phase,
+                partition,
+                resident,
+                w.index.assignedPartitionCount(),
+                w.maxResidentEntries,
+                w.heapBudgetBytes,
+                WORST_CASE_BYTES_PER_ENTRY);
+        throw new RecoveryHeapBudgetExceededException("recovery backlog for tracker partition " + partition
+                + " exceeds the heap budget: " + resident + " resident pending entries reached the ceiling of "
+                + w.maxResidentEntries + " (heap budget " + w.heapBudgetBytes + " B / " + WORST_CASE_BYTES_PER_ENTRY
+                + " B per entry); raise the heap or reduce the durable backlog before restarting (H1, §5.3/§5.4)");
+    }
+
+    private void validateSidecarIdentity(Wiring w, int partition, SidecarCodec.DecodedSidecar decoded) {
+        if (!decoded.clusterId().equals(w.clusterId)
+                || !decoded.sourceTopicId().equals(w.sourceTopicId)
+                || !decoded.trackerTopicId().equals(w.trackerTopicId)) {
+            throw new IllegalStateException("cursor sidecar identity mismatch for tracker partition " + partition
+                    + ": committed {clusterId='" + decoded.clusterId() + "', sourceTopicId=" + decoded.sourceTopicId()
+                    + ", trackerTopicId=" + decoded.trackerTopicId() + "} vs live {clusterId='" + w.clusterId
+                    + "', sourceTopicId=" + w.sourceTopicId + ", trackerTopicId=" + w.trackerTopicId
+                    + "} — a topic was recreated or the cursor belongs to another cluster; failing fast"
+                    + " (§3.6, R-9/R-10 runbook: never deliver payloads against a different identity)");
+        }
+    }
+
+    private TrackerCursor degradeToLastSafeCursor(Wiring w, int partition, PartitionState state, @Nullable String why) {
+        // An I5/monotonicity violation is a bug surfacing as metric + log — never a corrupted
+        // commit (design §3.5): return the last definitively committed cursor unchanged.
+        log.error(
+                "cursor guard violation for tracker partition {}: {} — returning the last safe cursor" + " (offset {})",
+                partition,
+                why,
+                state.lastCommittedOffset);
+        w.cursorGuardViolations.increment();
+        state.hasProposal = false;
+        return new TrackerCursor(state.lastCommittedOffset, state.lastCommittedMetadata);
+    }
+
+    private void recordInvalid(Wiring w, int partition, long trackerOffset, String detail) {
+        // Count-and-skip, never apply, never crash (design §2.2); also the R12 foreign-writer canary.
+        w.invalidRecords.increment();
+        log.warn("invalid tracker record skipped: partition {} offset {}: {}", partition, trackerOffset, detail);
+    }
+
+    private void drainShardCounters(Wiring w, int partition, PartitionState state) {
+        PartitionShard shard = w.index.shard(partition);
+        state.pendingEntries = shard.pendingCount();
+        long anomalies = shard.anomalies();
+        if (anomalies > state.lastAnomalies) {
+            w.indexAnomalies.increment((double) (anomalies - state.lastAnomalies));
+            state.lastAnomalies = anomalies;
+        }
+        long rebuilds = shard.heapRebuilds();
+        if (rebuilds > state.lastHeapRebuilds) {
+            w.heapRebuilds.increment((double) (rebuilds - state.lastHeapRebuilds));
+            state.lastHeapRebuilds = rebuilds;
+        }
+        long sweeps = shard.logSweeps();
+        if (sweeps > state.lastLogSweeps) {
+            w.logSweeps.increment((double) (sweeps - state.lastLogSweeps));
+            state.lastLogSweeps = sweeps;
+        }
+    }
+
+    private void registerGauges(Wiring w, int partition, PartitionState state) {
+        String tag = Integer.toString(partition);
+        // M4 lesson: per-partition gauges MUST be deregistered on revoke or they bind dead state.
+        state.pendingGauge = Gauge.builder("cesium.pending.entries", () -> state.pendingEntries)
+                .description("live index size for the partition (design §9)")
+                .tag("partition", tag)
+                .register(w.registry);
+        state.pinnedGauge = Gauge.builder("cesium.pinned.entries", () -> state.pinnedEntries)
+                .description("sidecar occupancy of the last computed cursor; sustained at max = overflow mode (§3.5)")
+                .tag("partition", tag)
+                .register(w.registry);
+        state.sidecarBytesGauge = Gauge.builder("cesium.cursor.sidecar.bytes", () -> state.sidecarBytes)
+                .description("encoded sidecar size of the last computed cursor vs the budget")
+                .tag("partition", tag)
+                .register(w.registry);
+        state.shardStateGauge = Gauge.builder(SHARD_STATE_METRIC, state::shardState)
+                .description("0=ASSIGNED, 1=RECOVERING, 2=ACTIVE (design §3.6)")
+                .tag("partition", tag)
+                .register(w.registry);
+        state.replayRemainingGauge = Gauge.builder(REPLAY_REMAINING_METRIC, state::replayRemaining)
+                .description("barrier - position while recovering; feeds the replay-ETA alert (§3.5)")
+                .tag("partition", tag)
+                .register(w.registry);
+    }
+
+    private static void removeGauges(Wiring w, PartitionState state) {
+        if (state.pendingGauge != null) {
+            w.registry.remove(state.pendingGauge);
+        }
+        if (state.pinnedGauge != null) {
+            w.registry.remove(state.pinnedGauge);
+        }
+        if (state.sidecarBytesGauge != null) {
+            w.registry.remove(state.sidecarBytesGauge);
+        }
+        if (state.shardStateGauge != null) {
+            w.registry.remove(state.shardStateGauge);
+        }
+        if (state.replayRemainingGauge != null) {
+            w.registry.remove(state.replayRemainingGauge);
+        }
+    }
+
+    /**
+     * The source offsets of {@code inFlight} entries belonging to {@code partition} — the
+     * as-if-complete set of one cursor computation. Source offsets are unique per partition
+     * (§2.2), so identity-by-offset is exact for the store's own batch and engine sub-views
+     * alike. {@code null} when the batch touches no entry of the partition (the idle-advancement
+     * shape), so the hot path allocates nothing.
+     */
+    private static @Nullable LongOpenHashSet settlingOffsets(DueBatch inFlight, int partition) {
+        LongOpenHashSet settling = null;
+        for (int i = 0; i < inFlight.size(); i++) {
+            if (inFlight.sourcePartition(i) == partition) {
+                if (settling == null) {
+                    settling = new LongOpenHashSet(Math.max(16, inFlight.size()));
+                }
+                settling.add(inFlight.sourceOffset(i));
+            }
+        }
+        return settling;
+    }
+
+    private static PartitionState requireState(Wiring w, int partition) {
+        PartitionState state = w.states.get(partition);
+        if (state == null) {
+            throw new IllegalStateException("tracker partition " + partition + " is not assigned");
+        }
+        return state;
+    }
+
+    private Wiring wiring() {
+        return wiring;
+    }
+
+    /** Everything the constructor builds: settings, the index, metrics, partition states. */
+    private static final class Wiring {
+        final String clusterId;
+        final Uuid sourceTopicId;
+        final Uuid trackerTopicId;
+        final MeterRegistry registry;
+        final int sidecarMaxBytes;
+        final long heapBudgetBytes;
+        final long maxResidentEntries;
+        final TrackerIndex index;
+        final Int2ObjectOpenHashMap<PartitionState> states = new Int2ObjectOpenHashMap<>();
+        final Counter invalidRecords;
+        final Counter cancelRecords;
+        final Counter unknownReasonRecords;
+        final Counter cursorGuardViolations;
+        final Counter indexAnomalies;
+        final Counter heapRebuilds;
+        final Counter logSweeps;
+        final Counter recoveryOverBudget;
+
+        Wiring(
+                String clusterId,
+                Uuid sourceTopicId,
+                Uuid trackerTopicId,
+                MeterRegistry registry,
+                int sidecarMaxBytes,
+                long heapBudgetBytes,
+                long maxResidentEntries,
+                TrackerIndex index) {
+            this.clusterId = clusterId;
+            this.sourceTopicId = sourceTopicId;
+            this.trackerTopicId = trackerTopicId;
+            this.registry = registry;
+            this.sidecarMaxBytes = sidecarMaxBytes;
+            this.heapBudgetBytes = heapBudgetBytes;
+            this.maxResidentEntries = maxResidentEntries;
+            this.index = index;
+            this.invalidRecords = Counter.builder("cesium.tracker.invalid.records")
+                    .description("tracker wire-format violations, counted and skipped (design §2.2, R12 canary)")
+                    .register(registry);
+            this.cancelRecords = Counter.builder("cesium.tracker.cancel.records")
+                    .description("reserved CANCEL records seen; unsupported — counted no-ops (D15)")
+                    .register(registry);
+            this.unknownReasonRecords = Counter.builder("cesium.tracker.unknown.reason.records")
+                    .description("tombstones with an unrecognized completion reason — applied (the M4 decision:"
+                            + " skipping would be a duplicate-dispatch vector) but surfaced as novelty (D15)")
+                    .register(registry);
+            this.cursorGuardViolations = Counter.builder("cesium.cursor.guard.violations")
+                    .description("I5/monotonic cursor guard trips; the last safe cursor was returned (design §3.5)")
+                    .register(registry);
+            this.indexAnomalies = Counter.builder("cesium.store.index.anomalies")
+                    .description("monotonic index anomalies: duplicate ADDs (R1), out-of-order drops, impossible"
+                            + " completes — wired by snapshot/delta so revocations never lose counts")
+                    .register(registry);
+            this.heapRebuilds = Counter.builder("cesium.store.heap.rebuilds")
+                    .description("monotonic dispatch-heap rebuilds across all shards")
+                    .register(registry);
+            this.logSweeps = Counter.builder("cesium.store.log.sweeps")
+                    .description("monotonic arrival-log sweeps across all shards")
+                    .register(registry);
+            this.recoveryOverBudget = Counter.builder(RECOVERY_OVER_BUDGET_METRIC)
+                    .description("recovery seed/replay refusals: the durable backlog would exceed the heap budget,"
+                            + " so the store fails fast instead of OOMing (security finding H1, design §5.3/§5.4)")
+                    .register(registry);
+        }
+    }
+
+    /**
+     * Per-partition recovery, cursor and metrics bookkeeping. Written on the dispatch thread only;
+     * every field a gauge reads is volatile, because gauges are read from the scrape and
+     * health-sampler threads (they capture this object, never look it up in the unsynchronized maps).
+     */
+    private static final class PartitionState {
+        volatile boolean recoveryBegun;
+        volatile boolean active;
+        volatile long barrierOffset;
+        volatile long position;
+        long lastCommittedOffset;
+        String lastCommittedMetadata = "";
+        boolean hasProposal;
+        long proposedOffset;
+        String proposedMetadata = "";
+        volatile long pinnedEntries;
+        volatile long sidecarBytes;
+        /** The index's pending count, published by the dispatch thread once per loop iteration. */
+        volatile long pendingEntries;
+
+        long lastAnomalies;
+        long lastHeapRebuilds;
+        long lastLogSweeps;
+
+        @Nullable Gauge pendingGauge;
+
+        @Nullable Gauge pinnedGauge;
+
+        @Nullable Gauge sidecarBytesGauge;
+
+        @Nullable Gauge shardStateGauge;
+
+        @Nullable Gauge replayRemainingGauge;
+
+        int shardState() {
+            return active ? 2 : recoveryBegun ? 1 : 0;
+        }
+
+        long replayRemaining() {
+            return recoveryBegun && !active ? Math.max(0, barrierOffset - position) : 0;
+        }
+    }
+}

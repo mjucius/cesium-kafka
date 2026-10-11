@@ -1,12 +1,15 @@
 package com.jucius.cesium.kafka.app.config;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.jucius.cesium.kafka.app.CesiumApp;
 import com.jucius.cesium.kafka.core.config.ConfigValidationException;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Finding;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -70,6 +73,21 @@ class UnknownKeyTest {
     }
 
     @Test
+    void removedDispatchCoalesceKeyFailsWithConfigExitCode() throws Exception {
+        // dispatch.coalesce was removed in 2.0.0 (it never had an effect); a leftover setting must
+        // fail startup as an unknown key rather than be silently accepted.
+        Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML + "dispatch:\n  coalesce: PT0S\n");
+        ConfigValidationException exception =
+                assertThrows(ConfigValidationException.class, () -> LoaderTestSupport.loader(Map.of())
+                        .load(file));
+        List<String> paths =
+                exception.report().errors().stream().map(Finding::path).toList();
+        assertEquals(List.of("dispatch.coalesce"), paths, exception::getMessage);
+        int code = CesiumApp.run(new String[] {"--config", file.toString()}, Map.of(), Clock.systemUTC());
+        assertEquals(CesiumConfigLoader.EX_CONFIG, code);
+    }
+
+    @Test
     void camelCaseKeySuggestsTheKebabSpelling() {
         Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML + "applicationId: oops\n");
         ConfigValidationException exception =
@@ -121,9 +139,9 @@ class UnknownKeyTest {
                         kafka:
                           properties:
                             some.exotic.broker.tunable: 42
-                        store:
-                          properties:
-                            anything.goes.here: yes
+                          tracker-consumer:
+                            properties:
+                              anything.goes.here: yes
                         """);
         // Must not throw: map subtrees are the operator's namespace.
         LoaderTestSupport.loader(Map.of()).load(file);

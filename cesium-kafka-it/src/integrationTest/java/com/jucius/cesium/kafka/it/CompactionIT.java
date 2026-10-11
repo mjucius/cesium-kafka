@@ -38,7 +38,7 @@ import org.junit.jupiter.api.Test;
  * (R1/R2 over pre-compacted logs with ADDs removed / tombstones orphaned) is proven deterministically
  * and broker-free by {@code TrackerBackedStoreContract.compactedLogWith*Converges} /
  * {@code compactedLogsConvergeToScriptTruth}, which run against {@code KafkaTrackerStore} on every PR
- * (cesium-kafka-store-kafka unit tests). This IT is the end-to-end confirmation that a real Apache
+ * (cesium-kafka-core unit tests). This IT is the end-to-end confirmation that a real Apache
  * Kafka cleaner produces logs that path handles; if its cleaner timing ever proves flaky in CI it can
  * be quarantined to the nightly lane without losing the convergence guarantee.
  *

@@ -58,7 +58,7 @@ public record IngestLoopConfig(
     /** Default retry backoff cap (§3.8: capped backoff while parked). */
     public static final Duration DEFAULT_RETRY_BACKOFF_MAX = Duration.ofSeconds(10);
 
-    /** Validates the loop's operating invariants. */
+    /** Null-checks the components; ranges are validated upstream by {@code CesiumConfigValidator}. */
     public IngestLoopConfig {
         Objects.requireNonNull(sourceTopic, "sourceTopic");
         Objects.requireNonNull(trackerTopic, "trackerTopic");
@@ -66,31 +66,6 @@ public record IngestLoopConfig(
         Objects.requireNonNull(retryBackoffInitial, "retryBackoffInitial");
         Objects.requireNonNull(retryBackoffMax, "retryBackoffMax");
         Objects.requireNonNull(onUnrelayable, "onUnrelayable");
-        if (sourceTopic.isBlank()) {
-            throw new IllegalArgumentException("sourceTopic must be configured");
-        }
-        if (trackerTopic.isBlank()) {
-            throw new IllegalArgumentException("trackerTopic must be configured");
-        }
-        if (trackerPartitions < 1) {
-            throw new IllegalArgumentException("trackerPartitions must be at least 1: " + trackerPartitions);
-        }
-        if (pollTimeout.isNegative() || pollTimeout.isZero()) {
-            throw new IllegalArgumentException("pollTimeout must be positive: " + pollTimeout);
-        }
-        if (commitRetryLimit < 1) {
-            throw new IllegalArgumentException("commitRetryLimit must be at least 1: " + commitRetryLimit);
-        }
-        if (parkThreshold < 1) {
-            throw new IllegalArgumentException("parkThreshold must be at least 1: " + parkThreshold);
-        }
-        if (retryBackoffInitial.isNegative() || retryBackoffInitial.isZero()) {
-            throw new IllegalArgumentException("retryBackoffInitial must be positive: " + retryBackoffInitial);
-        }
-        if (retryBackoffMax.compareTo(retryBackoffInitial) < 0) {
-            throw new IllegalArgumentException(
-                    "retryBackoffMax " + retryBackoffMax + " must be >= retryBackoffInitial " + retryBackoffInitial);
-        }
     }
 
     /**

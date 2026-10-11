@@ -64,7 +64,7 @@ class LogbackConfigTest {
         event.setThreadName("cesium-dispatch-0");
         event.setTimeStamp(1_700_000_000_000L);
         event.setMessage("reason=FORGED\r\n1999-12-31 ERROR [evil] injected-line");
-        event.setMDCPropertyMap(Map.of("partition", "3\r\nALSO-INJECTED"));
+        event.setMDCPropertyMap(Map.of("txn", "cesium.app.dispatch.cesium-0.0\r\nALSO-INJECTED"));
 
         String encoded = new String(encoder.encode(event), StandardCharsets.UTF_8);
         String line = encoded.stripTrailing();

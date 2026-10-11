@@ -1,5 +1,11 @@
 package com.jucius.cesium.kafka.core.dispatch;
 
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.anyCause;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.boundedExponential;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.causeTag;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.countDlq;
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.promoteUnrelayable;
+
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
@@ -9,7 +15,14 @@ import com.jucius.cesium.kafka.core.fetch.FetchOutcome;
 import com.jucius.cesium.kafka.core.fetch.FetchResult;
 import com.jucius.cesium.kafka.core.fetch.SeekFetcher;
 import com.jucius.cesium.kafka.core.headers.DelayHeaderCodec;
+import com.jucius.cesium.kafka.core.headers.DlqReasons;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.InDoubtCommit;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.SourceCoord;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.Unrelayable;
+import com.jucius.cesium.kafka.core.loop.LoopSupport.UnrelayableHit;
+import com.jucius.cesium.kafka.core.loop.LoopTransactions;
 import com.jucius.cesium.kafka.core.policy.UnfetchablePayloadPolicy;
 import com.jucius.cesium.kafka.core.policy.UnrelayablePolicy;
 import com.jucius.cesium.kafka.core.policy.UnrelayableRejections;
@@ -33,11 +46,11 @@ import java.util.TreeSet;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 import org.apache.kafka.clients.consumer.CloseOptions;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
@@ -137,8 +150,8 @@ import org.slf4j.LoggerFactory;
  * </ul>
  *
  * <p><strong>Backpressure (§5.3):</strong> an ACTIVE shard pauses tracker intake above
- * {@code dispatch.max-pending-per-partition} (resumes below half of it) and while the global
- * pending cap is exceeded; a RECOVERING shard is <em>never</em> paused — replay must reach the
+ * {@code dispatch.max-pending-per-partition} (resumes below half of it) and while the
+ * process-wide {@code dispatch.max-pending-total} is exceeded; a RECOVERING shard is <em>never</em> paused — replay must reach the
  * barrier. Pause state is observable as {@code cesium_shard_paused{partition}}.
  *
  * <p><strong>Idle cursor advancement (§3.5):</strong> a streaming, non-recovering partition
@@ -148,7 +161,8 @@ import org.slf4j.LoggerFactory;
  * path; the engine never calls {@code commitSync}).
  *
  * <p><strong>Metrics (§9):</strong> committed dispositions only ({@code cesium_dispatch_records},
- * the dispatch-lag histogram) flush after {@code commitTransaction} returns, so abort/retry
+ * the dispatch-lag histogram, and {@code cesium_dlq_records_total} for the dispatch-side
+ * {@code payload-expired} and {@code unrelayable} DLQ notices) flush after {@code commitTransaction} returns, so abort/retry
  * cycles never inflate them. {@code cesium_pending_entries}/{@code cesium_shard_state} are
  * store-owned gauges and not duplicated here; {@code cesium_lso_lag} needs a per-partition
  * read_uncommitted/read_committed offset diff from the admin plane and is deferred to the
@@ -171,7 +185,6 @@ public final class DispatchLoop implements Runnable {
 
     private final DispatchLoopConfig config;
     private final Consumer<byte[], byte[]> consumer;
-    private final Supplier<Producer<byte[], byte[]>> producerFactory;
     private final TrackerBackedStore store;
     private final SeekFetcher fetcher;
     private final RelayRecordFactory relayFactory;
@@ -179,14 +192,14 @@ public final class DispatchLoop implements Runnable {
     private final Clock clock;
 
     // Owned by the loop thread after construction (the constructing thread hands off via start).
-    private Producer<byte[], byte[]> producer;
+    private final LoopTransactions txn;
     private boolean started;
-    private boolean transactionInFlight;
     private int failureStreak;
     private long backoffUntilMs;
     private long lastPollReturnMs;
     private long epochCounter;
-    private @Nullable InDoubtRecovery inDoubtRecovery;
+    /** The I9 producer replacement failed transiently and is retried before the loop proceeds. */
+    private boolean producerRecoveryPending;
 
     // Per-partition loop-side shard bookkeeping (the store owns the index; this is plumbing).
     private final Map<Integer, Long> shardEpochs = new HashMap<>();
@@ -209,29 +222,20 @@ public final class DispatchLoop implements Runnable {
      */
     private final Map<SourceCoord, Unrelayable> unrelayable = new HashMap<>();
 
-    /**
-     * Permanent destination rejections attributed to a specific entry by the send callback (§3.8).
-     * Written from the producer I/O thread, drained on the loop thread once the transaction's
-     * outcome is known; reset per dispatch transaction.
-     */
-    private final ConcurrentLinkedQueue<UnrelayableHit> unrelayableHits = new ConcurrentLinkedQueue<>();
+    /** Unrelayable DLQ notices sent in the current dispatch transaction; counted only on commit. */
+    private int unrelayableDlq;
 
-    // Cross-thread state: stop flag, health/metrics, async send errors from the producer I/O thread.
+    // Cross-thread state: stop flag and health/metrics.
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicInteger degraded = new AtomicInteger();
     private final AtomicLong lastIterationMs = new AtomicLong();
     // Windowed per-iteration high-water mark of the inter-poll gap; reset at the top of runOnce.
     private final AtomicLong maxPollGapMs = new AtomicLong();
 
-    // Single-writer-per-txn volatile; null is the steady state. Reads go through a local copy.
-    private volatile @Nullable Exception asyncSendError;
-
     private final Counter dispatchedRecords;
     private final Counter payloadExpiredRecords;
     private final Counter droppedRecords;
     private final Counter unrelayableRecords;
-    private final Counter committedTransactions;
-    private final Timer commitTimer;
     private final Timer dispatchLag;
     private final Gauge degradedGauge;
     private final Gauge heartbeatGauge;
@@ -265,25 +269,25 @@ public final class DispatchLoop implements Runnable {
             Clock clock) {
         this.config = Objects.requireNonNull(config, "config");
         this.consumer = Objects.requireNonNull(consumer, "consumer");
-        this.producerFactory = Objects.requireNonNull(producerFactory, "producerFactory");
         this.store = Objects.requireNonNull(store, "store");
         this.fetcher = Objects.requireNonNull(fetcher, "fetcher");
         this.relayFactory = Objects.requireNonNull(relayFactory, "relayFactory");
         this.admin = Objects.requireNonNull(admin, "admin");
         this.registry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
-        this.producer = Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
+        this.txn = new LoopTransactions(
+                "dispatch",
+                producerFactory,
+                config.commitRetryLimit(),
+                CrashPoints.DISPATCH_DURING_COMMIT,
+                DispatchLoop::isFatal,
+                registry,
+                log);
 
         this.dispatchedRecords = dispatchRecords("dispatched");
         this.payloadExpiredRecords = dispatchRecords("payload_expired");
         this.droppedRecords = dispatchRecords("dropped");
         this.unrelayableRecords = dispatchRecords("unrelayable");
-        this.committedTransactions =
-                registry.counter("cesium.transactions", "loop", "dispatch", "result", "committed", "cause", "none");
-        this.commitTimer = Timer.builder("cesium.txn.commit.seconds")
-                .tag("loop", "dispatch")
-                .description("commitTransaction latency per attempt (§9)")
-                .register(registry);
         this.dispatchLag = Timer.builder("cesium.dispatch.lag.seconds")
                 .description("actual minus scheduled dispatch time — the headline precision SLO (§9)")
                 // §9 types this meter "histogram": publish the _bucket series so dispatch-lateness
@@ -322,7 +326,7 @@ public final class DispatchLoop implements Runnable {
                     runOnce();
                 } catch (WakeupException e) {
                     if (running.get()) {
-                        throw new DispatchLoopFatalException("consumer woken up without a stop request", e);
+                        throw new LoopFatalException("consumer woken up without a stop request", e);
                     }
                     // Graceful shutdown: stop() interrupted the poll sleep; by I3 no transaction
                     // is in flight here, so this is a transaction boundary.
@@ -360,7 +364,7 @@ public final class DispatchLoop implements Runnable {
             throw new IllegalStateException("dispatch loop already started");
         }
         started = true;
-        producer.initTransactions();
+        txn.initTransactions();
         consumer.subscribe(List.of(config.trackerTopic()), new DispatchRebalanceListener());
         log.info(
                 "dispatch loop started: tracker={} (group B subscribe, read_committed, reset=none)",
@@ -379,17 +383,16 @@ public final class DispatchLoop implements Runnable {
         // single legitimately large gap (a cold-segment fetch, a long recovery) and leave a
         // threshold alert firing permanently even after gaps return to healthy values (§6).
         maxPollGapMs.set(0);
-        InDoubtRecovery recovery = inDoubtRecovery;
-        if (recovery != null) {
+        if (producerRecoveryPending) {
             if (clock.millis() < backoffUntilMs) {
                 heartbeatIntake();
                 return;
             }
-            if (!attemptProducerRecovery(recovery)) {
+            if (!attemptProducerRecovery()) {
                 scheduleBackoff("in_doubt_recovery");
                 return;
             }
-            inDoubtRecovery = null;
+            producerRecoveryPending = false;
             log.info("in-doubt producer replacement completed; re-resolving cursors and re-entering recovery");
         }
         ConsumerRecords<byte[], byte[]> records = pollTracker(pollTimeout());
@@ -460,14 +463,14 @@ public final class DispatchLoop implements Runnable {
         } catch (InvalidOffsetException e) {
             // R11: the committed cursor points outside the live tracker log — the tracker was
             // truncated or recreated. Never auto-reset; fail fast with the DR runbook (R-9).
-            throw new DispatchLoopFatalException(
+            throw new LoopFatalException(
                     "tracker offset out of range for " + e.partitions() + ": the tracker topic was truncated or"
                             + " recreated under the same name (§3.6 integrity, R-9). Never auto-reset — follow the"
                             + " tracker DR runbook (reset the tracker or accept loss explicitly)",
                     e);
         } catch (KafkaException e) {
             if (isFatal(e)) {
-                throw new DispatchLoopFatalException("tracker poll failed fatally", e);
+                throw new LoopFatalException("tracker poll failed fatally", e);
             }
             log.warn("tracker poll failed; backing off", e);
             scheduleBackoff(causeTag(e));
@@ -478,34 +481,12 @@ public final class DispatchLoop implements Runnable {
     }
 
     /**
-     * The locked {@code auto.offset.reset=none} surfaced a partition with no committed offset
-     * (design §3.6 step 2, D18): seek to the beginning explicitly <em>only</em> on a provable
-     * first run — no committed offsets anywhere for the dispatch group — else fail fast with the
-     * runbook (committed offsets expired per KIP-211, or were tampered with; an implicit reset
-     * would silently lose all pending entries or mass-replay).
+     * The locked {@code auto.offset.reset=none} surfaced a partition with no committed offset from
+     * {@code poll()}. Give it a provisional position so the poll can proceed: the partition is
+     * still paused, and {@link #resolveCursor} runs for it later in this same iteration — proving
+     * the first run or failing fast ({@link #firstRunCursor}) before any of its records is applied.
      */
     private void handleMissingCommittedOffsets(Set<TopicPartition> partitions) {
-        final boolean groupHasOffsets;
-        try {
-            groupHasOffsets = admin.groupHasCommittedOffsets();
-        } catch (RuntimeException e) {
-            log.warn("first-run probe failed; retrying with backoff", e);
-            scheduleBackoff(causeTag(e));
-            return;
-        }
-        if (groupHasOffsets) {
-            throw new DispatchLoopFatalException(
-                    "no committed offset for assigned tracker partition(s) " + partitions + " while the dispatch"
-                            + " group has committed offsets elsewhere, and auto.offset.reset=none is locked: either"
-                            + " committed offsets expired (broker offsets.retention.minutes shorter than the outage)"
-                            + " or the group state was modified — an operator must seed the group offsets explicitly;"
-                            + " see the offset-reset runbook (§3.6, D18)");
-        }
-        log.warn(
-                "provable first run for tracker partition(s) {} (no committed offsets anywhere in the dispatch"
-                        + " group): seeking to the beginning explicitly — a full replay of the compacted tracker is"
-                        + " correct but may be slow (§3.6 step 2)",
-                partitions);
         consumer.seekToBeginning(partitions);
     }
 
@@ -561,7 +542,7 @@ public final class DispatchLoop implements Runnable {
      * of stalling the fetch until {@code transaction.timeout.ms}.
      */
     private void resolveNewAssignments() {
-        if (inDoubtRecovery != null) {
+        if (producerRecoveryPending) {
             return;
         }
         completeBarriers();
@@ -574,11 +555,11 @@ public final class DispatchLoop implements Runnable {
                 try {
                     resolveCursor(partition);
                     needsCursor.remove(partition);
-                } catch (WakeupException | DispatchLoopFatalException e) {
+                } catch (WakeupException | LoopFatalException e) {
                     throw e;
                 } catch (RuntimeException e) {
                     if (isFatal(e)) {
-                        throw new DispatchLoopFatalException(
+                        throw new LoopFatalException(
                                 "cursor resolution failed fatally for tracker partition " + partition, e);
                     }
                     // Transient (e.g. committed() timed out waiting out UNSTABLE_OFFSET_COMMIT
@@ -609,7 +590,7 @@ public final class DispatchLoop implements Runnable {
         } else {
             // Step 2 (R11): a committed offset below the beginning means truncation/recreation.
             if (offset.offset() < beginning) {
-                throw new DispatchLoopFatalException("committed cursor " + offset.offset() + " for " + tp
+                throw new LoopFatalException("committed cursor " + offset.offset() + " for " + tp
                         + " lies below the partition beginning " + beginning + ": the tracker was truncated or"
                         + " recreated (§3.6 integrity, R-9). Never auto-reset — follow the tracker DR runbook");
             }
@@ -629,7 +610,7 @@ public final class DispatchLoop implements Runnable {
     /** The §3.6 explicit first-run path: provable only when the whole group has never committed. */
     private TrackerCursor firstRunCursor(TopicPartition tp, long beginning) {
         if (admin.groupHasCommittedOffsets()) {
-            throw new DispatchLoopFatalException(
+            throw new LoopFatalException(
                     "no committed offset for " + tp + " while the dispatch group has committed offsets elsewhere"
                             + " (auto.offset.reset=none locked): committed offsets expired or were removed — an"
                             + " operator must seed the group offsets explicitly; see the offset-reset runbook"
@@ -670,7 +651,7 @@ public final class DispatchLoop implements Runnable {
             } catch (CompletionException | CancellationException e) {
                 Throwable cause = e.getCause() == null ? e : e.getCause();
                 if (cause instanceof RuntimeException runtime && isFatal(runtime)) {
-                    throw new DispatchLoopFatalException(
+                    throw new LoopFatalException(
                             "barrier snapshot failed fatally for tracker partition " + partition, runtime);
                 }
                 log.warn("barrier snapshot failed for tracker partition {}; re-resolving the cursor", partition, e);
@@ -678,7 +659,7 @@ public final class DispatchLoop implements Runnable {
                 continue;
             }
             if (pending.cursor().offset() > barrier) {
-                throw new DispatchLoopFatalException(
+                throw new LoopFatalException(
                         "committed cursor " + pending.cursor().offset()
                                 + " for tracker partition " + partition + " exceeds the live end offset " + barrier
                                 + ": the tracker was truncated or recreated (§3.6 integrity, R-9). Never auto-reset —"
@@ -741,7 +722,7 @@ public final class DispatchLoop implements Runnable {
                     batch, config.maxBatchBytes(), nowMs + config.fetchTimeout().toMillis());
         } catch (RuntimeException e) {
             if (isFatal(e)) {
-                throw new DispatchLoopFatalException("payload fetch failed fatally", e);
+                throw new LoopFatalException("payload fetch failed fatally", e);
             }
             // Pre-transaction failure: nothing produced — restoring is definitive and safe.
             store.onBatchAborted(batch);
@@ -754,7 +735,7 @@ public final class DispatchLoop implements Runnable {
         if (classified.goneCount > 0 && config.onUnfetchablePayload() == UnfetchablePayloadPolicy.FAIL) {
             // Nothing produced yet: restore (definitive), then surface the environment failure.
             store.onBatchAborted(batch);
-            throw new DispatchLoopFatalException("payload(s) provably gone from the source at dispatch time and"
+            throw new LoopFatalException("payload(s) provably gone from the source at dispatch time and"
                     + " dispatch.on-unfetchable-payload=FAIL: first lost entry source partition "
                     + batch.sourcePartition(classified.firstGoneIndex) + " offset "
                     + batch.sourceOffset(classified.firstGoneIndex) + " (§7.4; D-9 would resolve this under"
@@ -775,17 +756,17 @@ public final class DispatchLoop implements Runnable {
         } catch (InDoubtCommit inDoubt) {
             recoverFromInDoubtCommit(distinctPartitions(batch), inDoubt);
             return false;
-        } catch (DispatchLoopFatalException fatal) {
-            abortIfInFlight();
-            abortedTransactions("fatal").increment();
+        } catch (LoopFatalException fatal) {
+            txn.abortIfInFlight();
+            txn.aborted("fatal").increment();
             throw fatal;
         } catch (RuntimeException e) {
             if (isFatal(e)) {
                 // Fatal (§3.8): no abort attempt — a fenced producer cannot abort; the broker
                 // resolves the dangling transaction. Close + fail; never restore (I9-compatible).
-                throw new DispatchLoopFatalException("fatal dispatch transaction failure", e);
+                throw new LoopFatalException("fatal dispatch transaction failure", e);
             }
-            if (!unrelayableHits.isEmpty()) {
+            if (txn.hasUnrelayableHits()) {
                 // §3.8 I-8: the destination PERMANENTLY rejected a relay (too large / invalid), not a
                 // transient blip. Abort, restore the full batch, and remember the offending entries so
                 // the retry routes them to the route.relay.on-unrelayable policy (DLQ notice + REJECTED
@@ -794,8 +775,8 @@ public final class DispatchLoop implements Runnable {
             }
             // Definitively abortable (incl. TransactionAbortableException from a retried commit —
             // the broker-affirmed "not committed"): nothing committed, restore the FULL batch.
-            abortIfInFlight();
-            abortedTransactions(causeTag(e)).increment();
+            txn.abortIfInFlight();
+            txn.aborted(causeTag(e)).increment();
             store.onBatchAborted(batch);
             penalizePartitions(distinctPartitions(batch), clock.millis());
             log.warn("dispatch transaction aborted; batch restored for retry", e);
@@ -832,16 +813,14 @@ public final class DispatchLoop implements Runnable {
     private Map<Integer, TrackerCursor> transact(
             DueBatch batch, DueBatch settledView, Classified classified, FetchResult fetched, long nowMs) {
         CrashPoints.maybeFire(CrashPoints.DISPATCH_BEFORE_BEGIN);
-        asyncSendError = null;
-        unrelayableHits.clear();
-        producer.beginTransaction();
-        transactionInFlight = true;
+        unrelayableDlq = 0;
+        txn.begin();
         boolean dlqNotices = config.onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ;
         for (int s = 0; s < classified.settledCount; s++) {
             int i = classified.settledIndices[s];
             if (fetched.outcome(i) != FetchOutcome.FOUND) {
                 if (dlqNotices) {
-                    send(relayFactory.payloadExpiredDlqRecord(
+                    txn.send(relayFactory.payloadExpiredDlqRecord(
                             config.sourceTopic(),
                             batch.sourcePartition(i),
                             batch.sourceOffset(i),
@@ -853,22 +832,24 @@ public final class DispatchLoop implements Runnable {
                 // route.relay.on-unrelayable disposition INSTEAD of relaying it again. The REJECTED
                 // tombstone (below) resolves the entry either way, so it never replays forever.
                 Unrelayable known = unrelayable.get(new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)));
-                if (known != null && known.route() == Unrelayable.Route.DLQ) {
+                if (known != null && known.route() == UnrelayablePolicy.DLQ) {
                     // Attributed: a DLQ write that is itself rejected escalates to DROP, not a wedge.
-                    send(
-                            relayFactory.unrelayableDlqRecord(fetched.record(i), known.detail(), nowMs),
+                    txn.send(
+                            relayFactory.headerErrorDlqRecord(
+                                    fetched.record(i), DlqReasons.UNRELAYABLE, known.detail(), nowMs),
                             new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)));
+                    unrelayableDlq++;
                 }
             } else {
                 // Attributed: a permanent destination rejection on this relay is captured against the
                 // entry so the §3.8 I-8 unrelayable path can route it on the retry.
-                send(
+                txn.send(
                         relayFactory.relayScheduled(fetched.record(i), nowMs, batch.dispatchAtMs(i), batch.clamped(i)),
                         new SourceCoord(batch.sourcePartition(i), batch.sourceOffset(i)));
             }
         }
         sendCompletions(batch, settledView, classified);
-        throwIfAsyncSendFailed();
+        txn.throwIfSendFailed();
         Map<Integer, TrackerCursor> cursors = new LinkedHashMap<>();
         Map<TopicPartition, OffsetAndMetadata> offsets = new LinkedHashMap<>();
         for (int partition : touchedPartitions(batch, classified)) {
@@ -878,9 +859,9 @@ public final class DispatchLoop implements Runnable {
         }
         // I2: group metadata fetched immediately before the call — the fencing hook; cursors for
         // EVERY partition the transaction's tombstones touch ride this same commit.
-        producer.sendOffsetsToTransaction(offsets, consumer.groupMetadata());
+        txn.sendOffsets(offsets, consumer.groupMetadata());
         CrashPoints.maybeFire(CrashPoints.DISPATCH_AFTER_SENDS);
-        commitWithRetry();
+        txn.commit();
         return cursors;
     }
 
@@ -925,66 +906,13 @@ public final class DispatchLoop implements Runnable {
         DueBatch view = count == classified.settledCount ? settledView : DueBatchView.select(batch, indices, count);
         List<TrackerRecordData> tombstones = store.encodeCompletions(view, reason);
         if (tombstones.size() != view.size()) {
-            throw new DispatchLoopFatalException("store contract violation: encodeCompletions returned "
-                    + tombstones.size() + " tombstone(s) for a " + view.size() + "-entry " + reason + " view");
+            throw new LoopFatalException("store contract violation: encodeCompletions returned " + tombstones.size()
+                    + " tombstone(s) for a " + view.size() + "-entry " + reason + " view");
         }
         for (int j = 0; j < view.size(); j++) {
             TrackerRecordData data = tombstones.get(j);
-            send(new ProducerRecord<>(
+            txn.send(new ProducerRecord<>(
                     config.trackerTopic(), view.sourcePartition(j), null, data.key(), data.value(), data.headers()));
-        }
-    }
-
-    /**
-     * Commits, retrying ambiguous timeouts to a definitive outcome bounded by
-     * {@code kafka.transactions.commit-retry} (§3.8 in-doubt step a). The verified 4.3.0 facts
-     * shape the classification: a retried commit re-awaits the same EndTxn result; normal return
-     * is definitively committed; {@link TransactionAbortableException} (anywhere in the chain) is
-     * definitively NOT committed and is rethrown for the abortable path even after an ambiguous
-     * attempt; any other post-ambiguity non-fatal failure cannot prove "aborted" (D20) and
-     * escalates to in-doubt; fatal classifications (including a post-ambiguity
-     * {@link ProducerFencedException} — still ambiguous as to the outcome) fail the loop with no
-     * restore, which satisfies I9. Fires D-3 after the commit returns, before any bookkeeping.
-     */
-    private void commitWithRetry() {
-        int attempts = 0;
-        boolean ambiguous = false;
-        while (true) {
-            try {
-                commitTimer.record(producer::commitTransaction);
-                CrashPoints.maybeFire(CrashPoints.DISPATCH_DURING_COMMIT);
-                transactionInFlight = false;
-                committedTransactions.increment();
-                return;
-            } catch (TimeoutException timeout) {
-                attempts++;
-                ambiguous = true;
-                if (attempts >= config.commitRetryLimit()) {
-                    throw new InDoubtCommit(attempts, timeout);
-                }
-                log.warn(
-                        "commitTransaction timed out (attempt {}/{}); retrying to a definitive outcome",
-                        attempts,
-                        config.commitRetryLimit(),
-                        timeout);
-            } catch (RuntimeException e) {
-                if (isDefinitivelyNotCommitted(e)) {
-                    // KIP-890 TRANSACTION_ABORTABLE (or exhausted-retry synthesis): the broker
-                    // affirms the transaction did not commit — abortable even post-ambiguity.
-                    throw e;
-                }
-                if (!ambiguous || isFatal(e)) {
-                    // First-attempt non-timeout failures are non-ambiguous (§3.8 row 1); fatal
-                    // failures always fail the loop and never restore.
-                    throw e;
-                }
-                log.warn(
-                        "commitTransaction failed non-fatally after an ambiguous timeout (attempt {}); the outcome"
-                                + " cannot be proven aborted — escalating to the in-doubt procedure (D20/I9)",
-                        attempts + 1,
-                        e);
-                throw new InDoubtCommit(attempts + 1, e);
-            }
         }
     }
 
@@ -1001,16 +929,13 @@ public final class DispatchLoop implements Runnable {
      * either way.
      */
     private void recoverFromInDoubtCommit(int[] partitions, InDoubtCommit inDoubt) {
-        String cause = inDoubt.failure instanceof TimeoutException ? "commit_timeout" : causeTag(inDoubt.failure);
-        registry.counter("cesium.transactions", "loop", "dispatch", "result", "in_doubt", "cause", cause)
-                .increment();
+        txn.markInDoubt(inDoubt);
         log.warn(
                 "commitTransaction outcome ambiguous after {} attempts; dropping {} shard(s), replacing the"
                         + " producer, and re-entering recovery (I9 — the batch is never restored)",
                 inDoubt.attempts,
                 partitions.length,
                 inDoubt.failure);
-        transactionInFlight = false;
         Set<Integer> affected = new LinkedHashSet<>();
         List<TopicPartition> toPause = new ArrayList<>();
         for (int partition : partitions) {
@@ -1021,24 +946,15 @@ public final class DispatchLoop implements Runnable {
             toPause.add(trackerPartition(partition));
         }
         if (!affected.isEmpty()) {
+            // Exactly a lost-then-reassigned partition: still owned in group B; state rebuilds from
+            // the durable log, so every piece of loop-side shard state resets as on revocation.
             store.onPartitionsLost(affected);
-            store.onPartitionsAssigned(affected); // re-adopt: still owned in group B; state rebuilds
-            for (int partition : affected) {
-                shardEpochs.put(partition, ++epochCounter);
-                pendingBarriers.remove(partition);
-                streaming.remove(partition);
-                pausedForBackpressure.remove(partition);
-                lastCursorActivityMs.remove(partition);
-                lastCommittedCursorOffset.remove(partition);
-                dropUnrelayableForPartition(partition); // re-recovery re-discovers from the durable log
-                needsCursor.add(partition);
-            }
+            dropLoopState(affected);
+            store.onPartitionsAssigned(affected);
+            adoptShards(affected);
             consumer.pause(toPause);
         }
-        InDoubtRecovery recovery = new InDoubtRecovery();
-        if (!attemptProducerRecovery(recovery)) {
-            inDoubtRecovery = recovery;
-        }
+        producerRecoveryPending = !attemptProducerRecovery();
         scheduleBackoff("in_doubt");
     }
 
@@ -1050,24 +966,15 @@ public final class DispatchLoop implements Runnable {
      * cursor re-resolution that follows (gated on this completing) reads the resolved truth.
      * Returns false on a transient failure — the caller schedules a retry (R15).
      */
-    private boolean attemptProducerRecovery(InDoubtRecovery recovery) {
+    private boolean attemptProducerRecovery() {
         try {
-            if (!recovery.producerReady) {
-                try {
-                    producer.close(Duration.ZERO);
-                } catch (RuntimeException closeFailure) {
-                    log.warn("closing the unusable producer failed; continuing with replacement", closeFailure);
-                }
-                producer = Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
-                producer.initTransactions();
-                recovery.producerReady = true;
-            }
+            txn.replaceProducer();
             return true;
         } catch (WakeupException e) {
             throw e; // stop() raced the recovery: run() resolves clean shutdown vs unexpected wakeup
         } catch (RuntimeException e) {
             if (isFatal(e)) {
-                throw new DispatchLoopFatalException("in-doubt commit recovery failed fatally", e);
+                throw new LoopFatalException("in-doubt commit recovery failed fatally", e);
             }
             log.warn("in-doubt recovery attempt failed transiently; retrying with capped backoff (§3.8/R15)", e);
             return false;
@@ -1085,7 +992,7 @@ public final class DispatchLoop implements Runnable {
      * (unnecessary; recovery is short) and while the failure backoff gates the loop.
      */
     private void maybeCommitIdleCursors() {
-        if (inDoubtRecovery != null || streaming.isEmpty()) {
+        if (producerRecoveryPending || streaming.isEmpty()) {
             return;
         }
         long intervalMs = config.idleCursorInterval().toMillis();
@@ -1113,12 +1020,11 @@ public final class DispatchLoop implements Runnable {
                 continue;
             }
             try {
-                producer.beginTransaction();
-                transactionInFlight = true;
-                producer.sendOffsetsToTransaction(
+                txn.begin();
+                txn.sendOffsets(
                         Map.of(trackerPartition(partition), new OffsetAndMetadata(cursor.offset(), cursor.metadata())),
                         consumer.groupMetadata());
-                commitWithRetry();
+                txn.commit();
             } catch (InDoubtCommit inDoubt) {
                 // No batch state exists to mis-restore, but the producer is unusable and the
                 // commit may have landed: run the uniform I9 procedure for the one partition.
@@ -1126,10 +1032,10 @@ public final class DispatchLoop implements Runnable {
                 return;
             } catch (RuntimeException e) {
                 if (isFatal(e)) {
-                    throw new DispatchLoopFatalException("fatal idle-cursor transaction failure", e);
+                    throw new LoopFatalException("fatal idle-cursor transaction failure", e);
                 }
-                abortIfInFlight();
-                abortedTransactions(causeTag(e)).increment();
+                txn.abortIfInFlight();
+                txn.aborted(causeTag(e)).increment();
                 log.warn(
                         "idle cursor advancement aborted for tracker partition {} (cursor stays behind; extra"
                                 + " replay only, D-7)",
@@ -1146,7 +1052,7 @@ public final class DispatchLoop implements Runnable {
 
     /**
      * Pause/resume tracker intake per shard: above the per-partition high-water mark (or while
-     * the global cap is exceeded) an ACTIVE shard's tracker partition pauses — backlog
+     * the process-wide cap is exceeded) an ACTIVE shard's tracker partition pauses — backlog
      * accumulates durably in the tracker topic; below the low-water mark (half the high) it
      * resumes. A RECOVERING shard is never paused: replay must reach the barrier (R7).
      */
@@ -1158,13 +1064,11 @@ public final class DispatchLoop implements Runnable {
         long low = Math.max(1, high / 2);
         long cap = config.maxPendingTotal();
         long total = 0;
-        if (cap > 0) {
-            for (int partition : streaming) {
-                total += store.pendingCount(partition);
-            }
+        for (int partition : streaming) {
+            total += store.pendingCount(partition);
         }
-        boolean globalHigh = cap > 0 && total > cap;
-        boolean globalRecovered = cap <= 0 || total <= cap / 2;
+        boolean globalHigh = total > cap;
+        boolean globalRecovered = total <= cap / 2;
         for (int partition : streaming) {
             boolean paused = pausedForBackpressure.contains(partition);
             if (store.isRecovering(partition)) {
@@ -1213,8 +1117,8 @@ public final class DispatchLoop implements Runnable {
     private Classified classify(DueBatch batch, FetchResult fetched) {
         int n = batch.size();
         if (fetched.size() != n) {
-            throw new DispatchLoopFatalException("fetcher contract violation: " + fetched.size() + " outcome(s) for a "
-                    + n + "-entry candidate batch");
+            throw new LoopFatalException("fetcher contract violation: " + fetched.size() + " outcome(s) for a " + n
+                    + "-entry candidate batch");
         }
         Classified c = new Classified(n);
         for (int i = 0; i < n; i++) {
@@ -1247,29 +1151,19 @@ public final class DispatchLoop implements Runnable {
 
     /** The distinct partitions whose scheduler state the transaction affects (I2's touched set). */
     private static int[] touchedPartitions(DueBatch batch, Classified classified) {
-        Set<Integer> touched = new TreeSet<>();
-        for (int s = 0; s < classified.settledCount; s++) {
-            touched.add(batch.sourcePartition(classified.settledIndices[s]));
-        }
-        int[] result = new int[touched.size()];
-        int next = 0;
-        for (int partition : touched) {
-            result[next++] = partition;
-        }
-        return result;
+        return IntStream.range(0, classified.settledCount)
+                .map(s -> batch.sourcePartition(classified.settledIndices[s]))
+                .distinct()
+                .sorted()
+                .toArray();
     }
 
     private static int[] distinctPartitions(DueBatch batch) {
-        Set<Integer> partitions = new TreeSet<>();
-        for (int i = 0; i < batch.size(); i++) {
-            partitions.add(batch.sourcePartition(i));
-        }
-        int[] result = new int[partitions.size()];
-        int next = 0;
-        for (int partition : partitions) {
-            result[next++] = partition;
-        }
-        return result;
+        return IntStream.range(0, batch.size())
+                .map(batch::sourcePartition)
+                .distinct()
+                .sorted()
+                .toArray();
     }
 
     /**
@@ -1317,34 +1211,6 @@ public final class DispatchLoop implements Runnable {
 
     // ------------------------------------------------------------------ taxonomy plumbing
 
-    /** Fire-and-forget transactional send; async failures are captured and surfaced pre-commit. */
-    private void send(ProducerRecord<byte[], byte[]> record) {
-        send(record, null);
-    }
-
-    /**
-     * Fire-and-forget transactional send. When {@code attribution} is non-null and the send is
-     * <em>permanently</em> rejected by the destination (record too large / invalid — §3.8 I-8), the
-     * failure is recorded against that entry so it can be routed to the
-     * {@code route.relay.on-unrelayable} policy on the retry instead of relayed forever. All async
-     * failures still set {@code asyncSendError}, surfaced before the offsets are sent or at commit.
-     */
-    private void send(ProducerRecord<byte[], byte[]> record, @Nullable SourceCoord attribution) {
-        // The future is deliberately unused: completion errors are observed via the callback (and
-        // the commit itself would surface them); blocking per record would serialize the batch.
-        var unused = producer.send(record, (metadata, exception) -> {
-            if (exception == null) {
-                return;
-            }
-            if (asyncSendError == null) {
-                asyncSendError = exception;
-            }
-            if (attribution != null && UnrelayableRejections.isPermanentRecordRejection(exception)) {
-                unrelayableHits.add(new UnrelayableHit(attribution, String.valueOf(exception)));
-            }
-        });
-    }
-
     /**
      * The §3.8 I-8 unrelayable path: a relay this batch attempted was permanently rejected by the
      * destination and attributed to one or more entries. Abort, restore the full batch (nothing
@@ -1357,23 +1223,20 @@ public final class DispatchLoop implements Runnable {
      * @return always {@code false} — this drain slice made no committed progress
      */
     private boolean handleUnrelayable(DueBatch batch, RuntimeException cause) {
-        abortIfInFlight();
-        abortedTransactions("unrelayable").increment();
-        List<UnrelayableHit> hits = new ArrayList<>();
-        for (UnrelayableHit hit; (hit = unrelayableHits.poll()) != null; ) {
-            hits.add(hit);
-        }
+        txn.abortIfInFlight();
+        txn.aborted("unrelayable").increment();
+        List<UnrelayableHit> hits = txn.drainUnrelayableHits();
         if (config.onUnrelayable() == UnrelayablePolicy.FAIL) {
             store.onBatchAborted(batch); // restore (definitive: nothing committed), then surface
             UnrelayableHit first = hits.get(0);
-            throw new DispatchLoopFatalException(
+            throw new LoopFatalException(
                     "route.relay.on-unrelayable=FAIL: the destination permanently rejected the relay of source "
                             + config.sourceTopic() + "-" + first.coord().partition() + "@"
                             + first.coord().offset()
                             + ": " + first.detail());
         }
         for (UnrelayableHit hit : hits) {
-            promoteUnrelayable(hit);
+            promoteUnrelayable(unrelayable, hit, config.onUnrelayable(), config.sourceTopic(), registry, log);
         }
         store.onBatchAborted(batch);
         log.warn(
@@ -1383,32 +1246,6 @@ public final class DispatchLoop implements Runnable {
                 config.onUnrelayable(),
                 cause);
         return false;
-    }
-
-    /**
-     * Records (or escalates) an unrelayable entry's disposition. A first rejection of a relay maps
-     * to the policy route (DLQ, or DROP). A <em>second</em> rejection of an already-DLQ-routed entry
-     * means the unrelayable DLQ write was itself too large to produce — escalate to DROP so the
-     * partition still advances rather than wedging on the DLQ write, logged loudly (§3.8).
-     */
-    private void promoteUnrelayable(UnrelayableHit hit) {
-        Unrelayable existing = unrelayable.get(hit.coord());
-        if (existing == null) {
-            Unrelayable.Route route =
-                    config.onUnrelayable() == UnrelayablePolicy.DROP ? Unrelayable.Route.DROP : Unrelayable.Route.DLQ;
-            unrelayable.put(hit.coord(), new Unrelayable(route, hit.detail()));
-        } else if (existing.route() == Unrelayable.Route.DLQ) {
-            log.error(
-                    "the unrelayable DLQ write for source {}-{}@{} was ALSO permanently rejected ({}); escalating to"
-                            + " DROP so the partition is not wedged on the DLQ write (route.relay.on-unrelayable=DLQ,"
-                            + " §3.8)",
-                    config.sourceTopic(),
-                    hit.coord().partition(),
-                    hit.coord().offset(),
-                    hit.detail());
-            registry.counter("cesium.unrelayable.dlq.rejected").increment();
-            unrelayable.put(hit.coord(), new Unrelayable(Unrelayable.Route.DROP, hit.detail()));
-        }
     }
 
     /** Drops resolved unrelayable entries once their COMPLETE tombstone committed (settled view). */
@@ -1425,40 +1262,6 @@ public final class DispatchLoop implements Runnable {
     private void dropUnrelayableForPartition(int partition) {
         if (!unrelayable.isEmpty()) {
             unrelayable.keySet().removeIf(coord -> coord.partition() == partition);
-        }
-    }
-
-    /** Surfaces an asynchronously failed send before the offsets are sent (mirrors ingest). */
-    private void throwIfAsyncSendFailed() {
-        Exception error = asyncSendError;
-        if (error == null) {
-            return;
-        }
-        if (error instanceof RuntimeException runtime) {
-            throw runtime;
-        }
-        throw new KafkaException("transactional send failed asynchronously", error);
-    }
-
-    /** Aborts the open transaction if one is in flight; a failed abort forces a producer replacement. */
-    private void abortIfInFlight() {
-        if (!transactionInFlight) {
-            return;
-        }
-        transactionInFlight = false;
-        try {
-            producer.abortTransaction();
-        } catch (RuntimeException abortFailure) {
-            // Nothing committed (the commit call was never reached, or failed non-ambiguously):
-            // a replacement producer whose initTransactions() aborts the dangling txn is safe.
-            log.warn("abortTransaction failed; replacing producer", abortFailure);
-            try {
-                producer.close(Duration.ZERO);
-            } catch (RuntimeException closeFailure) {
-                log.warn("closing the failed producer also failed; continuing with replacement", closeFailure);
-            }
-            producer = Objects.requireNonNull(producerFactory.get(), "producerFactory.get()");
-            producer.initTransactions();
         }
     }
 
@@ -1502,35 +1305,22 @@ public final class DispatchLoop implements Runnable {
         }
     }
 
-    /** Capped exponential backoff: {@code initial * 2^(streak-1)}, never above the cap. */
-    private static long boundedExponential(long initialMs, long maxMs, int streak) {
-        long backoff = initialMs;
-        for (int i = 1; i < streak && backoff < maxMs; i++) {
-            backoff <<= 1;
-        }
-        return Math.min(backoff, maxMs);
-    }
-
     /** Flushes committed dispositions only (§9): counts and the lag histogram, post-commit. */
     private void flushBatchMetrics(DueBatch batch, Classified classified, long nowMs) {
-        incrementBy(dispatchedRecords, classified.foundCount);
+        dispatchedRecords.increment(classified.foundCount);
         if (config.onUnfetchablePayload() == UnfetchablePayloadPolicy.DLQ) {
-            incrementBy(payloadExpiredRecords, classified.goneCount);
+            payloadExpiredRecords.increment(classified.goneCount);
+            countDlq(registry, DlqReasons.PAYLOAD_EXPIRED, classified.goneCount);
         } else {
-            incrementBy(droppedRecords, classified.goneCount);
+            droppedRecords.increment(classified.goneCount);
         }
         // §3.8 I-8: entries the destination permanently rejected and we resolved out-of-band (DLQ
         // notice, or dropped). Never dispatched, so they carry no dispatch-lag sample.
-        incrementBy(unrelayableRecords, classified.rejectedCount);
+        unrelayableRecords.increment(classified.rejectedCount);
+        countDlq(registry, DlqReasons.UNRELAYABLE, unrelayableDlq);
         for (int f = 0; f < classified.foundCount; f++) {
             long lagMs = Math.max(0, nowMs - batch.dispatchAtMs(classified.foundIndices[f]));
             dispatchLag.record(Duration.ofMillis(lagMs));
-        }
-    }
-
-    private static void incrementBy(Counter counter, long amount) {
-        if (amount > 0) {
-            counter.increment((double) amount);
         }
     }
 
@@ -1540,11 +1330,7 @@ public final class DispatchLoop implements Runnable {
      * name+tag collision, so a restarted loop must bind fresh gauges over its own state.
      */
     private void closeClients() {
-        try {
-            producer.close(CLOSE_TIMEOUT);
-        } catch (RuntimeException e) {
-            log.warn("producer close failed", e);
-        }
+        txn.close(CLOSE_TIMEOUT);
         try {
             consumer.close(CloseOptions.timeout(CLOSE_TIMEOUT));
         } catch (RuntimeException e) {
@@ -1572,43 +1358,18 @@ public final class DispatchLoop implements Runnable {
      * {@code ApplicationRecoverableException} hierarchy is taxonomic, not behavioral, and is not
      * consulted.
      */
-    // ReferenceEquality: `t.getCause() == t` is the self-referential-cause guard — a Throwable
-    // whose getCause() returns itself would loop forever. Identity is the intended test, and Error
-    // Prone's suggested .equals() is wrong (Throwable does not override it). Flagged from 2.50.0.
-    @SuppressWarnings("ReferenceEquality")
     private static boolean isFatal(RuntimeException error) {
-        for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof ProducerFencedException
-                    || t instanceof InvalidPidMappingException
-                    || t instanceof OutOfOrderSequenceException
-                    || t instanceof FencedInstanceIdException
-                    || t instanceof AuthenticationException
-                    || t instanceof AuthorizationException
-                    || t instanceof UnsupportedVersionException
-                    || t instanceof InterruptException
-                    || t instanceof IllegalStateException) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** KIP-890 {@code TRANSACTION_ABORTABLE} anywhere in the chain: definitively not committed. */
-    // ReferenceEquality: `t.getCause() == t` is the self-referential-cause guard — a Throwable
-    // whose getCause() returns itself would loop forever. Identity is the intended test, and Error
-    // Prone's suggested .equals() is wrong (Throwable does not override it). Flagged from 2.50.0.
-    @SuppressWarnings("ReferenceEquality")
-    private static boolean isDefinitivelyNotCommitted(RuntimeException error) {
-        for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof TransactionAbortableException) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private Counter abortedTransactions(String cause) {
-        return registry.counter("cesium.transactions", "loop", "dispatch", "result", "aborted", "cause", cause);
+        return anyCause(
+                error,
+                ProducerFencedException.class,
+                InvalidPidMappingException.class,
+                OutOfOrderSequenceException.class,
+                FencedInstanceIdException.class,
+                AuthenticationException.class,
+                AuthorizationException.class,
+                UnsupportedVersionException.class,
+                InterruptException.class,
+                IllegalStateException.class);
     }
 
     private Counter dispatchRecords(String outcome) {
@@ -1619,8 +1380,34 @@ public final class DispatchLoop implements Runnable {
         return new TopicPartition(config.trackerTopic(), partition);
     }
 
-    private static String causeTag(Throwable error) {
-        return error.getClass().getSimpleName();
+    /**
+     * Marks shards ASSIGNED for this loop (O(1) each, §6): a fresh epoch tag, intake paused by the
+     * caller, and the cursor queued for resolution — re-assignment re-snapshots the barrier (I8).
+     */
+    private void adoptShards(Set<Integer> ids) {
+        for (int partition : ids) {
+            shardEpochs.put(partition, ++epochCounter);
+            pendingBarriers.remove(partition);
+            streaming.remove(partition);
+            needsCursor.add(partition);
+        }
+    }
+
+    /** Drops all loop-side shard state in O(1) per partition; barrier futures are discarded. */
+    private void dropLoopState(Set<Integer> ids) {
+        for (int partition : ids) {
+            shardEpochs.remove(partition);
+            needsCursor.remove(partition);
+            pendingBarriers.remove(partition);
+            streaming.remove(partition);
+            lastCursorActivityMs.remove(partition);
+            lastCommittedCursorOffset.remove(partition);
+            penaltyStreaks.remove(partition);
+            dropUnrelayableForPartition(partition);
+            if (pausedForBackpressure.remove(partition)) {
+                pausedGauge(partition).set(0);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ rebalance callbacks
@@ -1645,12 +1432,7 @@ public final class DispatchLoop implements Runnable {
             Set<Integer> ids = partitionIds(partitions);
             store.onPartitionsAssigned(ids);
             consumer.pause(partitions);
-            for (int partition : ids) {
-                shardEpochs.put(partition, ++epochCounter);
-                pendingBarriers.remove(partition); // re-assignment re-snapshots (I8)
-                streaming.remove(partition);
-                needsCursor.add(partition);
-            }
+            adoptShards(ids);
         }
 
         @Override
@@ -1680,23 +1462,6 @@ public final class DispatchLoop implements Runnable {
                 ids.add(tp.partition());
             }
             return ids;
-        }
-
-        /** Drops all loop-side shard state in O(1) per partition; barrier futures are discarded. */
-        private void dropLoopState(Set<Integer> ids) {
-            for (int partition : ids) {
-                shardEpochs.remove(partition);
-                needsCursor.remove(partition);
-                pendingBarriers.remove(partition);
-                streaming.remove(partition);
-                lastCursorActivityMs.remove(partition);
-                lastCommittedCursorOffset.remove(partition);
-                penaltyStreaks.remove(partition);
-                dropUnrelayableForPartition(partition);
-                if (pausedForBackpressure.remove(partition)) {
-                    pausedGauge(partition).set(0);
-                }
-            }
         }
     }
 
@@ -1730,40 +1495,6 @@ public final class DispatchLoop implements Runnable {
             rejectedIndices = new int[capacity];
             carryIndices = new int[capacity];
             rejected = new boolean[capacity];
-        }
-    }
-
-    /** A source-entry identity within the (single) source topic: partition + offset. */
-    private record SourceCoord(int partition, long offset) {}
-
-    /** A resolved disposition for a permanently-unrelayable entry (§3.8 I-8). */
-    private record Unrelayable(Route route, String detail) {
-        enum Route {
-            DLQ,
-            DROP
-        }
-    }
-
-    /** A permanent destination rejection attributed to a specific entry by a send callback. */
-    private record UnrelayableHit(SourceCoord coord, String detail) {}
-
-    /**
-     * The pending half of the I9 procedure: whether the replacement producer has been built and
-     * fenced yet. Cursor re-resolution state lives in the ordinary {@code needsCursor} queue.
-     */
-    private static final class InDoubtRecovery {
-        boolean producerReady;
-    }
-
-    /** Control-flow signal: {@code commitTransaction} stayed ambiguous past the retry budget. */
-    private static final class InDoubtCommit extends RuntimeException {
-        final int attempts;
-        final RuntimeException failure;
-
-        InDoubtCommit(int attempts, RuntimeException failure) {
-            super("commitTransaction outcome ambiguous after " + attempts + " attempts", failure);
-            this.attempts = attempts;
-            this.failure = failure;
         }
     }
 }

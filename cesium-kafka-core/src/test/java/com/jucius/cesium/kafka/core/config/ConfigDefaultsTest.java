@@ -24,8 +24,7 @@ import org.junit.jupiter.api.Test;
 class ConfigDefaultsTest {
 
     private static CesiumConfig allDefaults() {
-        return new CesiumConfig(
-                "app", new InstanceId("slot-0"), null, null, null, null, null, null, null, null, null, null);
+        return new CesiumConfig("app", new InstanceId("slot-0"), null, null, null, null, null, null, null, null);
     }
 
     @Test
@@ -36,26 +35,15 @@ class ConfigDefaultsTest {
     @Test
     void rolesAreFrozen() {
         CesiumConfig config = new CesiumConfig(
-                "app",
-                new InstanceId("slot-0"),
-                EnumSet.of(Role.INGEST),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null);
+                "app", new InstanceId("slot-0"), EnumSet.of(Role.INGEST), null, null, null, null, null, null, null);
         assertEquals(Set.of(Role.INGEST), config.roles());
         assertThrows(UnsupportedOperationException.class, () -> config.roles().add(Role.DISPATCH));
     }
 
     @Test
     void explicitlyEmptyRolesArePreservedForValidation() {
-        CesiumConfig config = new CesiumConfig(
-                "app", new InstanceId("slot-0"), Set.of(), null, null, null, null, null, null, null, null, null);
+        CesiumConfig config =
+                new CesiumConfig("app", new InstanceId("slot-0"), Set.of(), null, null, null, null, null, null, null);
         assertTrue(config.roles().isEmpty());
     }
 
@@ -90,31 +78,14 @@ class ConfigDefaultsTest {
     void headersDefaults() {
         HeadersConfig headers = allDefaults().headers();
         assertTrue(headers.stampProvenance());
-        assertFalse(headers.acceptBinaryLongValues());
-    }
-
-    @Test
-    void storeDefaults() {
-        StoreConfig store = allDefaults().store();
-        assertEquals("kafka-tracker", store.type());
-        assertEquals(Map.of(), store.properties());
-    }
-
-    @Test
-    void ingestDefaults() {
-        IngestConfig ingest = allDefaults().ingest();
-        assertEquals(1, ingest.workers());
-        assertEquals(2000, ingest.maxBatch()); // = max.poll.records
     }
 
     @Test
     void dispatchDefaults() {
         DispatchConfig dispatch = allDefaults().dispatch();
-        assertEquals(1, dispatch.workers());
         assertEquals(10_000, dispatch.batch().maxEntries()); // D8
         assertEquals(32L * 1024 * 1024, dispatch.batch().maxBytes()); // 32 MiB
         assertEquals(Duration.parse("PT1M"), dispatch.drain().maxSlice());
-        assertEquals(Duration.ZERO, dispatch.coalesce()); // never early, never deliberately late
         assertEquals(Duration.parse("PT30S"), dispatch.idleCursorInterval());
         assertEquals(3072, dispatch.cursor().sidecarMaxBytes());
         assertEquals(Duration.parse("PT30S"), dispatch.fetch().timeout());
@@ -136,7 +107,7 @@ class ConfigDefaultsTest {
 
     @Test
     void explicitMaxPendingTotalIsReturnedVerbatim() {
-        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, null, null, 123_456L);
+        DispatchConfig dispatch = new DispatchConfig(null, null, null, null, null, null, null, 123_456L);
         assertEquals(123_456L, dispatch.resolveMaxPendingTotal(4L * 1024 * 1024 * 1024));
     }
 
@@ -167,9 +138,11 @@ class ConfigDefaultsTest {
         assertEquals(StartupChecks.SizeBasedRetention.FAIL, checks.sizeBasedRetention());
         assertEquals(Duration.ofDays(7), checks.maxToleratedOutage()); // P7D
         assertEquals(CheckMode.FAIL, checks.outageCheck());
-        assertEquals(CheckMode.FAIL, checks.heapBudget());
-        // R12: the tracker write-ACL check defaults to WARN (backward-compatible); FAIL is opt-in.
+        // R12: the tracker write-ACL check defaults to WARN (does not block clusters without an authorizer); FAIL is
+        // opt-in.
         assertEquals(CheckMode.WARN, checks.trackerAcl());
+        assertEquals(Duration.ofMinutes(5), checks.revalidationInterval()); // PT5M (D23)
+        assertEquals(StartupChecks.defaults(), checks);
     }
 
     @Test
@@ -178,8 +151,5 @@ class ConfigDefaultsTest {
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> config.kafka().properties().put("x", "y"));
-        assertThrows(
-                UnsupportedOperationException.class,
-                () -> config.store().properties().put("x", "y"));
     }
 }

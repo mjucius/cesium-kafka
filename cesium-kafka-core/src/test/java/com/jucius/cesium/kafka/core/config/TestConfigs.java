@@ -11,25 +11,14 @@ import java.util.Optional;
 final class TestConfigs {
 
     /** A heap context generous enough that default configs pass the budget check. */
-    static final ValidationContext ROOMY_CONTEXT = new ValidationContext(4L * 1024 * 1024 * 1024, 1);
+    static final ValidationContext ROOMY_CONTEXT = new ValidationContext(4L * 1024 * 1024 * 1024);
 
     private TestConfigs() {}
 
     /** A minimal valid config: required fields set, DLQ present (default policies route to it). */
     static CesiumConfig valid() {
         return new CesiumConfig(
-                "orders-delay",
-                new InstanceId("slot-0"),
-                null,
-                null,
-                route(),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null);
+                "orders-delay", new InstanceId("slot-0"), null, null, route(), null, null, null, null, null);
     }
 
     static RouteConfig route() {
@@ -61,18 +50,7 @@ final class TestConfigs {
 
     static CesiumConfig withKafka(KafkaConfig kafka) {
         return new CesiumConfig(
-                "orders-delay",
-                new InstanceId("slot-0"),
-                null,
-                kafka,
-                route(),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null);
+                "orders-delay", new InstanceId("slot-0"), null, kafka, route(), null, null, null, null, null);
     }
 
     static CesiumConfig withDispatch(DispatchConfig dispatch) {
@@ -86,8 +64,6 @@ final class TestConfigs {
                 null,
                 null,
                 route(),
-                null,
-                null,
                 null,
                 null,
                 dispatch,

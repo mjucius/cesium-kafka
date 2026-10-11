@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Plain (default) logging profile (design §9): a one-line console encoder. %X renders the MDC
-  context (applicationId/loop/partition/txn). Included by logback.xml when LOG_FORMAT is unset or
+  context (applicationId/loop/txn). Included by logback.xml when LOG_FORMAT is unset or
   "plain".
 
   Safe-by-default against log injection (security L7): the message and MDC are wrapped in a %replace

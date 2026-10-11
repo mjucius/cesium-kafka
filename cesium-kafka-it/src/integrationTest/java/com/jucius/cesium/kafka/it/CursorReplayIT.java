@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
 import com.jucius.cesium.kafka.core.config.Role;
-import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
 import com.jucius.cesium.kafka.store.tracker.SidecarCodec;
 import java.time.Duration;
 import java.util.List;
@@ -192,7 +191,7 @@ class CursorReplayIT extends KafkaIT {
                 .idleCursorInterval(Duration.ofSeconds(1))
                 // The smallest legal budget: the identity header fits, only a handful of the 24
                 // pins do — forcing the §3.5 min-pending overflow fallback.
-                .storeProperty(KafkaTrackerStore.SIDECAR_MAX_BYTES_KEY, "128")
+                .sidecarMaxBytes(128)
                 .build();
 
         harness.start();

@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
-import com.jucius.cesium.kafka.core.config.IngestConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.KafkaConfig;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
@@ -22,15 +21,14 @@ import org.junit.jupiter.api.Test;
 /** Design §8: locked keys, tuned defaults, overlay precedence, and the §3.3 naming schemes. */
 class KafkaClientFactoryTest {
 
-    private static CesiumConfig config(InstanceId instanceId, KafkaConfig kafka, IngestConfig ingest) {
+    private static CesiumConfig config(InstanceId instanceId, KafkaConfig kafka) {
         RouteConfig route =
                 new RouteConfig(new TopicRef("orders"), new TopicRef("orders-out"), null, Optional.empty(), null);
-        return new CesiumConfig(
-                "orders-delay", instanceId, null, kafka, route, null, null, null, ingest, null, null, null);
+        return new CesiumConfig("orders-delay", instanceId, null, kafka, route, null, null, null, null, null);
     }
 
     private static CesiumConfig defaults() {
-        return config(new InstanceId("slot-0"), null, null);
+        return config(new InstanceId("slot-0"), null);
     }
 
     @Test
@@ -38,8 +36,8 @@ class KafkaClientFactoryTest {
         KafkaClientFactory factory = new KafkaClientFactory(defaults());
         assertEquals("cesium.orders-delay.ingest", factory.ingestGroupId());
         assertEquals(Optional.of("cesium.orders-delay.ingest.slot-0"), factory.ingestGroupInstanceId());
-        assertEquals("cesium.orders-delay.ingest.slot-0.0", factory.ingestTransactionalId(0));
-        assertEquals("cesium.orders-delay.ingest.slot-0.3", factory.ingestTransactionalId(3));
+        // The .0 is the 1.x worker-0 ordinal, kept byte-identical for rolling upgrades.
+        assertEquals("cesium.orders-delay.ingest.slot-0.0", factory.ingestTransactionalId());
     }
 
     @Test
@@ -58,8 +56,7 @@ class KafkaClientFactoryTest {
                 null,
                 null,
                 null);
-        Properties props =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null)).ingestConsumerProperties();
+        Properties props = new KafkaClientFactory(config(new InstanceId("slot-0"), kafka)).ingestConsumerProperties();
         assertEquals("read_committed", props.getProperty("isolation.level"));
         assertEquals("none", props.getProperty("auto.offset.reset"));
         assertEquals("false", props.getProperty("enable.auto.commit"));
@@ -72,11 +69,9 @@ class KafkaClientFactoryTest {
     }
 
     @Test
-    void consumerTunedDefaultsComeFromConfigAndYieldToOverlays() {
-        IngestConfig ingest = new IngestConfig(null, 1234);
-        Properties defaults =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), null, ingest)).ingestConsumerProperties();
-        assertEquals("1234", defaults.getProperty("max.poll.records"));
+    void consumerTunedDefaultsYieldToOverlays() {
+        Properties defaults = new KafkaClientFactory(defaults()).ingestConsumerProperties();
+        assertEquals(KafkaClientFactory.INGEST_MAX_POLL_RECORDS, defaults.getProperty("max.poll.records"));
         assertEquals(
                 KafkaClientFactory.INGEST_MAX_PARTITION_FETCH_BYTES, defaults.getProperty("max.partition.fetch.bytes"));
 
@@ -91,7 +86,7 @@ class KafkaClientFactoryTest {
                 null,
                 null);
         Properties overlaid =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), overlay, ingest)).ingestConsumerProperties();
+                new KafkaClientFactory(config(new InstanceId("slot-0"), overlay)).ingestConsumerProperties();
         assertEquals("999", overlaid.getProperty("max.partition.fetch.bytes"), "tuned defaults are overridable");
     }
 
@@ -107,11 +102,11 @@ class KafkaClientFactoryTest {
                 new KafkaConfig.ClientOverrides(Map.of("bootstrap.servers", "producer:9092")),
                 null,
                 null);
-        KafkaClientFactory factory = new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null));
+        KafkaClientFactory factory = new KafkaClientFactory(config(new InstanceId("slot-0"), kafka));
         Properties consumer = factory.ingestConsumerProperties();
         assertEquals("common:9092", consumer.getProperty("bootstrap.servers"));
         assertEquals("22000", consumer.getProperty("request.timeout.ms"), "overlay wins over common");
-        Properties producer = factory.ingestProducerProperties(0);
+        Properties producer = factory.ingestProducerProperties();
         assertEquals("producer:9092", producer.getProperty("bootstrap.servers"));
         assertEquals("11000", producer.getProperty("request.timeout.ms"), "common reaches every client");
     }
@@ -132,11 +127,10 @@ class KafkaClientFactoryTest {
                         "linger.ms", "5")),
                 null,
                 null);
-        Properties props =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null)).ingestProducerProperties(2);
+        Properties props = new KafkaClientFactory(config(new InstanceId("slot-0"), kafka)).ingestProducerProperties();
         // Locked keys win over the overlay.
         assertEquals("true", props.getProperty("enable.idempotence"));
-        assertEquals("cesium.orders-delay.ingest.slot-0.2", props.getProperty("transactional.id"));
+        assertEquals("cesium.orders-delay.ingest.slot-0.0", props.getProperty("transactional.id"));
         assertEquals("org.apache.kafka.common.serialization.ByteArraySerializer", props.getProperty("key.serializer"));
         assertEquals(
                 "org.apache.kafka.common.serialization.ByteArraySerializer", props.getProperty("value.serializer"));
@@ -154,8 +148,7 @@ class KafkaClientFactoryTest {
         KafkaClientFactory factory = new KafkaClientFactory(defaults());
         assertEquals("cesium.orders-delay.dispatch", factory.dispatchGroupId());
         assertEquals(Optional.of("cesium.orders-delay.dispatch.slot-0"), factory.dispatchGroupInstanceId());
-        assertEquals("cesium.orders-delay.dispatch.slot-0.0", factory.dispatchTransactionalId(0));
-        assertEquals("cesium.orders-delay.dispatch.slot-0.3", factory.dispatchTransactionalId(3));
+        assertEquals("cesium.orders-delay.dispatch.slot-0.0", factory.dispatchTransactionalId());
     }
 
     @Test
@@ -173,8 +166,7 @@ class KafkaClientFactoryTest {
                 null,
                 null,
                 null);
-        Properties props =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null)).trackerConsumerProperties();
+        Properties props = new KafkaClientFactory(config(new InstanceId("slot-0"), kafka)).trackerConsumerProperties();
         assertEquals("read_committed", props.getProperty("isolation.level"), "D17: locked on every cesium consumer");
         assertEquals("none", props.getProperty("auto.offset.reset"), "D18: resets are explicit operator decisions");
         assertEquals("false", props.getProperty("enable.auto.commit"));
@@ -198,7 +190,7 @@ class KafkaClientFactoryTest {
         KafkaConfig kip848 =
                 new KafkaConfig(KafkaConfig.GroupProtocol.CONSUMER, null, null, null, null, null, null, null, null);
         Properties consumerProtocol =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), kip848, null)).trackerConsumerProperties();
+                new KafkaClientFactory(config(new InstanceId("slot-0"), kip848)).trackerConsumerProperties();
         assertEquals("consumer", consumerProtocol.getProperty("group.protocol"));
         assertNull(
                 consumerProtocol.getProperty("partition.assignment.strategy"),
@@ -207,7 +199,7 @@ class KafkaClientFactoryTest {
 
     @Test
     void trackerConsumerRandomInstanceIdDropsStaticMembership() {
-        Properties props = new KafkaClientFactory(config(new InstanceId(InstanceId.RANDOM_LITERAL), null, null))
+        Properties props = new KafkaClientFactory(config(new InstanceId(InstanceId.RANDOM_LITERAL), null))
                 .trackerConsumerProperties();
         assertNull(props.getProperty("group.instance.id"), "D21: no static membership for random ids");
     }
@@ -228,10 +220,9 @@ class KafkaClientFactoryTest {
                         "transaction.timeout.ms", "1",
                         "linger.ms", "5")),
                 null);
-        Properties props =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null)).dispatchProducerProperties(2);
+        Properties props = new KafkaClientFactory(config(new InstanceId("slot-0"), kafka)).dispatchProducerProperties();
         assertEquals("true", props.getProperty("enable.idempotence"));
-        assertEquals("cesium.orders-delay.dispatch.slot-0.2", props.getProperty("transactional.id"));
+        assertEquals("cesium.orders-delay.dispatch.slot-0.0", props.getProperty("transactional.id"));
         assertEquals("org.apache.kafka.common.serialization.ByteArraySerializer", props.getProperty("key.serializer"));
         assertEquals(
                 "org.apache.kafka.common.serialization.ByteArraySerializer", props.getProperty("value.serializer"));
@@ -242,15 +233,15 @@ class KafkaClientFactoryTest {
 
     @Test
     void randomInstanceIdDropsStaticMembershipAndStaysUniquePerProcess() {
-        CesiumConfig random = config(new InstanceId(InstanceId.RANDOM_LITERAL), null, null);
+        CesiumConfig random = config(new InstanceId(InstanceId.RANDOM_LITERAL), null);
         KafkaClientFactory factory = new KafkaClientFactory(random);
         assertEquals(Optional.empty(), factory.ingestGroupInstanceId(), "D21: no static membership for random ids");
         assertNull(factory.ingestConsumerProperties().getProperty("group.instance.id"));
-        String txnId = factory.ingestTransactionalId(0);
+        String txnId = factory.ingestTransactionalId();
         assertTrue(txnId.startsWith("cesium.orders-delay.ingest.random-"), txnId);
         assertNotEquals(
                 txnId,
-                new KafkaClientFactory(random).ingestTransactionalId(0),
+                new KafkaClientFactory(random).ingestTransactionalId(),
                 "each process draws its own random token (D10)");
     }
 
@@ -258,7 +249,7 @@ class KafkaClientFactoryTest {
     void randomInstanceIdRemovesLeakedGroupInstanceIdFromOverlays() {
         KafkaConfig kafka =
                 new KafkaConfig(null, Map.of("group.instance.id", "leaked"), null, null, null, null, null, null, null);
-        Properties props = new KafkaClientFactory(config(new InstanceId(InstanceId.RANDOM_LITERAL), kafka, null))
+        Properties props = new KafkaClientFactory(config(new InstanceId(InstanceId.RANDOM_LITERAL), kafka))
                 .ingestConsumerProperties();
         assertNull(props.getProperty("group.instance.id"));
     }
@@ -267,8 +258,7 @@ class KafkaClientFactoryTest {
     void groupProtocolConsumerIsApplied() {
         KafkaConfig kafka =
                 new KafkaConfig(KafkaConfig.GroupProtocol.CONSUMER, null, null, null, null, null, null, null, null);
-        Properties props =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), kafka, null)).ingestConsumerProperties();
+        Properties props = new KafkaClientFactory(config(new InstanceId("slot-0"), kafka)).ingestConsumerProperties();
         assertEquals("consumer", props.getProperty("group.protocol"));
         assertFalse(
                 new KafkaClientFactory(defaults()).ingestConsumerProperties().containsKey("group.protocol"),
@@ -294,7 +284,7 @@ class KafkaClientFactoryTest {
                 null,
                 null,
                 null);
-        KafkaClientFactory factory = new KafkaClientFactory(config(new InstanceId("slot-0"), kip848, null));
+        KafkaClientFactory factory = new KafkaClientFactory(config(new InstanceId("slot-0"), kip848));
         for (Properties props : List.of(factory.ingestConsumerProperties(), factory.trackerConsumerProperties())) {
             assertEquals("consumer", props.getProperty("group.protocol"));
             assertNull(props.getProperty("session.timeout.ms"), "session.timeout.ms is broker-side under KIP-848");
@@ -315,7 +305,7 @@ class KafkaClientFactoryTest {
                 null,
                 null);
         Properties classicProps =
-                new KafkaClientFactory(config(new InstanceId("slot-0"), classic, null)).trackerConsumerProperties();
+                new KafkaClientFactory(config(new InstanceId("slot-0"), classic)).trackerConsumerProperties();
         assertEquals("6000", classicProps.getProperty("session.timeout.ms"));
         assertEquals("1500", classicProps.getProperty("heartbeat.interval.ms"));
     }
@@ -335,8 +325,8 @@ class KafkaClientFactoryTest {
                 null,
                 null,
                 null);
-        Properties classic = new KafkaClientFactory(config(new InstanceId("slot-0"), classicWithOverlay, null))
-                .ingestConsumerProperties();
+        Properties classic =
+                new KafkaClientFactory(config(new InstanceId("slot-0"), classicWithOverlay)).ingestConsumerProperties();
         assertNull(classic.getProperty("group.protocol"), "typed CLASSIC removes an overlaid group.protocol");
 
         KafkaConfig consumerWithOverlay = new KafkaConfig(
@@ -349,7 +339,7 @@ class KafkaClientFactoryTest {
                 null,
                 null,
                 null);
-        Properties consumer = new KafkaClientFactory(config(new InstanceId("slot-0"), consumerWithOverlay, null))
+        Properties consumer = new KafkaClientFactory(config(new InstanceId("slot-0"), consumerWithOverlay))
                 .ingestConsumerProperties();
         assertEquals("consumer", consumer.getProperty("group.protocol"), "typed CONSUMER outranks the overlay");
     }

@@ -33,18 +33,10 @@ public sealed interface HeaderParseResult {
     }
 
     /**
-     * The requested dispatch instant is now or already past. Past or zero values relay immediately
-     * and are <em>not</em> errors (design §2.3) — reason {@value #REASON_PAST_DUE} for metrics.
+     * The requested dispatch instant is now or already past ("past due"). Past or zero values relay
+     * immediately and are <em>not</em> errors (design §2.3).
      */
-    record RelayImmediately(boolean conflicted) implements HeaderParseResult {
-        /** Metric/log reason for an on-time-or-late request relayed without scheduling. */
-        public static final String REASON_PAST_DUE = "past_due";
-
-        /** Why the record relays immediately despite carrying a control header. */
-        public String reason() {
-            return REASON_PAST_DUE;
-        }
-    }
+    record RelayImmediately(boolean conflicted) implements HeaderParseResult {}
 
     /**
      * A valid future dispatch instant within {@code delay.max}.
@@ -56,8 +48,7 @@ public sealed interface HeaderParseResult {
 
     /**
      * The winning control header's value failed the grammar: not ASCII decimal
-     * {@code ^[0-9]{1,19}$} (or not exactly 8 bytes in binary mode, or a negative binary delay),
-     * a null value, or a decimal string overflowing a signed 64-bit long. Handled by
+     * {@code ^[0-9]{1,19}$}, a null value, or a decimal string overflowing a signed 64-bit long. Handled by
      * {@code delay.on-malformed-header}.
      *
      * @param detail human-readable diagnostic naming the header and the offending value

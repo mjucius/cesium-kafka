@@ -162,8 +162,8 @@ jobs:
           java-version: "21"
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       - name: Soak lane (the dedicated soakTest task includes ONLY @Tag("soak"); see java-conventions)
-        # Runs every module's soakTest task: the KafkaTrackerStore JOL footprint
-        # (ShardFootprintTest) and the published contract kit's 1M-entry memory-ceiling / O(log n)
+        # Runs every module's soakTest task (now all in cesium-kafka-core): the KafkaTrackerStore JOL footprint
+        # (ShardFootprintTest) and the store contract kit's 1M-entry memory-ceiling / O(log n)
         # soak (TrackerBackedStoreContract). The JMH hot-path micro-benchmarks run in the dedicated
         # `benchmarks` job below (M8).
         run: ./gradlew soakTest
@@ -191,7 +191,7 @@ jobs:
     timeout-minutes: 45
     # NON-GATING (design §15 risk #9: "targets are PROJECTIONS until measured"). A JMH number is
     # noisy on shared CI hardware, so a perf blip must never fail the nightly. We archive the JSON
-    # per run; the >10% regression gate is ASPIRATIONAL in v1 (see the comparison step below) and is
+    # per run; the >10% regression gate is ASPIRATIONAL (see the comparison step below) and is
     # deliberately not allowed to block CI.
     continue-on-error: true
     steps:
@@ -213,7 +213,7 @@ jobs:
         #   * For each benchmark, compare this run's primaryMetric.score against the baseline's; a
         #     drop > 10% (throughput) / rise > 10% (SingleShotTime per-op latency) is a regression.
         #   * Promote a new baseline deliberately (committed in the same PR that justifies the change).
-        # In v1 this step only PRINTS the comparison — it does not fail. Flipping it to a hard gate is
+        # This step only PRINTS the comparison — it does not fail. Flipping it to a hard gate is
         # a follow-up once we have a dedicated, low-variance runner (otherwise it flakes; risk #9/#20).
         run: |
           BASELINE=cesium-kafka-benchmarks/results/baseline.json

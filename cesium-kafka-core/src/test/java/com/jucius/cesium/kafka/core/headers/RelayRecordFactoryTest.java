@@ -240,8 +240,9 @@ class RelayRecordFactoryTest {
 
     @Test
     void unrelayableDlq_reusesHeaderErrorShapeWithUnrelayableReasonAndDetail() {
-        ProducerRecord<byte[], byte[]> dlq =
-                factory().unrelayableDlqRecord(source(typicalHeaders()), "RecordTooLargeException: too big", NOW);
+        ProducerRecord<byte[], byte[]> dlq = factory()
+                .headerErrorDlqRecord(
+                        source(typicalHeaders()), DlqReasons.UNRELAYABLE, "RecordTooLargeException: too big", NOW);
         assertEquals("dlq", dlq.topic());
         assertSame(KEY, dlq.key());
         assertSame(VALUE, dlq.value());
@@ -263,7 +264,8 @@ class RelayRecordFactoryTest {
         RelayRecordFactory noDlq =
                 new RelayRecordFactory("dest", null, true, RelayTimestampPolicy.DISPATCH, RelayPartitioning.BY_KEY);
         assertThrows(
-                IllegalStateException.class, () -> noDlq.unrelayableDlqRecord(source(typicalHeaders()), "detail", NOW));
+                IllegalStateException.class,
+                () -> noDlq.headerErrorDlqRecord(source(typicalHeaders()), DlqReasons.UNRELAYABLE, "detail", NOW));
     }
 
     // --- payload-expired loss notice (§2.4) -------------------------------------------------------

@@ -1,6 +1,7 @@
 package com.jucius.cesium.kafka.app.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Finding;
@@ -87,7 +88,7 @@ final class ConfigSchema {
     private static Node nodeFor(Type type) {
         if (type instanceof Class<?> cls) {
             // Scalar-bound records (InstanceId) bind from one YAML scalar, not a subtree: they
-            // must be leaves so CESIUM_INSTANCE_ID / -Dcesium.instance-id resolve (design §8, D10).
+            // must be leaves so CESIUM_INSTANCE_ID resolves (design §8, D10).
             return cls.isRecord() && !ConfigMapper.SCALAR_BOUND_RECORDS.contains(cls)
                     ? recordNode(cls)
                     : new LeafNode(false);
@@ -108,18 +109,9 @@ final class ConfigSchema {
         return new LeafNode(false);
     }
 
-    /** camelCase → kebab-case, matching Jackson's {@code KEBAB_CASE} naming strategy. */
+    /** camelCase → kebab-case via the same Jackson strategy {@code ConfigMapper} binds with. */
     static String kebab(String camel) {
-        StringBuilder sb = new StringBuilder(camel.length() + 4);
-        for (int i = 0; i < camel.length(); i++) {
-            char c = camel.charAt(i);
-            if (Character.isUpperCase(c)) {
-                sb.append('-').append(Character.toLowerCase(c));
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
+        return ((PropertyNamingStrategies.NamingBase) PropertyNamingStrategies.KEBAB_CASE).translate(camel);
     }
 
     // ------------------------------------------------------------------ unknown YAML keys
@@ -182,15 +174,6 @@ final class ConfigSchema {
     @Nullable Resolved resolveEnvPath(List<String> segments) {
         return resolve(segments, s -> s.toLowerCase(Locale.ROOT).replace('_', '-'), s -> s.toLowerCase(Locale.ROOT)
                 .replace('_', '.'));
-    }
-
-    /**
-     * Resolves a system-property path ({@code cesium.} stripped, split on {@code .}): segments
-     * are already kebab keys ({@code cesium.delay.on-over-max}); below a map node the remaining
-     * segments are re-joined with dots ({@code cesium.kafka.properties.max.poll.interval.ms}).
-     */
-    @Nullable Resolved resolveSystemPropertyPath(List<String> segments) {
-        return resolve(segments, UnaryOperator.identity(), UnaryOperator.identity());
     }
 
     private @Nullable Resolved resolve(

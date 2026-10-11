@@ -3,12 +3,10 @@ package com.jucius.cesium.kafka.core.dispatch;
 import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.api.store.ScheduledRef;
-import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.api.store.TrackerCursor;
 import com.jucius.cesium.kafka.api.store.TrackerRecordData;
+import com.jucius.cesium.kafka.testkit.ArrayDueBatch;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
@@ -73,7 +71,7 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
     @Override
     public DueBatch pollDue(long nowMs, int maxBatch) {
         DueBatch next = dueQueue.poll();
-        return next == null ? TestBatch.builder().build() : next;
+        return next == null ? ArrayDueBatch.builder().build() : next;
     }
 
     @Override
@@ -143,15 +141,9 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
     }
 
     @Override
-    public void onTrackerRecord(int partition, long trackerOffset, byte[] key, byte @Nullable [] value) {
-        appliedRecords.add(new long[] {partition, trackerOffset});
-    }
-
-    @Override
     public void onTrackerRecord(
             int partition, long trackerOffset, byte[] key, byte @Nullable [] value, Headers headers) {
-        // The engine must call this headers-carrying variant; record through one path.
-        onTrackerRecord(partition, trackerOffset, key, value);
+        appliedRecords.add(new long[] {partition, trackerOffset});
         events.add("record:" + partition + ":" + trackerOffset);
     }
 
@@ -215,28 +207,7 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
         throw offLimits();
     }
 
-    @Override
-    public void configure(StoreContext context) {
-        throw offLimits();
-    }
-
-    @Override
-    public StoreCapabilities capabilities() {
-        throw offLimits();
-    }
-
-    @Override
-    public void validate() {
-        throw offLimits();
-    }
-
-    @Override
-    public void start() {
-        throw offLimits();
-    }
-
     private static UnsupportedOperationException offLimits() {
-        return new UnsupportedOperationException("the dispatch loop must not call lifecycle/ingest-side "
-                + SchedulerStore.class.getSimpleName() + " methods");
+        return new UnsupportedOperationException("the dispatch loop must not call ingest-side store methods");
     }
 }

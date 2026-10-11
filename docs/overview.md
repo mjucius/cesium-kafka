@@ -1,9 +1,8 @@
 # cesium-kafka overview
 
-*Audience: technical readers evaluating cesium-kafka who do not need to understand Kafka internals
-first.* This guide explains what the relay does, where it fits, and what operational promises matter.
-For the deep architecture and correctness details, see [architecture.md](architecture.md) and
-[delivery-semantics.md](delivery-semantics.md).
+What the relay does, where it fits, and what it promises operators, written for readers who don't
+know Kafka internals. The architecture and correctness details are in
+[architecture.md](architecture.md) and [delivery-semantics.md](delivery-semantics.md).
 
 ---
 
@@ -43,12 +42,12 @@ application and can run anywhere a suitable JVM can reach Kafka:
 - under a service manager such as systemd
 - from the Gradle-built distribution archives or install directory
 
-The supported v1 product surface is the runnable app, not an embedded Java library API. That means
+The supported product surface is the runnable app, not an embedded Java library API. That means
 the recommended production shape is to run cesium-kafka as its own process or service and configure
-it with YAML, environment variables, and system properties.
+it with YAML and environment variables.
 
 The engine code is Java and is structured internally as reusable modules, but its programmatic API is
-not a stable public embedding contract in v1. The stable extension point is the scheduler store SPI,
+not a stable public embedding contract. The stable extension point is the scheduler store SPI,
 used when implementing an alternative store. For application teams, the normal integration point is
 Kafka itself: produce to the source topic with a delay header, then consume from the destination
 topic.
@@ -69,8 +68,8 @@ The relay has a few named parts that show up in the diagrams:
 | Tracker topic | cesium-kafka's internal schedule topic | Remembers which source records are waiting and when they are due |
 | DLQ | The dead-letter topic | Receives records or notices that cannot safely go to the destination |
 
-The **tracker topic** is the least obvious actor because it is internal to the relay. It is not a
-second copy of your messages. It is cesium-kafka's durable schedule book.
+The tracker topic is the least obvious actor because it is internal to the relay. It holds
+cesium-kafka's durable schedule book, not a second copy of your messages.
 
 For each delayed record, the tracker records a small pointer:
 
@@ -120,8 +119,7 @@ flowchart LR
     D --> C[Consumer]
 ```
 
-The important idea: cesium-kafka does not ask the producer or consumer to change their payload
-format. The source record key, value, and non-cesium headers are preserved. cesium-kafka consumes
+cesium-kafka does not ask the producer or consumer to change their payload format. The source record key, value, and non-cesium headers are preserved. cesium-kafka consumes
 from the source, waits when needed, and produces to the destination.
 
 ---
@@ -167,23 +165,23 @@ After delivery, cesium-kafka writes a completion marker to the tracker. The dest
 completion marker are committed together, so recovery does not have to infer whether delivery
 happened from timing or memory state.
 
-That design matters for scale. Millions of delayed records do not require millions of copied payloads
-inside the relay. The source topic remains the durable payload store; the tracker topic is the
+Because of this, millions of delayed records do not require millions of copied payloads inside
+the relay. The source topic remains the durable payload store; the tracker topic is the
 durable schedule book.
 
 ---
 
 ## 6. The in-memory delay queue
 
-The default scheduler implementation is called `kafka-tracker`. It has two parts:
+The scheduler store has two parts:
 
-- an **in-memory delay queue** inside the running cesium-kafka process
-- the **tracker topic** in Kafka, which is the durable source of truth used to rebuild that queue
+- an in-memory delay queue inside the running cesium-kafka process
+- the tracker topic in Kafka, which is the durable source of truth used to rebuild that queue
 
 The in-memory queue is what makes dispatch fast. It is ordered by delivery time, so the relay can ask
 "what is due now?" without scanning the source topic or loading full payloads into memory.
 
-Each waiting entry is intentionally small:
+Each waiting entry is small:
 
 | Queue entry contains | Queue entry does not contain |
 |---|---|
@@ -192,13 +190,11 @@ Each waiting entry is intentionally small:
 | Requested delivery time | Full source record copy |
 | Tracker position used for recovery | Destination record copy |
 
-That is why the default implementation can scale to large pending counts: memory grows with small
-pointers, not with the size of user payloads.
+So the default implementation scales to large pending counts: memory grows with the number of
+small pointers, not with the size of user payloads.
 
-The scheduler store is also pluggable. The default `kafka-tracker` store is the supported v1 store
-and is exactly-once when destination consumers use `read_committed`. The public store SPI allows
-other implementations, such as database-backed stores, but their delivery guarantees depend on the
-store archetype they implement. See [store-spi.md](store-spi.md) for implementer details.
+There is one scheduler store. It is exactly-once when destination consumers use `read_committed`,
+because its writes are tracker records produced inside cesium's own transactions.
 
 ### Source retention is part of the contract
 
@@ -214,7 +210,7 @@ configured unfetchable-payload policy, usually a DLQ loss notice.
 An alternative scheduler store can persist the schedule in a database or another system, but the
 current scheduler-store SPI still deals in source pointers: source partition, source offset, and
 delivery time. A design that also copies and owns payload bytes for long-term storage would be a
-different relay mode or future SPI extension, not just a different implementation of the current
+different relay mode or a future SPI extension rather than another implementation of the current
 schedule store. Today, long-delay deployments should either retain the source topic long enough or
 store an application-level payload reference in the source record that will still be valid when the
 record is delivered.
@@ -244,7 +240,7 @@ The default store uses the source topic position as the identity of a delayed re
 partition plus source offset. Retrying the same source record therefore points at the same logical
 work item.
 
-The safety story is:
+Three rules keep recovery safe:
 
 - When ingest schedules a delayed record, the source offset advancement and tracker schedule pointer
   are committed together. If ingest crashes before that commit, the schedule is not visible and the
@@ -256,8 +252,8 @@ The safety story is:
 - If the relay cannot tell whether a dispatch commit completed, it does not guess from memory. It
   drops the affected in-memory queue state and rebuilds from the tracker, which is the durable truth.
 
-That is the high-level reason the in-memory queue can be both fast and recoverable: memory is only a
-cache of pending work; Kafka stores the schedule and completion facts needed to reconstruct it.
+This is how the in-memory queue stays fast and recoverable: memory only caches pending work, and
+Kafka stores the schedule and completion facts needed to reconstruct it.
 
 ---
 
@@ -299,9 +295,9 @@ flowchart TB
 | Ingest loop | Reads source records and decides whether each one is due now or later |
 | Dispatch loop | Watches the schedule and delivers records when they are due |
 
-The tracker and DLQ are part of making failures explicit. A record is not silently discarded because
-its header is malformed, its delay is outside policy, or its original payload is no longer fetchable.
-It follows a configured policy path.
+The tracker and DLQ make failures explicit. A record whose header is malformed, whose delay is
+outside policy, or whose original payload is no longer fetchable follows a configured policy path
+instead of being silently discarded.
 
 ---
 
@@ -324,14 +320,14 @@ flowchart TD
     K -->|"no"| M[Loss notice to DLQ]
 ```
 
-This is the manager-level view of the behavior. The deeper docs explain the transaction mechanics
-that make the relay safe during crashes, rebalances, and retries.
+The transaction mechanics that keep this safe during crashes, rebalances, and retries are in
+[architecture.md](architecture.md) and [delivery-semantics.md](delivery-semantics.md).
 
 ---
 
 ## 9. Guarantees, without the proof
 
-cesium-kafka is designed around a few practical guarantees:
+cesium-kafka makes these guarantees:
 
 - **Records are delivered at or after the requested time.** Delivery is not intentionally early.
   Small amounts of lateness are normal in distributed systems and are measured operationally.
@@ -345,7 +341,7 @@ cesium-kafka is designed around a few practical guarantees:
   and permanently unrelayable records are retried, dead-lettered, degraded, or failed according to
   documented policy. Silent terminal states are avoided.
 
-The exact correctness contract is in [delivery-semantics.md](delivery-semantics.md).
+The full correctness contract is in [delivery-semantics.md](delivery-semantics.md).
 
 ---
 
@@ -390,8 +386,8 @@ The high-level operating model is:
 - The DLQ should be monitored because it means records are not reaching the normal destination.
 - Health and metrics expose readiness, pending entries, delayed delivery behavior, replay progress,
   degraded states, and retention risk.
-- A deployment should bootstrap topics, offsets, ACLs, and retention settings deliberately rather
-  than relying on Kafka defaults.
+- A deployment should set up topics, offsets, ACLs, and retention settings explicitly instead
+  of relying on Kafka defaults.
 
 Start with [configuration.md](configuration.md) for setup and [operations.md](operations.md) for
 production operation.

@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Predicate;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 
 /**
@@ -28,8 +29,9 @@ import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
  * the wait lives here rather than inside {@link KafkaClusterAdmin#describeTopic}, which every caller
  * — including the fail-fast existence checks — would otherwise inherit.
  *
- * <p>Not thread-safe: one instance belongs to one validation/startup pass on the {@code
- * cesium-admin} thread, and {@link #lastWaitedMillis()} reports the most recent call's wait.
+ * <p>Not thread-safe: one instance belongs to one validator, confined to the thread running it
+ * (startup on start(), re-validation on {@code cesium-admin}), and {@link #lastWaitedMillis()}
+ * reports the most recent call's wait.
  */
 public final class TopicVisibility {
 
@@ -146,7 +148,7 @@ public final class TopicVisibility {
     // ------------------------------------------------------------------ internals
 
     /** Describes until {@code visible} accepts the result, the budget expires, or we are interrupted. */
-    private Optional<TopicFacts> poll(String topic, TopicPredicate visible) {
+    private Optional<TopicFacts> poll(String topic, Predicate<TopicFacts> visible) {
         long deadlineMs = deadlineMillis();
         long backoffMs = INITIAL_BACKOFF_MS;
         while (true) {
@@ -158,7 +160,7 @@ public final class TopicVisibility {
             if (waitMs < 0 || !sleep(waitMs)) {
                 // Budget expired, or a shutdown interrupted us: report what we last saw. A partially
                 // propagated description is deliberately not returned as if it were complete.
-                return facts.filter(visible::test);
+                return facts.filter(visible);
             }
             backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
         }
@@ -191,11 +193,5 @@ public final class TopicVisibility {
         }
         lastWaitedMillis += millis;
         return true;
-    }
-
-    /** {@link java.util.function.Predicate} over {@link TopicFacts}, named for readability. */
-    @FunctionalInterface
-    private interface TopicPredicate {
-        boolean test(TopicFacts facts);
     }
 }

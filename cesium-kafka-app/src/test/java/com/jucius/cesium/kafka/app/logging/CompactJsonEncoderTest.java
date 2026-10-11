@@ -43,8 +43,7 @@ class CompactJsonEncoderTest {
         event.setMDCPropertyMap(Map.of(
                 "applicationId", "orders-delay",
                 "loop", "ingest",
-                "partition", "3",
-                "txn", "orders-delay-ingest-3"));
+                "txn", "cesium.orders-delay.ingest.cesium-0.0"));
 
         String encoded = new String(encoder.encode(event), StandardCharsets.UTF_8);
 
@@ -65,8 +64,8 @@ class CompactJsonEncoderTest {
         JsonNode mdc = node.get("mdc");
         assertEquals("orders-delay", mdc.get("applicationId").asText());
         assertEquals("ingest", mdc.get("loop").asText());
-        assertEquals("3", mdc.get("partition").asText());
-        assertEquals("orders-delay-ingest-3", mdc.get("txn").asText());
+        assertEquals("cesium.orders-delay.ingest.cesium-0.0", mdc.get("txn").asText());
+        assertEquals(3, mdc.size());
     }
 
     @Test

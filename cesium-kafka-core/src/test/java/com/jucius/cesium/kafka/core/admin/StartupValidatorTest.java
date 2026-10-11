@@ -11,6 +11,7 @@ import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.KafkaConfig;
 import com.jucius.cesium.kafka.core.config.RelayConfig;
+import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
 import com.jucius.cesium.kafka.core.config.StartupChecks;
 import com.jucius.cesium.kafka.core.config.TopicRef;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
@@ -105,6 +107,7 @@ class StartupValidatorTest {
         DispatchConfig dispatch;
         StartupChecks startupChecks;
         KafkaConfig kafka;
+        Set<Role> roles;
 
         CesiumConfig build() {
             TrackerConfig tracker = new TrackerConfig(
@@ -114,12 +117,10 @@ class StartupValidatorTest {
             return new CesiumConfig(
                     "orders-delay",
                     new InstanceId("slot-0"),
-                    null,
+                    roles,
                     kafka,
                     route,
                     delay,
-                    null,
-                    null,
                     null,
                     dispatch,
                     null,
@@ -179,7 +180,7 @@ class StartupValidatorTest {
     @Test
     void healthyClusterPassesAndCapturesIdentity() {
         // The healthy baseline already has the R12 tracker write ACL in force and acl-principal set to
-        // the cesium principal, so the default FAIL ACL verification adds no finding.
+        // the cesium principal, so the ACL verification adds no finding.
         givenHealthyCluster();
 
         StartupValidationResult result = validator.validate(defaultConfig());
@@ -338,6 +339,13 @@ class StartupValidatorTest {
 
             assertNoErrors(result);
             assertWarningContains(result, "startup-checks.size-based-retention", "ACKNOWLEDGED");
+            // The warning cites the metric that really exists, not the never-emitted margin gauge.
+            assertWarningContains(result, "startup-checks.size-based-retention", "cesium_fetch_unfetchable_total");
+            assertWarningContains(result, "startup-checks.size-based-retention", "dispatch.on-unfetchable-payload");
+            assertFalse(
+                    findingsAt(result.report().warnings(), "startup-checks.size-based-retention")
+                            .contains("cesium_retention_margin_seconds"),
+                    () -> result.report().render());
         }
     }
 
@@ -513,10 +521,13 @@ class StartupValidatorTest {
         }
 
         @Test
-        void createModeAppliesAclWhenPrincipalConfigured() {
+        void createModeLeavesTheAclToTheOperator() {
+            // cesium creates the tracker but never grants ACLs (ADR-0021): with no operator-created
+            // grant, the default-WARN verification reports the missing R12 restriction.
             givenHealthyCluster();
             admin.topics.remove(TRACKER);
             admin.topicConfigs.remove(TRACKER);
+            admin.trackerWriteAcls.remove(TRACKER);
             ConfigBuilder builder = new ConfigBuilder();
             builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
             builder.aclPrincipal = "User:cesium";
@@ -524,7 +535,8 @@ class StartupValidatorTest {
             StartupValidationResult result = validator.validate(builder.build());
 
             assertNoErrors(result);
-            assertEquals(List.of(new FakeClusterAdmin.AclGrant(TRACKER, "User:cesium")), admin.aclGrants);
+            assertEquals(1, admin.created.size());
+            assertWarningContains(result, "route.tracker.acl-principal", "no matching ALLOW WRITE ACL");
         }
 
         @Test
@@ -532,39 +544,22 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.topics.remove(TRACKER);
             admin.topicConfigs.remove(TRACKER);
-            admin.aclFailure =
-                    new ClusterAdminException("createAcls failed", new SecurityDisabledException("no authorizer"));
-            // A cluster with no authorizer also fails the every-startup DESCRIBE (L3), so the ACL
-            // verification downgrades to a WARN just like the apply path.
+            // A cluster with no authorizer fails the every-startup DESCRIBE (L3), so the ACL
+            // verification downgrades to a WARN.
             admin.describeAclsFailure =
                     new ClusterAdminException("describeAcls failed", new SecurityDisabledException("no authorizer"));
             ConfigBuilder builder = new ConfigBuilder();
             builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
             builder.aclPrincipal = "User:cesium";
-            // Default tracker-acl is WARN, so both the ACL *apply* failure and the every-startup
-            // verification surface as warnings here — startup is not blocked on an authorizerless
-            // cluster. (FAIL-mode enforcement is covered in the TrackerAcl nested class.)
+            // Default tracker-acl is WARN, so the verification surfaces as a warning here — startup
+            // is not blocked on an authorizerless cluster. (FAIL-mode enforcement is covered in the
+            // TrackerAcl nested class.)
 
             StartupValidationResult result = validator.validate(builder.build());
 
             assertNoErrors(result);
             assertWarningContains(result, "route.tracker.acl-principal", "no authorizer");
             assertWarningContains(result, "route.tracker.acl-principal", "R12");
-        }
-
-        @Test
-        void aclFailureForOtherReasonsIsAnError() {
-            givenHealthyCluster();
-            admin.topics.remove(TRACKER);
-            admin.topicConfigs.remove(TRACKER);
-            admin.aclFailure = new ClusterAdminException("createAcls failed", new RuntimeException("denied"));
-            ConfigBuilder builder = new ConfigBuilder();
-            builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
-            builder.aclPrincipal = "User:cesium";
-
-            StartupValidationResult result = validator.validate(builder.build());
-
-            assertErrorContains(result, "route.tracker.acl-principal", "failed to apply the tracker write ACL");
         }
 
         @Test
@@ -578,7 +573,6 @@ class StartupValidatorTest {
             StartupValidationResult result = validator.validate(builder.build());
 
             assertTrue(admin.created.isEmpty());
-            assertTrue(admin.aclGrants.isEmpty());
             assertErrorContains(result, "route.tracker", "D14");
         }
 
@@ -699,7 +693,7 @@ class StartupValidatorTest {
 
         private ConfigBuilder failMode(String principal) {
             ConfigBuilder builder = withPrincipal(principal);
-            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.FAIL);
+            builder.startupChecks = new StartupChecks(null, null, null, null, CheckMode.FAIL, null);
             return builder;
         }
 
@@ -707,15 +701,13 @@ class StartupValidatorTest {
 
         @Test
         void missingConfiguredGrantWarnsByDefault() {
-            // The every-startup DESCRIBE (L3) surfaces a missing R12 grant. No grant is ever applied
-            // on the FAIL-bootstrap validate path.
+            // The every-startup DESCRIBE (L3) surfaces a missing R12 grant.
             givenHealthyCluster();
             admin.trackerWriteAcls.remove(TRACKER);
 
             StartupValidationResult result =
                     validator.validate(withPrincipal("User:cesium").build());
 
-            assertTrue(admin.aclGrants.isEmpty(), "verification never applies an ACL");
             assertNoErrors(result);
             assertWarningContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
         }
@@ -797,6 +789,7 @@ class StartupValidatorTest {
                     validator.validate(failMode("User:cesium").build());
 
             assertErrorContains(result, ACL_PATH, "no matching ALLOW WRITE ACL");
+            assertErrorContains(result, ACL_PATH, "Create the ALLOW WRITE ACL for that principal");
         }
 
         @Test
@@ -840,7 +833,7 @@ class StartupValidatorTest {
             givenHealthyCluster();
             admin.trackerWriteAcls.remove(TRACKER);
             ConfigBuilder builder = withPrincipal(null);
-            builder.startupChecks = new StartupChecks(null, null, null, null, null, CheckMode.SKIP);
+            builder.startupChecks = new StartupChecks(null, null, null, null, CheckMode.SKIP, null);
 
             StartupValidationResult result = validator.validate(builder.build());
 
@@ -964,8 +957,8 @@ class StartupValidatorTest {
             admin.topics.remove(DLQ);
             ConfigBuilder builder = new ConfigBuilder();
             builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
-            builder.dispatch = new DispatchConfig(
-                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.dispatch =
+                    new DispatchConfig(null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
             // route.relay.on-unrelayable defaults to DLQ, which IS a DLQ-routing policy (M2), so the
             // "no policy routes to DLQ" premise also requires it to be a non-DLQ disposition.
             builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DROP);
@@ -985,8 +978,8 @@ class StartupValidatorTest {
             admin.topics.remove(DLQ);
             ConfigBuilder builder = new ConfigBuilder();
             builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
-            builder.dispatch = new DispatchConfig(
-                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.dispatch =
+                    new DispatchConfig(null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
             builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DLQ);
 
             StartupValidationResult result = validator.validate(builder.build());
@@ -1002,8 +995,8 @@ class StartupValidatorTest {
             admin.addTopic(DLQ, 1, Map.of("retention.ms", "-1", "retention.bytes", "-1"));
             ConfigBuilder builder = new ConfigBuilder();
             builder.delay = new DelayConfig(null, OverMaxPolicy.CLAMP, MalformedHeaderPolicy.RELAY_IMMEDIATE);
-            builder.dispatch = new DispatchConfig(
-                    null, null, null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
+            builder.dispatch =
+                    new DispatchConfig(null, null, null, null, null, UnfetchablePayloadPolicy.DROP, null, null);
             builder.relay = new RelayConfig(null, null, UnrelayablePolicy.DLQ);
 
             StartupValidationResult result = validator.validate(builder.build());
@@ -1142,6 +1135,77 @@ class StartupValidatorTest {
         }
     }
 
+    // ------------------------------------------------------------------ broker offset-metadata cap (§3.5)
+
+    @Nested
+    class OffsetMetadataMaxBytes {
+
+        private static final String PATH = "dispatch.cursor.sidecar-max-bytes";
+
+        private CesiumConfig withSidecarBudget(int bytes) {
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.dispatch =
+                    new DispatchConfig(null, null, null, new DispatchConfig.Cursor(bytes), null, null, null, null);
+            return builder.build();
+        }
+
+        @Test
+        void budgetWithinBrokerCapPassesAndReportsTheCap() {
+            givenHealthyCluster();
+            admin.brokerConfigs.put("offset.metadata.max.bytes", "4096");
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoFindingAt(result, PATH);
+            assertEquals(OptionalInt.of(4096), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void absentBrokerValueAssumesTheKafkaDefault() {
+            givenHealthyCluster();
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoFindingAt(result, PATH);
+            assertEquals(OptionalInt.of(4096), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void budgetAboveBrokerCapWarnsAndNeverFails() {
+            givenHealthyCluster();
+            admin.brokerConfigs.put("offset.metadata.max.bytes", "1024");
+
+            StartupValidationResult result = validator.validate(withSidecarBudget(2048));
+
+            assertNoErrors(result);
+            assertWarningContains(result, PATH, "clamping the sidecar budget to 1024");
+            assertEquals(OptionalInt.of(1024), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void unreadableBrokerConfigWarnsToVerifyManually() {
+            givenHealthyCluster();
+            admin.brokerConfigFailure = new ClusterAdminException("not authorized");
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertWarningContains(result, PATH, "verify manually");
+            assertEquals(OptionalInt.empty(), result.offsetMetadataMaxBytes());
+        }
+
+        @Test
+        void unparseableBrokerConfigWarns() {
+            givenHealthyCluster();
+            admin.brokerConfigs.put("offset.metadata.max.bytes", "lots");
+
+            StartupValidationResult result = validator.validate(defaultConfig());
+
+            assertNoErrors(result);
+            assertWarningContains(result, PATH, "not a number");
+            assertEquals(OptionalInt.empty(), result.offsetMetadataMaxBytes());
+        }
+    }
+
     // ------------------------------------------------------------------ report aggregation
 
     @Test
@@ -1156,5 +1220,268 @@ class StartupValidatorTest {
         ValidationReport report = validator.validate(defaultConfig()).report();
 
         assertTrue(report.errors().size() >= 5, report::render);
+    }
+
+    // ------------------------------------------------------------------ runtime re-validation (D23)
+
+    @Nested
+    class Revalidate {
+
+        /** A plausible wall clock, far enough from the epoch for every window under test. */
+        private static final long NOW = 1_800_000_000_000L;
+
+        private static final String GROUP_B = "cesium.orders-delay.dispatch";
+        private static final long DAY = Duration.ofDays(1).toMillis();
+        private static final long HOUR = Duration.ofHours(1).toMillis();
+
+        private final VirtualWaits waits = new VirtualWaits(NOW);
+        private StartupValidator revalidator;
+        private IdentityBlob startupIdentity;
+        private Uuid trackerId;
+
+        @BeforeEach
+        void startedEngine() {
+            givenHealthyCluster();
+            revalidator = new StartupValidator(admin, waits.clock(), waits.waiter());
+            startupIdentity =
+                    new IdentityBlob(admin.clusterId, admin.topics.get(SOURCE).topicId());
+            trackerId = admin.topics.get(TRACKER).topicId();
+        }
+
+        private StartupValidator.Revalidation round(CesiumConfig config) {
+            return revalidator.revalidate(config, startupIdentity, trackerId);
+        }
+
+        private String errorsAt(StartupValidator.Revalidation result, String path) {
+            return findingsAt(result.report().errors(), path);
+        }
+
+        private void recreate(String topic) {
+            TopicFacts old = admin.topics.get(topic);
+            admin.topics.put(topic, new TopicFacts(topic, Uuid.randomUuid(), old.partitionCount()));
+        }
+
+        @Test
+        void aHealthyClusterIsClean() {
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertFalse(result.report().hasErrors(), () -> result.report().render());
+        }
+
+        @Test
+        void aRecreatedSourceIsTheFatalOutcome() {
+            recreate(SOURCE);
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            String change = result.identityChange().orElseThrow();
+            assertTrue(change.contains("recreated under the same name"), change);
+            assertTrue(change.contains("R17"), change);
+        }
+
+        @Test
+        void aRecreatedTrackerIsFatal() {
+            recreate(TRACKER);
+
+            String change = round(defaultConfig()).identityChange().orElseThrow();
+
+            assertTrue(change.contains("tracker topic '" + TRACKER + "' id changed"), change);
+        }
+
+        @Test
+        void aDifferentClusterIsFatal() {
+            admin.clusterId = Uuid.randomUuid().toString();
+
+            String change = round(defaultConfig()).identityChange().orElseThrow();
+
+            assertTrue(change.contains("cluster id changed"), change);
+        }
+
+        @Test
+        void aMissingTrackerDegradesAndIsNeverBootstrapped() {
+            admin.topics.remove(TRACKER);
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.bootstrap = TrackerConfig.Bootstrap.CREATE;
+
+            StartupValidator.Revalidation result = round(builder.build());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertTrue(errorsAt(result, "route.tracker").contains("existed at startup"), result.report()::render);
+            assertEquals(List.of(), admin.created, "re-validation must never create a topic");
+        }
+
+        @Test
+        void partitionDriftDegradesInsteadOfStopping() {
+            // The tracker grew ahead of the source.
+            admin.topics.put(TRACKER, new TopicFacts(TRACKER, trackerId, PARTITIONS + 1));
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertTrue(errorsAt(result, "route.tracker").contains("R-7"), result.report()::render);
+        }
+
+        @Test
+        void aChangedTrackerCleanupPolicyDegrades() {
+            admin.topicConfigs.get(TRACKER).put("cleanup.policy", "compact,delete");
+
+            assertTrue(errorsAt(round(defaultConfig()), "route.tracker").contains("MUST be exactly 'compact'"));
+        }
+
+        @Test
+        void anAdminFailureIsAFindingNotAThrow() {
+            admin.describeFailure = new ClusterAdminException("broker unreachable");
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            assertTrue(errorsAt(result, "kafka").contains("broker unreachable"), result.report()::render);
+            assertTrue(errorsAt(result, "route.source.topic").contains("broker unreachable"));
+        }
+
+        // ---- D14 committed-cursor age
+
+        /** delete.retention.ms = 2 x P1D, so the age limit is 1 day. */
+        private long cutoff() {
+            return NOW - DAY;
+        }
+
+        /** Tracker partition 0 holds ADDs appended just before, at, and after the cutoff (offsets 10..12). */
+        private void givenTrackerLog() {
+            admin.putLog(TRACKER, 0, 10, cutoff() - 1, cutoff(), cutoff() + 1);
+        }
+
+        private void commitCursor(long offset) {
+            admin.putGroupOffset(GROUP_B, new TopicPartition(TRACKER, 0), new OffsetAndMetadata(offset, ""));
+        }
+
+        @Test
+        void aCursorAtTheFirstAddInsideTheWindowIsClean() {
+            givenTrackerLog();
+            commitCursor(11); // exactly the record appended at the cutoff
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertEquals("", errorsAt(result, "route.tracker"), result.report()::render);
+            assertTrue(admin.offsetQueries.contains(new FakeClusterAdmin.OffsetQuery(TRACKER, cutoff())));
+        }
+
+        @Test
+        void aCursorOneRecordOlderDegrades() {
+            givenTrackerLog();
+            commitCursor(10);
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertTrue(result.identityChange().isEmpty());
+            String errors = errorsAt(result, "route.tracker");
+            assertTrue(errors.contains("committed cursor older than delete.retention.ms / 2"), errors);
+            assertTrue(errors.contains("partition(s) [0]"), errors);
+        }
+
+        @Test
+        void raisingDeleteRetentionClearsTheBreach() {
+            givenTrackerLog();
+            commitCursor(10);
+            admin.topicConfigs.get(TRACKER).put("delete.retention.ms", Long.toString(4 * DAY));
+
+            assertEquals("", errorsAt(round(defaultConfig()), "route.tracker"));
+        }
+
+        @Test
+        void aShortRetentionAlertsAtExactlyHalfOfIt() {
+            // delete.retention.ms = 30 min puts the cutoff 15 min before now.
+            long minute = Duration.ofMinutes(1).toMillis();
+            admin.putLog(TRACKER, 0, 10, NOW - 20 * minute, NOW - 10 * minute);
+            admin.topicConfigs.get(TRACKER).put("delete.retention.ms", Long.toString(30 * minute));
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.delay = new DelayConfig(Duration.ofMinutes(1), null, null);
+            CesiumConfig config = builder.build();
+
+            commitCursor(10); // 20 minutes old
+            String errors = errorsAt(round(config), "route.tracker");
+            assertTrue(errors.contains("committed cursor older than delete.retention.ms / 2"), errors);
+
+            commitCursor(11); // 10 minutes old
+            assertEquals("", errorsAt(round(config), "route.tracker"));
+        }
+
+        @Test
+        void unboundedDeleteRetentionSkipsTheCheck() {
+            givenTrackerLog();
+            commitCursor(0);
+            admin.topicConfigs.get(TRACKER).put("delete.retention.ms", Long.toString(Long.MAX_VALUE));
+
+            StartupValidator.Revalidation result = round(defaultConfig());
+
+            assertEquals("", errorsAt(result, "route.tracker"), result.report()::render);
+            assertTrue(admin.offsetQueries.isEmpty(), "no listOffsets when the cutoff precedes the epoch");
+        }
+
+        @Test
+        void ingestOnlyInstancesSkipTheCursorAgeCheck() {
+            givenTrackerLog();
+            commitCursor(10);
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.roles = Set.of(Role.INGEST);
+
+            StartupValidator.Revalidation result = round(builder.build());
+
+            assertEquals("", errorsAt(result, "route.tracker"), result.report()::render);
+            assertTrue(admin.offsetQueries.isEmpty());
+        }
+
+        // ---- R-11 earliest retained record under acknowledged size eviction
+
+        private CesiumConfig acknowledgedSizeEviction() {
+            admin.topicConfigs.get(SOURCE).put("retention.bytes", "1073741824");
+            ConfigBuilder builder = new ConfigBuilder();
+            builder.startupChecks =
+                    new StartupChecks(null, StartupChecks.SizeBasedRetention.ACKNOWLEDGED, null, null, null, null);
+            return builder.build();
+        }
+
+        /** delay.max P1D + 1h margin. */
+        private long windowStart() {
+            return NOW - (DAY + HOUR);
+        }
+
+        @Test
+        void sizeEvictionInsideTheDelayWindowDegrades() {
+            CesiumConfig config = acknowledgedSizeEviction();
+            admin.putLog(SOURCE, 1, 500, windowStart() + 1, windowStart() + 2);
+
+            StartupValidator.Revalidation result = round(config);
+
+            String errors = errorsAt(result, "startup-checks.size-based-retention");
+            assertTrue(errors.contains("partition(s) [1]"), result.report()::render);
+            assertTrue(errors.contains("R-11"), errors);
+        }
+
+        @Test
+        void anEarliestRecordOlderThanTheWindowIsClean() {
+            CesiumConfig config = acknowledgedSizeEviction();
+            admin.putLog(SOURCE, 1, 500, windowStart() - 1, windowStart() + 2);
+
+            assertEquals("", errorsAt(round(config), "startup-checks.size-based-retention"));
+        }
+
+        @Test
+        void aPartitionThatNeverEvictedIsClean() {
+            CesiumConfig config = acknowledgedSizeEviction();
+            admin.putLog(SOURCE, 1, 0, windowStart() + 1);
+
+            assertEquals("", errorsAt(round(config), "startup-checks.size-based-retention"));
+        }
+
+        @Test
+        void timeOnlyRetentionNeverListsSourceOffsets() {
+            admin.putLog(SOURCE, 1, 500, windowStart() + 1);
+
+            round(defaultConfig());
+
+            assertTrue(admin.offsetQueries.stream().noneMatch(q -> q.topic().equals(SOURCE)));
+        }
     }
 }

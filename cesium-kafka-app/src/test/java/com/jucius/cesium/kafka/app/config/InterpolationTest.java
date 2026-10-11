@@ -40,14 +40,14 @@ class InterpolationTest {
                 dir,
                 LoaderTestSupport.MINIMAL_YAML
                         + """
-                        store:
+                        kafka:
                           properties:
                             combined: ${env:A}-${env:B}
                         """);
         CesiumConfig config = LoaderTestSupport.loader(Map.of("A", "left", "B", "right"))
                 .load(file)
                 .config();
-        assertEquals("left-right", config.store().properties().get("combined"));
+        assertEquals("left-right", config.kafka().properties().get("combined"));
     }
 
     @Test
@@ -84,14 +84,14 @@ class InterpolationTest {
                 dir,
                 LoaderTestSupport.MINIMAL_YAML
                         + """
-                        store:
+                        kafka:
                           properties:
                             plain: no interpolation here
                             dollar: cost is $100 {not a reference}
                         """);
         CesiumConfig config = LoaderTestSupport.loader(Map.of()).load(file).config();
-        assertEquals("no interpolation here", config.store().properties().get("plain"));
+        assertEquals("no interpolation here", config.kafka().properties().get("plain"));
         assertEquals(
-                "cost is $100 {not a reference}", config.store().properties().get("dollar"));
+                "cost is $100 {not a reference}", config.kafka().properties().get("dollar"));
     }
 }

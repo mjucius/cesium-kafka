@@ -1,26 +1,18 @@
 package com.jucius.cesium.kafka.app.lifecycle;
 
-import com.jucius.cesium.kafka.api.store.ConfigView;
-import com.jucius.cesium.kafka.api.store.OwnershipEpoch;
-import com.jucius.cesium.kafka.api.store.RouteDescriptor;
-import com.jucius.cesium.kafka.api.store.SchedulerStore;
-import com.jucius.cesium.kafka.api.store.SchedulerStoreProvider;
-import com.jucius.cesium.kafka.api.store.StoreCapabilities;
-import com.jucius.cesium.kafka.api.store.StoreContext;
 import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
 import com.jucius.cesium.kafka.app.health.EngineHealth;
 import com.jucius.cesium.kafka.app.health.MutableEngineHealth;
+import com.jucius.cesium.kafka.app.health.ShardRecovery;
 import com.jucius.cesium.kafka.core.admin.ClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.admin.KafkaClusterAdmin;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
-import com.jucius.cesium.kafka.core.admin.TopicFacts;
-import com.jucius.cesium.kafka.core.admin.TopicVisibility;
+import com.jucius.cesium.kafka.core.admin.StartupValidator.Revalidation;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
-import com.jucius.cesium.kafka.core.config.CesiumConfigValidator;
+import com.jucius.cesium.kafka.core.config.DispatchConfig;
 import com.jucius.cesium.kafka.core.config.Role;
-import com.jucius.cesium.kafka.core.config.ValidationContext;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.core.dispatch.DispatchLoop;
 import com.jucius.cesium.kafka.core.dispatch.DispatchLoopConfig;
@@ -32,18 +24,22 @@ import com.jucius.cesium.kafka.core.ingest.IngestLoop;
 import com.jucius.cesium.kafka.core.ingest.IngestLoopConfig;
 import com.jucius.cesium.kafka.core.kafka.KafkaClientFactory;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
+import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.ServiceLoader;
+import java.util.OptionalInt;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -51,13 +47,19 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.common.Uuid;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 /**
  * The production engine: the hardened, process-resident version of the integration-test
@@ -67,20 +69,17 @@ import org.slf4j.LoggerFactory;
  * <ol>
  *   <li>runs {@link StartupValidator} over a real {@link KafkaClusterAdmin} (CREATE bootstrap,
  *       parity, retention, identity) and fail-fasts on errors;
- *   <li>captures the cluster id + topic ids and builds the {@link RouteDescriptor} +
- *       {@link StoreContext};
- *   <li>re-runs the §5.3 heap-budget check with the <em>real</em> source partition count (M5
- *       obligation #10 — config-load only had an estimate of 1);
- *   <li>resolves the {@link SchedulerStore} through the published {@link SchedulerStoreProvider}
- *       ServiceLoader hook by {@code store.type} and drives {@code configure → validate → start};
- *   <li>per {@linkplain Role role}, spawns {@code ingest.workers} {@link IngestLoop}s and
- *       {@code dispatch.workers} {@link DispatchLoop}s — each owning its own Kafka clients (distinct
- *       transactional-id worker ordinals), the shared store, registry, {@link RelayRecordFactory},
- *       and (for dispatch) a {@link KafkaSeekFetcher} — on named non-daemon threads.
+ *   <li>builds the {@link KafkaTrackerStore} from the captured cluster and topic ids, the sidecar
+ *       budget (clamped to the broker's {@code offset.metadata.max.bytes}) and the heap budget;
+ *   <li>per {@linkplain Role role}, spawns one {@link IngestLoop} and/or one {@link DispatchLoop} —
+ *       each owning its own Kafka clients, sharing the store, registry and
+ *       {@link RelayRecordFactory}, and (for dispatch) a {@link KafkaSeekFetcher} — on named
+ *       non-daemon threads.
  * </ol>
  *
  * <p><strong>Lifecycle.</strong> {@link #start()} is non-blocking; {@link #awaitDone()} blocks until
- * a loop dies fatally (§3.8) or {@link #stop(Duration)} completes; {@link #stop(Duration)} performs
+ * a fatal engine failure (a loop thread dying, §3.8, or a topic identity change found by
+ * re-validation, R17) or {@link #stop(Duration)} completes; {@link #stop(Duration)} performs
  * the §6 graceful shutdown — <em>readiness flips false first</em> (so a preStop hook / load balancer
  * drains), then every loop is signalled to stop at a transaction boundary and joined within the
  * budget, then the store and admin client close. A single worker parking-and-degrading (§3.8/R15)
@@ -92,6 +91,12 @@ import org.slf4j.LoggerFactory;
  * {@code cesium_loop_last_iteration_timestamp_seconds} gauge and {@code isDegraded()} — heartbeat
  * freshness, an assignment proxy, and the aggregate degraded flag (§6 "gauge sampling, heartbeat
  * freshness"; §9).
+ *
+ * <p><strong>Re-validation (D23, ADR-0020).</strong> Every {@code startup-checks.revalidation-interval}
+ * a dedicated {@code cesium-admin} thread re-runs the environment checks
+ * ({@link StartupValidator#revalidate}). A source or tracker topic identity change takes the fatal
+ * path; any other error is logged at ERROR, counted in {@code cesium_revalidation_errors}, and sets
+ * the readiness degraded flag with a short cause, while dispatch continues.
  */
 public final class CesiumEngine implements AutoCloseable {
 
@@ -105,6 +110,12 @@ public final class CesiumEngine implements AutoCloseable {
 
     /** Bound on the admin client close during shutdown (§6: bounded, then hard). */
     private static final Duration ADMIN_CLOSE_TIMEOUT = Duration.ofSeconds(10);
+
+    /** How long shutdown waits for an interrupted re-validation round before closing the admin client. */
+    private static final Duration REVALIDATION_STOP_TIMEOUT = Duration.ofSeconds(5);
+
+    /** The count of errors the last re-validation round found (§9: {@code cesium_revalidation_errors}). */
+    static final String REVALIDATION_ERRORS_GAUGE = "cesium.revalidation.errors";
 
     private final CesiumConfig config;
     private final MeterRegistry registry;
@@ -120,6 +131,8 @@ public final class CesiumEngine implements AutoCloseable {
     private final List<LoopHandle> ingestHandles = new ArrayList<>();
     private final List<LoopHandle> dispatchHandles = new ArrayList<>();
     private final ConcurrentMap<Role, Double> lastHeartbeatSeconds = new ConcurrentHashMap<>();
+    // Health-sampler thread only: the previous {remaining, atMs} sample per recovering partition.
+    private final Map<Integer, long[]> lastReplaySample = new HashMap<>();
     private final AtomicReference<Throwable> fatalCause = new AtomicReference<>();
     private final CountDownLatch terminationLatch = new CountDownLatch(1);
     private final Object stopLock = new Object();
@@ -131,8 +144,14 @@ public final class CesiumEngine implements AutoCloseable {
 
     private volatile @Nullable Admin admin;
     private volatile @Nullable TrackerBackedStore store;
+
     private volatile @Nullable ScheduledExecutorService healthSampler;
-    private volatile @Nullable StoreCapabilities storeCapabilities;
+    private volatile @Nullable ScheduledExecutorService adminExecutor;
+    private final AtomicInteger revalidationErrors = new AtomicInteger();
+    /** The degraded cause from the last re-validation round, or null when it was clean. */
+    private volatile @Nullable String revalidationCause;
+    // cesium-admin thread only: the last round's warnings, so a standing warning is logged once.
+    private Set<String> lastRevalidationWarnings = Set.of();
 
     /**
      * The running loop handles, published as an immutable snapshot once {@link #spawnLoops} has
@@ -157,6 +176,9 @@ public final class CesiumEngine implements AutoCloseable {
         this.shutdownTimeout = Objects.requireNonNull(shutdownTimeout, "shutdownTimeout");
         this.maxHeapBytes = Runtime.getRuntime().maxMemory();
         this.health = new MutableEngineHealth(clock);
+        Gauge.builder(REVALIDATION_ERRORS_GAUGE, revalidationErrors, AtomicInteger::get)
+                .description("errors found by the last runtime re-validation round (D23); 0 when clean")
+                .register(registry);
     }
 
     // ------------------------------------------------------------------ health/observation surface
@@ -166,22 +188,10 @@ public final class CesiumEngine implements AutoCloseable {
         return health;
     }
 
-    /** The shared wall clock; the observability layer must use the same instance (heartbeat math). */
-    public Clock clock() {
-        return clock;
-    }
-
-    /** The configured {@code store.type} (for the {@code /info} endpoint). */
-    public String storeType() {
-        return config.store().type();
-    }
-
-    /** The resolved store's self-declared capabilities, present once {@link #start()} has resolved it. */
-    public Optional<StoreCapabilities> storeCapabilities() {
-        return Optional.ofNullable(storeCapabilities);
-    }
-
-    /** The fatal cause that terminated a loop, when {@link #awaitDone()} ended on the fatal path. */
+    /**
+     * The first fatal engine failure (see {@link #failFatally}), when {@link #awaitDone()} ended on
+     * the fatal path.
+     */
     public Optional<Throwable> fatalCause() {
         return Optional.ofNullable(fatalCause.get());
     }
@@ -219,18 +229,20 @@ public final class CesiumEngine implements AutoCloseable {
                     .orElseThrow(() ->
                             new EngineStartupException("startup validation passed but captured no partition count"));
 
-            revalidateHeapBudget(partitionCount);
+            Uuid trackerTopicId = validation
+                    .trackerTopicId()
+                    .orElseThrow(() ->
+                            new EngineStartupException("startup validation passed but captured no tracker topic id"));
+            KafkaTrackerStore created = new KafkaTrackerStore(
+                    identity.clusterId(),
+                    identity.sourceTopicId(),
+                    trackerTopicId,
+                    sidecarBudget(config.dispatch().cursor().sidecarMaxBytes(), validation.offsetMetadataMaxBytes()),
+                    DispatchConfig.heapBudgetBytes(maxHeapBytes),
+                    registry);
+            this.store = created;
 
-            TrackerBackedStore resolved = resolveStore(config.store().type());
-            this.store = resolved;
-            RouteDescriptor route = buildRouteDescriptor(clusterAdmin, config, identity, partitionCount);
-            resolved.configure(new EngineStoreContext(
-                    route, new MapConfigView(config.store().properties())));
-            this.storeCapabilities = resolved.capabilities();
-            resolved.validate();
-            resolved.start();
-
-            spawnLoops(adminClient, resolved, identity, partitionCount);
+            spawnLoops(adminClient, created, identity, partitionCount);
             // Startup checks + store are up AND every loop is registered with the health seam: only
             // now satisfy readiness's startup gate. Flipping it before spawnLoops would open a brief
             // premature-READY window where readiness() iterates zero started roles and returns 200;
@@ -238,13 +250,8 @@ public final class CesiumEngine implements AutoCloseable {
             // assigned=false) until the sampler observes them iterating, so READY stays loop-gated (§9).
             health.markStartupComplete();
             startHealthSampler();
-            log.info(
-                    "cesium engine started: applicationId={} roles={} ingestWorkers={} dispatchWorkers={} store={}",
-                    config.applicationId(),
-                    config.roles(),
-                    ingestHandles.size(),
-                    dispatchHandles.size(),
-                    config.store().type());
+            startRevalidation(clusterAdmin, identity, trackerTopicId);
+            log.info("cesium engine started: applicationId={} roles={}", config.applicationId(), config.roles());
         } catch (EngineStartupException e) {
             stop(shutdownTimeout); // unwind any partially-built clients/store
             throw e;
@@ -255,12 +262,12 @@ public final class CesiumEngine implements AutoCloseable {
     }
 
     /**
-     * Blocks until the engine finishes: a loop dies fatally (§3.8) or an external
-     * {@link #stop(Duration)} completes. Ensures a graceful shutdown ran (idempotently) before
+     * Blocks until the engine finishes: a fatal engine failure is signalled (a loop thread dying,
+     * §3.8, or a topic identity change, R17) or an external {@link #stop(Duration)} completes. Ensures a graceful shutdown ran (idempotently) before
      * returning.
      *
-     * @return {@code true} when the engine stopped cleanly with no fatal loop death and within the
-     *     shutdown budget; {@code false} when a loop died fatally or a loop overran the budget — the
+     * @return {@code true} when the engine stopped cleanly with no fatal engine failure and within
+     *     the shutdown budget; {@code false} on a fatal engine failure or when a loop overran the budget — the
      *     app maps {@code false} to a non-zero exit (§6)
      */
     public boolean awaitDone() {
@@ -306,122 +313,20 @@ public final class CesiumEngine implements AutoCloseable {
     // ------------------------------------------------------------------ pure wiring decisions (tested)
 
     /**
-     * The loops this configuration runs: {@code ingest.workers} ingest specs then
-     * {@code dispatch.workers} dispatch specs, per the selected {@linkplain CesiumConfig#roles()
-     * roles}. Each worker gets a distinct ordinal driving its transactional id (§3.3, D10). Pure —
-     * unit-tested without a broker.
+     * The cursor sidecar budget the store gets: {@code dispatch.cursor.sidecar-max-bytes} clamped to
+     * the broker's {@code offset.metadata.max.bytes} (§3.5; startup validation already warned
+     * about the clamp), and never below the store's minimum. Pure — unit-tested without a broker.
      */
-    static List<LoopSpec> planLoops(CesiumConfig config) {
-        List<LoopSpec> specs = new ArrayList<>();
-        if (config.roles().contains(Role.INGEST)) {
-            for (int ordinal = 0; ordinal < config.ingest().workers(); ordinal++) {
-                specs.add(new LoopSpec(Role.INGEST, ordinal));
-            }
-        }
-        if (config.roles().contains(Role.DISPATCH)) {
-            for (int ordinal = 0; ordinal < config.dispatch().workers(); ordinal++) {
-                specs.add(new LoopSpec(Role.DISPATCH, ordinal));
-            }
-        }
-        return specs;
+    static int sidecarBudget(int configured, OptionalInt offsetMetadataMaxBytes) {
+        int budget = offsetMetadataMaxBytes.isPresent()
+                ? Math.min(configured, offsetMetadataMaxBytes.getAsInt())
+                : configured;
+        // ponytail: a broker cap below 128 B is not a real deployment; cursor commits that outgrow
+        // it fail either way, so the floor only keeps the identity header encodable.
+        return Math.max(DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES, budget);
     }
-
-    /**
-     * Resolves the tracker-backed store for {@code typeId} through the published
-     * {@link SchedulerStoreProvider} ServiceLoader hook — the same explicit-selection path the
-     * integration harness uses (design §4.5). Duplicate providers for one type, an unknown type, or
-     * a non-tracker-backed store all fail fast. Pure — unit-tested without a broker.
-     */
-    static TrackerBackedStore resolveStore(String typeId) {
-        SchedulerStore resolved = null;
-        for (SchedulerStoreProvider provider : ServiceLoader.load(SchedulerStoreProvider.class)) {
-            if (provider.typeId().equals(typeId)) {
-                if (resolved != null) {
-                    throw new EngineStartupException("duplicate SchedulerStoreProvider registered for store.type '"
-                            + typeId + "' — remove the conflicting provider jar from the classpath");
-                }
-                resolved = provider.create();
-            }
-        }
-        if (resolved == null) {
-            throw new EngineStartupException("no SchedulerStoreProvider registered for store.type '" + typeId
-                    + "' — the kafka-tracker store ships in cesium-kafka-store-kafka; check the classpath");
-        }
-        if (resolved instanceof TrackerBackedStore trackerBacked) {
-            return trackerBacked;
-        }
-        throw new EngineStartupException("store.type '" + typeId + "' resolved to a non-tracker-backed store ("
-                + resolved.getClass().getName() + "); this app build orchestrates tracker-backed stores only");
-    }
-
-    /**
-     * The §5.3 worst-case heap-budget report re-evaluated at a given partition count — the pure core
-     * of the M5 obligation-#10 re-validation, extracted so it is unit-testable without a broker.
-     */
-    static ValidationReport heapBudgetReport(CesiumConfig config, int partitionCount, long maxHeapBytes) {
-        return new CesiumConfigValidator().validate(config, new ValidationContext(maxHeapBytes, partitionCount));
-    }
-
-    /** One planned loop worker: its role and its transactional-id ordinal. */
-    record LoopSpec(Role role, int workerOrdinal) {}
 
     // ------------------------------------------------------------------ startup helpers
-
-    /**
-     * M5 obligation #10: re-run the §5.3 worst-case heap-budget check now that the <em>real</em>
-     * source partition count is known (config-load only had an estimate of 1). A breach under the
-     * default {@code startup-checks.heap-budget: FAIL} is a fail-fast; the always-present INFO
-     * footprint finding is logged either way.
-     */
-    private void revalidateHeapBudget(int partitionCount) {
-        ValidationReport report = heapBudgetReport(config, partitionCount, maxHeapBytes);
-        logFindings(report);
-        if (report.hasErrors()) {
-            throw new EngineStartupException(
-                    "worst-case index footprint exceeds the heap budget at the real partition count (" + partitionCount
-                            + "); lower dispatch.max-pending-per-partition, assign fewer partitions, or raise -Xmx"
-                            + " (design §5.3, M5 obligation #10)",
-                    report);
-        }
-    }
-
-    /**
-     * The route identity triple + topic facts from the same admin plane production uses (§3.5).
-     *
-     * <p>Package-private and static so the wiring test can drive it over a fake {@link ClusterAdmin}
-     * — in particular to prove the bounded metadata wait below is really on this path.
-     */
-    static RouteDescriptor buildRouteDescriptor(
-            ClusterAdmin clusterAdmin, CesiumConfig config, IdentityBlob identity, int partitions) {
-        // All three topics were described successfully moments ago during startup validation, so an
-        // unknown-topic answer here is a laggy broker's metadata image — possibly a different node
-        // than validation asked — not a vanished topic. Wait it out before declaring the latter.
-        TopicVisibility visibility = new TopicVisibility(clusterAdmin);
-        TopicFacts source = describeOrFail(visibility, config.route().source().topic());
-        TopicFacts destination =
-                describeOrFail(visibility, config.route().destination().topic());
-        // The tracker exists by now: the CREATE bootstrap ran inside startup validation.
-        TopicFacts tracker = describeOrFail(visibility, trackerTopic(config));
-        String dlq = config.route().hasDlq() ? config.route().dlq().get().topic() : null;
-        return new RouteDescriptor(
-                config.applicationId(),
-                identity.clusterId(),
-                source.name(),
-                source.topicId(),
-                destination.name(),
-                destination.topicId(),
-                tracker.name(),
-                tracker.topicId(),
-                dlq,
-                partitions);
-    }
-
-    private static TopicFacts describeOrFail(TopicVisibility visibility, String topic) {
-        return visibility
-                .awaitVisible(topic)
-                .orElseThrow(() -> new EngineStartupException(
-                        "topic '" + topic + "' vanished between startup validation and store build"));
-    }
 
     private void spawnLoops(
             Admin adminClient, TrackerBackedStore sharedStore, IdentityBlob identity, int partitionCount) {
@@ -448,45 +353,41 @@ public final class CesiumEngine implements AutoCloseable {
             TrackerBackedStore sharedStore,
             IdentityBlob identity,
             int partitionCount) {
-        for (LoopSpec spec : planLoops(config)) {
-            switch (spec.role()) {
-                case INGEST -> {
-                    IngestLoop loop = new IngestLoop(
-                            IngestLoopConfig.from(config, partitionCount),
-                            clients.newIngestConsumer(),
-                            () -> clients.newIngestProducer(spec.workerOrdinal()),
-                            sharedStore,
-                            new DelayHeaderCodec(
-                                    config.delay().max(), config.headers().acceptBinaryLongValues()),
-                            new IngestPolicyEngine(
-                                    config.delay().max(),
-                                    config.delay().onMalformedHeader(),
-                                    config.delay().onOverMax()),
-                            relay,
-                            identity,
+        if (config.roles().contains(Role.INGEST)) {
+            IngestLoop loop = new IngestLoop(
+                    IngestLoopConfig.from(config, partitionCount),
+                    clients.newIngestConsumer(),
+                    clients::newIngestProducer,
+                    sharedStore,
+                    new DelayHeaderCodec(config.delay().max()),
+                    new IngestPolicyEngine(
+                            config.delay().max(),
+                            config.delay().onMalformedHeader(),
+                            config.delay().onOverMax()),
+                    relay,
+                    identity,
+                    registry,
+                    clock);
+            ingestHandles.add(spawn(Role.INGEST, clients.ingestTransactionalId(), loop, loop::stop, loop::isDegraded));
+        }
+        if (config.roles().contains(Role.DISPATCH)) {
+            DispatchLoop loop = new DispatchLoop(
+                    DispatchLoopConfig.from(config, maxHeapBytes),
+                    clients.newTrackerConsumer(),
+                    clients::newDispatchProducer,
+                    sharedStore,
+                    new KafkaSeekFetcher(
+                            config.route().source().topic(),
+                            config.dispatch().fetch().partitionTimeFloor(),
+                            clients.newSeekConsumer(),
                             registry,
-                            clock);
-                    ingestHandles.add(spawn(spec, loop, loop::stop, loop::isDegraded));
-                }
-                case DISPATCH -> {
-                    DispatchLoop loop = new DispatchLoop(
-                            DispatchLoopConfig.from(config, maxHeapBytes),
-                            clients.newTrackerConsumer(),
-                            () -> clients.newDispatchProducer(spec.workerOrdinal()),
-                            sharedStore,
-                            new KafkaSeekFetcher(
-                                    config.route().source().topic(),
-                                    config.dispatch().fetch().partitionTimeFloor(),
-                                    clients.newSeekConsumer(),
-                                    registry,
-                                    clock),
-                            relay,
-                            dispatchAdmin,
-                            registry,
-                            clock);
-                    dispatchHandles.add(spawn(spec, loop, loop::stop, loop::isDegraded));
-                }
-            }
+                            clock),
+                    relay,
+                    dispatchAdmin,
+                    registry,
+                    clock);
+            dispatchHandles.add(
+                    spawn(Role.DISPATCH, clients.dispatchTransactionalId(), loop, loop::stop, loop::isDegraded));
         }
     }
 
@@ -522,31 +423,42 @@ public final class CesiumEngine implements AutoCloseable {
 
     // ------------------------------------------------------------------ loop threads & fatal path
 
-    private LoopHandle spawn(LoopSpec spec, Runnable body, Runnable stopper, BooleanSupplier degradedProbe) {
-        String name = "cesium-" + spec.role().name().toLowerCase(Locale.ROOT) + "-" + spec.workerOrdinal();
+    /**
+     * Starts one loop on a named non-daemon thread. The thread's MDC carries {@code applicationId},
+     * {@code loop} and {@code txn} (design §9), set once here so every log line from the loop, and the
+     * fatal log in the {@code finally}, is tagged without any per-record MDC work.
+     */
+    private LoopHandle spawn(Role role, String txn, Runnable body, Runnable stopper, BooleanSupplier degradedProbe) {
+        String loopName = role.name().toLowerCase(Locale.ROOT);
+        // The -0 suffix keeps 1.x thread names (and the log lines that carry them) unchanged.
+        String name = "cesium-" + loopName + "-0";
+        String applicationId = config.applicationId();
         Thread thread = new Thread(
                 () -> {
+                    MDC.put("applicationId", applicationId);
+                    MDC.put("loop", loopName);
+                    MDC.put("txn", txn);
                     Throwable failure = null;
                     try {
                         body.run();
                     } catch (Throwable t) {
                         failure = t;
                     } finally {
-                        onLoopTerminated(spec.role(), failure);
+                        onLoopTerminated(role, failure);
                     }
                 },
                 name);
         thread.setDaemon(false);
-        LoopHandle handle = new LoopHandle(spec.role(), thread, stopper, degradedProbe);
+        LoopHandle handle = new LoopHandle(role, thread, stopper, degradedProbe);
         thread.start();
         return handle;
     }
 
     /**
-     * A loop thread terminated. During shutdown that is expected. Otherwise it is fatal (§3.8): a
-     * thrown failure, or a clean exit with no stop request — either way the durable log is
-     * authoritative for a successor, so the engine signals the fatal path and lets {@link #awaitDone()}
-     * gracefully stop the survivors and exit non-zero (readiness is already gated by liveness/death).
+     * A loop thread terminated. During shutdown that is expected (a throw is logged at WARN).
+     * Otherwise it is a fatal engine failure (§3.8): a thrown failure, or a clean exit with no stop
+     * request. Either way the durable log is authoritative for a successor, so this delegates to
+     * {@link #failFatally} (readiness is already gated by liveness/death).
      */
     private void onLoopTerminated(Role role, @Nullable Throwable failure) {
         if (stopping) {
@@ -555,15 +467,33 @@ public final class CesiumEngine implements AutoCloseable {
             }
             return;
         }
-        Throwable cause =
-                failure != null ? failure : new IllegalStateException(role + " loop exited without a stop request");
+        failFatally(
+                role.name().toLowerCase(Locale.ROOT) + " loop",
+                failure != null ? failure : new IllegalStateException(role + " loop exited without a stop request"));
+    }
+
+    /**
+     * The single fatal path: records the first cause, logs it once, and releases {@link #awaitDone()},
+     * which gracefully stops the survivors and reports failure so the app exits non-zero. Ignored once
+     * shutdown has begun, since anything that fails while stopping is expected.
+     *
+     * @param source what failed, for the log line (for example {@code "ingest loop"})
+     */
+    private void failFatally(String source, Throwable cause) {
+        if (stopping) {
+            return;
+        }
         if (fatalCause.compareAndSet(null, cause)) {
-            log.error("fatal {} loop failure — initiating engine shutdown", role, cause);
+            log.error("fatal engine failure ({}) — initiating engine shutdown", source, cause);
         }
         terminationLatch.countDown();
     }
 
     private boolean doStop(Duration budget) {
+        // First, so no round reports on clients that are closing; the wait lets an interrupted round
+        // unwind before closeAdmin() pulls the Admin out from under it. Findings are dropped (stopping).
+        shutdown(adminExecutor, REVALIDATION_STOP_TIMEOUT);
+        adminExecutor = null;
         long deadlineNanos = System.nanoTime() + Math.max(0, budget.toNanos());
         LoopHandles snapshot = handles; // safely-published read (may be EMPTY if start() failed early)
         // Signal all loops up front so they all begin draining; join ingest-before-dispatch (§6).
@@ -584,7 +514,8 @@ public final class CesiumEngine implements AutoCloseable {
         if (!clean) {
             log.warn("one or more loops did not stop within the {} shutdown budget", budget);
         }
-        shutdownSampler();
+        shutdown(healthSampler, Duration.ZERO);
+        healthSampler = null;
         closeStore();
         closeAdmin();
         return clean;
@@ -602,11 +533,17 @@ public final class CesiumEngine implements AutoCloseable {
         return !handle.thread.isAlive();
     }
 
-    private void shutdownSampler() {
-        ScheduledExecutorService sampler = healthSampler;
-        if (sampler != null) {
-            sampler.shutdownNow();
-            healthSampler = null;
+    private static void shutdown(@Nullable ScheduledExecutorService executor, Duration wait) {
+        if (executor == null) {
+            return;
+        }
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(wait.toMillis(), TimeUnit.MILLISECONDS) && !wait.isZero()) {
+                log.warn("a background task did not stop within {}", wait);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -632,6 +569,119 @@ public final class CesiumEngine implements AutoCloseable {
             }
             admin = null;
         }
+    }
+
+    // ------------------------------------------------------------------ re-validation (D23, ADR-0020)
+
+    private void startRevalidation(ClusterAdmin clusterAdmin, IdentityBlob identity, Uuid trackerTopicId) {
+        // A fresh validator per round: TopicVisibility is confined to the thread running it.
+        this.adminExecutor = scheduleRevalidation(
+                config.startupChecks().revalidationInterval(),
+                config.applicationId(),
+                () -> new StartupValidator(clusterAdmin, clock).revalidate(config, identity, trackerTopicId),
+                this::onRevalidation);
+    }
+
+    /**
+     * Runs {@code round} every {@code interval} on a dedicated {@code cesium-admin} daemon thread and
+     * hands each result to {@code sink}. A round that throws is reported as an error finding ("round
+     * could not complete") rather than escaping, because one uncaught throw would cancel every later
+     * run of {@code scheduleWithFixedDelay}.
+     */
+    static ScheduledExecutorService scheduleRevalidation(
+            Duration interval, String applicationId, Supplier<Revalidation> round, Consumer<Revalidation> sink) {
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "cesium-admin");
+            thread.setDaemon(true);
+            return thread;
+        });
+        long intervalMs = interval.toMillis();
+        var unused = executor.scheduleWithFixedDelay(
+                () -> {
+                    MDC.put("applicationId", applicationId); // dedicated thread: idempotent, never pooled
+                    Revalidation result;
+                    try {
+                        result = round.get();
+                    } catch (Throwable t) {
+                        log.debug("re-validation round failed", t);
+                        result = new Revalidation(
+                                Optional.empty(),
+                                new ValidationReport(List.of(ValidationReport.Finding.error(
+                                        "startup-checks.revalidation-interval",
+                                        "the re-validation round could not complete: " + t))));
+                    }
+                    try {
+                        sink.accept(result);
+                    } catch (RuntimeException e) {
+                        log.warn("re-validation result handling failed", e);
+                    }
+                },
+                intervalMs,
+                intervalMs,
+                TimeUnit.MILLISECONDS);
+        return executor;
+    }
+
+    /**
+     * Applies one re-validation round (D1): an identity change is fatal; every other error is logged at
+     * ERROR, counted in {@code cesium_revalidation_errors} and becomes the degraded cause; a warning is
+     * logged when it first appears. Ignored entirely once shutdown has begun.
+     */
+    void onRevalidation(Revalidation result) {
+        if (stopping) {
+            return;
+        }
+        if (result.identityChange().isPresent()) {
+            failFatally(
+                    "re-validation",
+                    new IllegalStateException(result.identityChange().get()));
+            return;
+        }
+        List<ValidationReport.Finding> errors = result.report().errors();
+        for (ValidationReport.Finding error : errors) {
+            log.error("re-validation finding {}: {}", error.path(), error.message());
+        }
+        Set<String> warnings = new LinkedHashSet<>();
+        for (ValidationReport.Finding warning : result.report().warnings()) {
+            String line = warning.path() + ": " + warning.message();
+            warnings.add(line);
+            if (!lastRevalidationWarnings.contains(line)) {
+                log.warn("re-validation finding {}", line);
+            }
+        }
+        lastRevalidationWarnings = warnings;
+        String previous = revalidationCause;
+        revalidationErrors.set(errors.size());
+        revalidationCause = errors.isEmpty()
+                ? null
+                : "re-validation: " + errors.size() + " error(s) at "
+                        + errors.stream()
+                                .map(ValidationReport.Finding::path)
+                                .distinct()
+                                .collect(Collectors.joining(", "));
+        if (previous != null && errors.isEmpty()) {
+            log.info("re-validation is clean again; the degraded cause is cleared");
+        }
+    }
+
+    /** The degraded cause from the last re-validation round, or null when it was clean. */
+    @Nullable String revalidationCause() {
+        return revalidationCause;
+    }
+
+    /**
+     * The readiness degraded cause: parked-and-degraded loops and the re-validation cause, either or
+     * both; null when neither applies.
+     */
+    static @Nullable String degradedCause(Set<String> degradedRoles, @Nullable String revalidationCause) {
+        List<String> causes = new ArrayList<>(2);
+        if (!degradedRoles.isEmpty()) {
+            causes.add("parked-and-degraded loop(s): " + String.join(", ", degradedRoles));
+        }
+        if (revalidationCause != null) {
+            causes.add(revalidationCause);
+        }
+        return causes.isEmpty() ? null : String.join("; ", causes);
     }
 
     // ------------------------------------------------------------------ health sampler (§6/§9)
@@ -663,7 +713,8 @@ public final class CesiumEngine implements AutoCloseable {
      * the loop is iterating, so its heartbeat is bumped and its consumer treated as engaged
      * (assignment is not exposed by the loop SPI without reaching into its consumer; loop iteration
      * — subscribe done, polling — is the available proxy). The degraded flag aggregates every
-     * worker's {@code isDegraded()}.
+     * worker's {@code isDegraded()}. The recovery detail is read from the store's per-partition
+     * {@code cesium.shard.state}/{@code cesium.replay.remaining.records} gauges.
      */
     private void sample() {
         try {
@@ -674,7 +725,6 @@ public final class CesiumEngine implements AutoCloseable {
                     if (previous == null || heartbeat > previous) {
                         lastHeartbeatSeconds.put(role, heartbeat);
                         health.heartbeat(role);
-                        health.consumerAssigned(role, true);
                     }
                 }
             }
@@ -684,11 +734,9 @@ public final class CesiumEngine implements AutoCloseable {
                     degradedRoles.add(handle.role.name().toLowerCase(Locale.ROOT));
                 }
             }
-            if (degradedRoles.isEmpty()) {
-                health.setDegraded(false, null);
-            } else {
-                health.setDegraded(true, "parked-and-degraded loop(s): " + String.join(", ", degradedRoles));
-            }
+            String cause = degradedCause(degradedRoles, revalidationCause);
+            health.setDegraded(cause != null, cause);
+            health.updateRecovery(recoverySnapshot(registry, clock.millis(), lastReplaySample));
         } catch (RuntimeException e) {
             // The sampler must never die: a transient registry/probe hiccup is logged, not fatal.
             log.debug("health sample iteration failed", e);
@@ -700,6 +748,46 @@ public final class CesiumEngine implements AutoCloseable {
                 .tag("loop", role.name().toLowerCase(Locale.ROOT))
                 .gauge();
         return gauge == null ? Double.NaN : gauge.value();
+    }
+
+    /**
+     * The non-ACTIVE shards, by partition, from the store's recovery gauges (D21: detail only,
+     * never a readiness input). {@code etaMillis} is the slope between this sample and
+     * {@code previous} (updated in place): {@code -1} until two samples exist or while the
+     * backlog is not shrinking.
+     */
+    static List<ShardRecovery> recoverySnapshot(MeterRegistry registry, long nowMs, Map<Integer, long[]> previous) {
+        List<ShardRecovery> shards = new ArrayList<>();
+        Map<Integer, long[]> current = new HashMap<>();
+        for (Gauge stateGauge :
+                registry.find(KafkaTrackerStore.SHARD_STATE_METRIC).gauges()) {
+            String tag = stateGauge.getId().getTag("partition");
+            ShardRecovery.State state =
+                    switch ((int) stateGauge.value()) {
+                        case 0 -> ShardRecovery.State.ASSIGNED;
+                        case 1 -> ShardRecovery.State.RECOVERING;
+                        default -> ShardRecovery.State.ACTIVE;
+                    };
+            if (tag == null || state == ShardRecovery.State.ACTIVE) {
+                continue; // ACTIVE shards are not reported
+            }
+            int partition = Integer.parseInt(tag);
+            Gauge remainingGauge = registry.find(KafkaTrackerStore.REPLAY_REMAINING_METRIC)
+                    .tag("partition", tag)
+                    .gauge();
+            long remaining = remainingGauge == null ? 0 : (long) remainingGauge.value();
+            long etaMillis = -1;
+            long[] last = previous.get(partition);
+            if (last != null && last[0] > remaining && nowMs > last[1]) {
+                etaMillis = remaining * (nowMs - last[1]) / (last[0] - remaining);
+            }
+            current.put(partition, new long[] {remaining, nowMs});
+            shards.add(new ShardRecovery(partition, state, remaining, etaMillis));
+        }
+        previous.clear();
+        previous.putAll(current);
+        shards.sort(Comparator.comparingInt(ShardRecovery::partition));
+        return shards;
     }
 
     private List<LoopHandle> allHandles() {
@@ -747,46 +835,6 @@ public final class CesiumEngine implements AutoCloseable {
             this.thread = thread;
             this.stopper = stopper;
             this.degradedProbe = degradedProbe;
-        }
-    }
-
-    /**
-     * The production {@link StoreContext}: real route identity, the {@code store.properties} subtree,
-     * the engine's shared clock, the shared registry, and a placeholder epoch (tracker-backed stores
-     * ride the engine's Kafka transactions and never consult it — design §4.4 item 4).
-     */
-    private final class EngineStoreContext implements StoreContext {
-        private final RouteDescriptor route;
-        private final ConfigView configView;
-
-        EngineStoreContext(RouteDescriptor route, ConfigView configView) {
-            this.route = route;
-            this.configView = configView;
-        }
-
-        @Override
-        public RouteDescriptor route() {
-            return route;
-        }
-
-        @Override
-        public ConfigView config() {
-            return configView;
-        }
-
-        @Override
-        public Clock clock() {
-            return clock;
-        }
-
-        @Override
-        public MeterRegistry meterRegistry() {
-            return registry;
-        }
-
-        @Override
-        public OwnershipEpoch epoch(int partition) {
-            return new OwnershipEpoch(0, "cesium-engine");
         }
     }
 }

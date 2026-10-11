@@ -29,11 +29,9 @@ import java.util.Objects;
  */
 public final class FetchCandidates {
 
-    private final DueBatch batch;
     private final List<PartitionRun> runs;
 
-    private FetchCandidates(DueBatch batch, List<PartitionRun> runs) {
-        this.batch = batch;
+    private FetchCandidates(List<PartitionRun> runs) {
         this.runs = runs;
     }
 
@@ -60,17 +58,7 @@ public final class FetchCandidates {
             }
             runs.add(new PartitionRun(entry.getKey(), wantedOffsets, batchIndices));
         }
-        return new FetchCandidates(batch, List.copyOf(runs));
-    }
-
-    /** The drained batch these runs view. */
-    public DueBatch batch() {
-        return batch;
-    }
-
-    /** Total candidate count — equal to {@code batch().size()}. */
-    public int size() {
-        return batch.size();
+        return new FetchCandidates(List.copyOf(runs));
     }
 
     /** The per-partition runs, in first-appearance (≈ due) order; empty for an empty batch. */
@@ -118,11 +106,6 @@ public final class FetchCandidates {
         /** The scan's seek target: the smallest wanted offset. */
         public long minWantedOffset() {
             return wantedOffsets[0];
-        }
-
-        /** The scan's stop bound: the largest wanted offset. */
-        public long maxWantedOffset() {
-            return wantedOffsets[wantedOffsets.length - 1];
         }
     }
 }

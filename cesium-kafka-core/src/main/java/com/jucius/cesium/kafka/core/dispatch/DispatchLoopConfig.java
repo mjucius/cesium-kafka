@@ -36,8 +36,8 @@ import java.util.Objects;
  *     stay on the abort/restore retry path
  * @param maxPendingPerPartition backpressure high-water mark per ACTIVE shard (§5.3); intake for
  *     the partition pauses above it and resumes below {@code maxPendingPerPartition / 2}
- * @param maxPendingTotal global pending cap pausing all ACTIVE shards ({@code ≤ 0} disables; the
- *     caller resolves the {@code AUTO} sentinel against the heap budget before constructing this)
+ * @param maxPendingTotal the process-wide pending cap: above it, every ACTIVE shard pauses
+ *     ({@link #from} resolves the {@code AUTO} sentinel)
  * @param commitRetryLimit bounded retries of a timed-out {@code commitTransaction} before the
  *     outcome is declared in-doubt and the I9 procedure runs ({@code kafka.transactions
  *     .commit-retry}, §3.8)
@@ -78,7 +78,7 @@ public record DispatchLoopConfig(
     /** Default retry backoff cap (§3.8: capped backoff while parked). */
     public static final Duration DEFAULT_RETRY_BACKOFF_MAX = Duration.ofSeconds(10);
 
-    /** Validates the loop's operating invariants. */
+    /** Null-checks the components; ranges are validated upstream by {@code CesiumConfigValidator}. */
     public DispatchLoopConfig {
         Objects.requireNonNull(trackerTopic, "trackerTopic");
         Objects.requireNonNull(sourceTopic, "sourceTopic");
@@ -92,53 +92,12 @@ public record DispatchLoopConfig(
         Objects.requireNonNull(onUnrelayable, "onUnrelayable");
         Objects.requireNonNull(retryBackoffInitial, "retryBackoffInitial");
         Objects.requireNonNull(retryBackoffMax, "retryBackoffMax");
-        if (trackerTopic.isBlank()) {
-            throw new IllegalArgumentException("trackerTopic must be configured");
-        }
-        if (sourceTopic.isBlank()) {
-            throw new IllegalArgumentException("sourceTopic must be configured");
-        }
-        if (maxBatchEntries < 1) {
-            throw new IllegalArgumentException("maxBatchEntries must be at least 1: " + maxBatchEntries);
-        }
-        if (maxBatchBytes < 1) {
-            throw new IllegalArgumentException("maxBatchBytes must be at least 1: " + maxBatchBytes);
-        }
-        requirePositive(maxPollTimeout, "maxPollTimeout");
-        requirePositive(drainSlice, "drainSlice");
-        requirePositive(idleCursorInterval, "idleCursorInterval");
-        requirePositive(fetchTimeout, "fetchTimeout");
-        requirePositive(penaltyBackoff, "penaltyBackoff");
-        requirePositive(retryBackoffInitial, "retryBackoffInitial");
-        if (penaltyBackoffMax.compareTo(penaltyBackoff) < 0) {
-            throw new IllegalArgumentException(
-                    "penaltyBackoffMax " + penaltyBackoffMax + " must be >= penaltyBackoff " + penaltyBackoff);
-        }
-        if (maxPendingPerPartition < 1) {
-            throw new IllegalArgumentException("maxPendingPerPartition must be at least 1: " + maxPendingPerPartition);
-        }
-        if (commitRetryLimit < 1) {
-            throw new IllegalArgumentException("commitRetryLimit must be at least 1: " + commitRetryLimit);
-        }
-        if (parkThreshold < 1) {
-            throw new IllegalArgumentException("parkThreshold must be at least 1: " + parkThreshold);
-        }
-        if (retryBackoffMax.compareTo(retryBackoffInitial) < 0) {
-            throw new IllegalArgumentException(
-                    "retryBackoffMax " + retryBackoffMax + " must be >= retryBackoffInitial " + retryBackoffInitial);
-        }
-    }
-
-    private static void requirePositive(Duration value, String name) {
-        if (value.isNegative() || value.isZero()) {
-            throw new IllegalArgumentException(name + " must be positive: " + value);
-        }
     }
 
     /**
-     * Derives the loop settings from a validated {@link CesiumConfig}. The global pending cap's
-     * {@code AUTO} sentinel is resolved against {@code maxHeapBytes} (≈ 25% of the heap ÷ the
-     * per-entry budget, §5.3/R18).
+     * Derives the loop settings from a validated {@link CesiumConfig}. {@code
+     * dispatch.max-pending-total} is process-wide: its {@code AUTO} sentinel is resolved against
+     * {@code maxHeapBytes} (≈ 25% of the heap ÷ the per-entry budget, §5.3/R18).
      *
      * @param config the frozen configuration
      * @param maxHeapBytes the JVM max heap ({@code Runtime.getRuntime().maxMemory()}) the AUTO
@@ -160,7 +119,7 @@ public record DispatchLoopConfig(
                 dispatch.onUnfetchablePayload(),
                 config.route().relay().onUnrelayable(),
                 dispatch.maxPendingPerPartition(),
-                dispatch.resolveMaxPendingTotal(maxHeapBytes),
+                Math.max(1, dispatch.resolveMaxPendingTotal(maxHeapBytes)),
                 config.kafka().transactions().commitRetry(),
                 DEFAULT_PARK_THRESHOLD,
                 DEFAULT_RETRY_BACKOFF_INITIAL,

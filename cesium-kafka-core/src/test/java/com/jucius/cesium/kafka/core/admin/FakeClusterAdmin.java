@@ -1,6 +1,7 @@
 package com.jucius.cesium.kafka.core.admin;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -21,7 +22,11 @@ final class FakeClusterAdmin implements ClusterAdmin {
 
     record CreatedTopic(String name, int partitions, Map<String, String> configs) {}
 
-    record AclGrant(String topic, String principal) {}
+    /** One {@code offsetsAtOrAfter} call, recorded so tests can assert the cutoff arithmetic. */
+    record OffsetQuery(String topic, long timestampMs) {}
+
+    /** A partition's retained log: record {@code logStart + i} has timestamp {@code timestamps[i]}. */
+    record FakeLog(long logStart, List<Long> timestamps) {}
 
     String clusterId = Uuid.randomUuid().toString();
     final Map<String, TopicFacts> topics = new HashMap<>();
@@ -29,12 +34,13 @@ final class FakeClusterAdmin implements ClusterAdmin {
     final Map<String, String> brokerConfigs = new HashMap<>();
     final Map<String, Map<TopicPartition, OffsetAndMetadata>> groupOffsets = new HashMap<>();
     final List<CreatedTopic> created = new ArrayList<>();
-    final List<AclGrant> aclGrants = new ArrayList<>();
     final Map<String, Set<String>> trackerWriteAcls = new HashMap<>();
-    ClusterAdminException aclFailure;
+    final Map<TopicPartition, FakeLog> logs = new HashMap<>();
+    final List<OffsetQuery> offsetQueries = new ArrayList<>();
     ClusterAdminException describeFailure;
     ClusterAdminException describeAclsFailure;
     ClusterAdminException groupOffsetsFailure;
+    ClusterAdminException brokerConfigFailure;
     ClusterAdminException topicConfigsFailure;
 
     // ---- metadata-propagation simulation (all default-off; see TopicVisibility) ----
@@ -89,6 +95,13 @@ final class FakeClusterAdmin implements ClusterAdmin {
                 .add(principal);
     }
 
+    /** Sets a partition's retained log; partitions without one are empty logs at offset 0. */
+    void putLog(String topic, int partition, long logStart, long... timestamps) {
+        logs.put(
+                new TopicPartition(topic, partition),
+                new FakeLog(logStart, Arrays.stream(timestamps).boxed().toList()));
+    }
+
     /** Registers a topic with the given partition count and effective configs. */
     TopicFacts addTopic(String name, int partitions, Map<String, String> configs) {
         TopicFacts facts = new TopicFacts(name, Uuid.randomUuid(), partitions);
@@ -137,6 +150,9 @@ final class FakeClusterAdmin implements ClusterAdmin {
 
     @Override
     public Optional<String> brokerConfig(String key) {
+        if (brokerConfigFailure != null) {
+            throw brokerConfigFailure;
+        }
         return Optional.ofNullable(brokerConfigs.get(key));
     }
 
@@ -159,19 +175,28 @@ final class FakeClusterAdmin implements ClusterAdmin {
     }
 
     @Override
-    public void grantTrackerWriteAcl(String topic, String principal) {
-        if (aclFailure != null) {
-            throw aclFailure;
-        }
-        aclGrants.add(new AclGrant(topic, principal));
-        putTrackerWriteAcl(topic, principal);
-    }
-
-    @Override
     public Set<String> describeTrackerWritePrincipals(String topic) {
         if (describeAclsFailure != null) {
             throw describeAclsFailure;
         }
         return Set.copyOf(trackerWriteAcls.getOrDefault(topic, Set.of()));
+    }
+
+    @Override
+    public Map<Integer, Long> offsetsAtOrAfter(String topic, int partitions, long timestampMs) {
+        offsetQueries.add(new OffsetQuery(topic, timestampMs));
+        Map<Integer, Long> offsets = new HashMap<>();
+        for (int partition = 0; partition < partitions; partition++) {
+            FakeLog log = logs.getOrDefault(new TopicPartition(topic, partition), new FakeLog(0, List.of()));
+            long offset = log.logStart() + log.timestamps().size(); // log end when none is that new
+            for (int i = 0; i < log.timestamps().size(); i++) {
+                if (log.timestamps().get(i) >= timestampMs) {
+                    offset = log.logStart() + i;
+                    break;
+                }
+            }
+            offsets.put(partition, offset);
+        }
+        return offsets;
     }
 }

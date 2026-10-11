@@ -11,11 +11,11 @@ description = "JMH micro-benchmarks for the KafkaTrackerStore hot paths (design 
     "NOT CI-gating and NOT wired into build/check — run on demand: ./gradlew :cesium-kafka-benchmarks:jmh"
 
 dependencies {
-    // store-kafka exposes the api module (and kafka-clients' Uuid) transitively via java-library
-    // `api`, so the benchmarks can construct TrackerIndex/PartitionShard/SidecarCodec/DueEntrySink
-    // directly. fastutil stays an `implementation` detail of store-kafka — the public hot-path
-    // surface the benchmarks touch never leaks a fastutil type, so it is not needed here.
-    jmh(project(":cesium-kafka-store-kafka"))
+    // core exposes kafka-clients (Uuid) via java-library `api`, so the benchmarks can construct
+    // TrackerIndex/PartitionShard/SidecarCodec/DueEntrySink directly. fastutil stays an
+    // `implementation` detail of core — the hot-path surface the benchmarks touch never leaks a
+    // fastutil type, so it is not needed here.
+    jmh(project(":cesium-kafka-core"))
 }
 
 jmh {

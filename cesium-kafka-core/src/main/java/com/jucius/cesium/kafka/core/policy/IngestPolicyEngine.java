@@ -28,17 +28,7 @@ public final class IngestPolicyEngine {
      * @param onOverMax {@code delay.on-over-max} (default DLQ, D3)
      */
     public IngestPolicyEngine(Duration delayMax, MalformedHeaderPolicy onMalformedHeader, OverMaxPolicy onOverMax) {
-        Objects.requireNonNull(delayMax, "delayMax");
-        if (delayMax.isNegative()) {
-            throw new IllegalArgumentException("delay.max must be non-negative: " + delayMax);
-        }
-        long ms;
-        try {
-            ms = delayMax.toMillis();
-        } catch (ArithmeticException overflow) {
-            ms = Long.MAX_VALUE;
-        }
-        this.delayMaxMs = ms;
+        this.delayMaxMs = DelayHeaderCodec.delayMaxMillis(delayMax);
         this.onMalformedHeader = Objects.requireNonNull(onMalformedHeader, "onMalformedHeader");
         this.onOverMax = Objects.requireNonNull(onOverMax, "onOverMax");
     }

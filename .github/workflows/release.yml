@@ -2,14 +2,14 @@ name: Release
 
 # Tag-driven release (design §13, as superseded by ADR-0017 / the repo-only publishing decision).
 #
-# REPO-ONLY PUBLISHING for v1.0. This workflow builds, verifies, and publishes a GitHub Release with
+# REPO-ONLY PUBLISHING. This workflow builds, verifies, and publishes a GitHub Release with
 # the application distribution archives (distTar/distZip) ONLY. There is deliberately:
-#   * NO Maven Central / Sonatype publish of api/core/store-kafka/testkit, and
+#   * NO Maven Central / Sonatype publish of cesium-kafka-core, and
 #   * NO container image push to GHCR or any other registry.
-# Both are OUT OF SCOPE for v1.0 by owner decision (the runnable APP is the supported product; the
-# engine programmatic API stays internal-until-1.x). See docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md.
-# How they WOULD be added later (1.x), if/when the decision is revisited:
-#   * Maven Central: add the `maven-publish` + `signing` plugins to api/core/store-kafka/testkit,
+# Both are OUT OF SCOPE by owner decision (the runnable APP is the supported product; the
+# engine programmatic API stays internal; ADR-0019). See docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md.
+# How they WOULD be added later, if/when the decision is revisited:
+#   * Maven Central: add the `maven-publish` + `signing` plugins to cesium-kafka-core,
 #     a `publishToSonatype` step here gated on OIDC/Sonatype credentials (secrets), and POM metadata.
 #   * GHCR image: a `docker/build-push-action` step using the existing multi-stage Dockerfile, with
 #     `packages: write` added to the permissions block below and a `ghcr.io/<owner>/cesium-kafka` tag.
@@ -21,7 +21,7 @@ on:
       - "v*"
 
 # contents: write is required to create the GitHub Release and upload the archive assets.
-# No `packages: write` — there is no image push in v1 (see the header note).
+# No `packages: write` — there is no image push (see the header note).
 permissions:
   contents: write
 
@@ -51,7 +51,7 @@ jobs:
 
       - name: Derive version from tag
         id: version
-        # Tag `v1.0.0` -> project version `1.0.0`, threaded into every Gradle invocation via
+        # Tag `v2.0.0` -> project version `2.0.0`, threaded into every Gradle invocation via
         # -PcesiumVersion (the property the java-conventions plugin reads; gradle.properties default
         # is the -SNAPSHOT dev version). This stamps the dist archive names and the /info build-info.
         env:

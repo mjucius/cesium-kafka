@@ -16,8 +16,20 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 final class VirtualWaits {
 
-    private final AtomicLong nowMillis = new AtomicLong();
+    private final long startMillis;
+    private final AtomicLong nowMillis;
     private final List<Long> waits = new ArrayList<>();
+
+    /** Virtual time starting at the epoch. */
+    VirtualWaits() {
+        this(0L);
+    }
+
+    /** Virtual time starting at {@code startMillis}, for checks that subtract durations from now. */
+    VirtualWaits(long startMillis) {
+        this.startMillis = startMillis;
+        this.nowMillis = new AtomicLong(startMillis);
+    }
 
     /** The clock to hand {@code TopicVisibility}; reads the virtual now. */
     Clock clock() {
@@ -59,6 +71,6 @@ final class VirtualWaits {
 
     /** Total virtual time elapsed. */
     long elapsedMillis() {
-        return nowMillis.get();
+        return nowMillis.get() - startMillis;
     }
 }

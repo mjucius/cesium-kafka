@@ -1,15 +1,14 @@
 # Contributing to cesium-kafka
 
-Thanks for your interest! As of 1.0 the **runnable app** (`cesium-kafka-app`) is the supported
-product. The store SPI (`cesium-kafka-api`) and its contract test kit (`cesium-kafka-store-testkit`)
-are **semver-governed from 1.0**; the engine's programmatic API (`cesium-kafka-core`) remains
-**internal-until-1.x** and may change between minor releases. See the README "Status" section.
+Thanks for your interest! The runnable app (`cesium-kafka-app`) is the supported product. The
+engine (`cesium-kafka-core`, which also holds the tracker store and its index) is internal and may
+change in any release (ADR-0019, ADR-0021). See the README "Status" section.
 
 ## Building
 
 - Any recent JDK on your `PATH` to launch Gradle; the build then provisions the JDK 21 toolchain
-  automatically. (Gradle needs a JVM to start before it can download a toolchain, so a totally
-  Java-less host fails with "JAVA_HOME is not set".) On a host with no JDK, build in a container:
+  automatically. (Gradle needs a JVM to start before it can download a toolchain, so a host
+  with no Java at all fails with "JAVA_HOME is not set".) On a host with no JDK, build in a container:
 
   ```bash
   docker run --rm -v "$PWD":/src -w /src eclipse-temurin:21-jdk ./gradlew build
@@ -17,15 +16,15 @@ are **semver-governed from 1.0**; the engine's programmatic API (`cesium-kafka-c
   docker run --rm -v "$PWD":/src -w /src -v /var/run/docker.sock:/var/run/docker.sock \
     eclipse-temurin:21-jdk ./gradlew :cesium-kafka-it:integrationTest
   ```
-- `./gradlew build` — compile, unit tests, formatting and static-analysis checks
-- `./gradlew :cesium-kafka-it:integrationTest` — integration tests (requires Docker)
+- `./gradlew build`: compile, unit tests, formatting and static-analysis checks
+- `./gradlew :cesium-kafka-it:integrationTest`: integration tests (requires Docker)
 
 ## Test tiers
 
 | Tier | Command | Speed |
 |---|---|---|
 | Unit + property tests | `./gradlew test` | milliseconds, no broker |
-| Store SPI contract kit | runs with `test` in store modules | fast |
+| Store contract kit (`TrackerBackedStoreContract`) | runs with `test` in `cesium-kafka-core` | fast |
 | Integration (Testcontainers, Kafka 4.x) | `./gradlew :cesium-kafka-it:integrationTest` | minutes, needs Docker |
 
 ## Code style
@@ -36,5 +35,5 @@ are **semver-governed from 1.0**; the engine's programmatic API (`cesium-kafka-c
 ## Design changes
 
 Significant decisions are recorded as ADRs under `docs/adr/`. Start from
-[docs/design.md](docs/design.md) before proposing architectural changes — invariants I1–I9 and the
-failure matrix there are load-bearing; changes to them need a corresponding test and ADR.
+[docs/design.md](docs/design.md) before proposing architectural changes. Correctness depends on its
+invariants I1–I9 and failure matrix, so a change to either needs a corresponding test and ADR.

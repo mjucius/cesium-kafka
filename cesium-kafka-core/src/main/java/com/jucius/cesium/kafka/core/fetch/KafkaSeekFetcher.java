@@ -1,5 +1,7 @@
 package com.jucius.cesium.kafka.core.fetch;
 
+import static com.jucius.cesium.kafka.core.loop.LoopSupport.anyCause;
+
 import com.jucius.cesium.kafka.api.store.DueBatch;
 import com.jucius.cesium.kafka.core.headers.DelayHeaderCodec;
 import io.micrometer.core.instrument.Counter;
@@ -166,7 +168,7 @@ public final class KafkaSeekFetcher implements SeekFetcher {
         FetchCandidates grouped = FetchCandidates.of(candidates);
         PassResult result = new PassResult(candidates);
         if (grouped.runs().isEmpty()) {
-            result.seal(grouped);
+            result.seal();
             return result;
         }
         long startMs = clock.millis();
@@ -197,7 +199,7 @@ public final class KafkaSeekFetcher implements SeekFetcher {
             scanRun(result, state, run, next, sliceMs);
         }
         recheckTransients(result);
-        result.seal(grouped);
+        result.seal();
         attempts.increment(result.foundCount + result.goneCount + result.transientCount);
         misses.increment(result.transientCount);
         unfetchable.increment(result.goneCount);
@@ -519,22 +521,15 @@ public final class KafkaSeekFetcher implements SeekFetcher {
      * per-partition transport trouble the tri-state classifies (§7.3). Walks the cause chain like
      * the §3.8 taxonomy classifiers.
      */
-    // ReferenceEquality: `t.getCause() == t` is the self-referential-cause guard — a Throwable
-    // whose getCause() returns itself would loop forever. Identity is the intended test, and Error
-    // Prone's suggested .equals() is wrong (Throwable does not override it). Flagged from 2.50.0.
-    @SuppressWarnings("ReferenceEquality")
     private static boolean isFatal(RuntimeException error) {
-        for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof WakeupException
-                    || t instanceof InterruptException
-                    || t instanceof AuthenticationException
-                    || t instanceof AuthorizationException
-                    || t instanceof UnsupportedVersionException
-                    || t instanceof IllegalStateException) {
-                return true;
-            }
-        }
-        return false;
+        return anyCause(
+                error,
+                WakeupException.class,
+                InterruptException.class,
+                AuthenticationException.class,
+                AuthorizationException.class,
+                UnsupportedVersionException.class,
+                IllegalStateException.class);
     }
 
     /** The pass-wide budget state shared across partition runs (§7.2 budget c). */
@@ -552,7 +547,7 @@ public final class KafkaSeekFetcher implements SeekFetcher {
 
     /**
      * The pass's {@link FetchResult}: parallel outcome/record arrays indexed like the candidate
-     * batch, sealed (validated + summarized) before it leaves {@link #fetch}. Allocated fresh per
+     * batch, sealed (validated + totalled) before it leaves {@link #fetch}. Allocated fresh per
      * pass; valid until the next one per the interface contract.
      */
     private static final class PassResult implements FetchResult {
@@ -564,7 +559,6 @@ public final class KafkaSeekFetcher implements SeekFetcher {
         private final @Nullable ConsumerRecord<byte[], byte[]>[] records;
         private final long[] foundBytes;
 
-        private List<PartitionSummary> summaries = List.of();
         int foundCount;
         int goneCount;
         int transientCount;
@@ -618,40 +612,23 @@ public final class KafkaSeekFetcher implements SeekFetcher {
             outcomes[i] = FetchOutcome.GONE;
         }
 
-        /** Validates every candidate classified exactly once and computes the partition summaries. */
-        void seal(FetchCandidates grouped) {
-            List<PartitionSummary> built = new ArrayList<>(grouped.runs().size());
-            for (FetchCandidates.PartitionRun run : grouped.runs()) {
-                int found = 0;
-                int gone = 0;
-                int transientFailures = 0;
-                int carriedOver = 0;
-                long bytes = 0;
-                for (int j = 0; j < run.entryCount(); j++) {
-                    int i = run.batchIndex(j);
-                    FetchOutcome outcome = outcomes[i];
-                    if (outcome == null) {
-                        throw new IllegalStateException("candidate " + i + " left unclassified — engine bug");
-                    }
-                    switch (outcome) {
-                        case FOUND -> {
-                            found++;
-                            bytes += foundBytes[i];
-                        }
-                        case GONE -> gone++;
-                        case TRANSIENT -> transientFailures++;
-                        case CARRY_OVER -> carriedOver++;
-                    }
+        /** Validates every candidate classified exactly once and computes the pass totals. */
+        void seal() {
+            for (int i = 0; i < outcomes.length; i++) {
+                FetchOutcome outcome = outcomes[i];
+                if (outcome == null) {
+                    throw new IllegalStateException("candidate " + i + " left unclassified — engine bug");
                 }
-                built.add(new PartitionSummary(
-                        run.sourcePartition(), found, gone, transientFailures, carriedOver, bytes));
-                foundCount += found;
-                goneCount += gone;
-                transientCount += transientFailures;
-                carryOverCount += carriedOver;
-                totalBytes += bytes;
+                switch (outcome) {
+                    case FOUND -> {
+                        foundCount++;
+                        totalBytes += foundBytes[i];
+                    }
+                    case GONE -> goneCount++;
+                    case TRANSIENT -> transientCount++;
+                    case CARRY_OVER -> carryOverCount++;
+                }
             }
-            summaries = List.copyOf(built);
         }
 
         @Override
@@ -675,11 +652,6 @@ public final class KafkaSeekFetcher implements SeekFetcher {
                 throw new IllegalStateException("candidate " + i + " has no record: outcome is " + outcomes[i]);
             }
             return record;
-        }
-
-        @Override
-        public List<PartitionSummary> partitionSummaries() {
-            return summaries;
         }
     }
 }

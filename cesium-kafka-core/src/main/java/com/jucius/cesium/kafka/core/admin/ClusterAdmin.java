@@ -7,8 +7,9 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 
 /**
- * The narrow admin-plane boundary {@link StartupValidator} talks through (design §2.1, §6's
- * {@code cesium-admin} thread). An interface rather than a direct {@code Admin} dependency so unit
+ * The narrow admin-plane boundary {@link StartupValidator} talks through (design §2.1, the §6 admin
+ * plane), both at startup and for the periodic re-validation rounds. An interface rather than a
+ * direct {@code Admin} dependency so unit
  * tests inject a deterministic fake; production wires {@link KafkaClusterAdmin} around the real
  * client.
  *
@@ -52,24 +53,23 @@ public interface ClusterAdmin {
     void createTopic(String topic, int partitions, Map<String, String> configs);
 
     /**
-     * Grants the cesium principal write (plus read/describe) on the tracker topic — the R12
-     * normative deployment requirement the {@code CREATE} bootstrap applies when
-     * {@code route.tracker.acl-principal} is configured. Throws {@link ClusterAdminException}
-     * whose cause chain carries {@code SecurityDisabledException} when the cluster has no
-     * authorizer.
-     */
-    void grantTrackerWriteAcl(String topic, String principal);
-
-    /**
      * The principals that currently hold an {@code ALLOW WRITE} (or {@code ALLOW ALL}) ACL
      * reaching the tracker topic ({@code Admin.describeAcls}, LITERAL/wildcard/prefixed patterns
      * that match the name) — the live state of the R12 write restriction, read on
-     * <em>every</em> startup so {@link StartupValidator} can verify it rather than assume the
-     * {@code CREATE}-time grant is still intact, detect a foreign writer, or warn when no
-     * principal is configured. Throws {@link ClusterAdminException} whose cause chain carries
-     * {@code SecurityDisabledException} (or {@code UnsupportedVersionException}) when the cluster
-     * has no authorizer — the verification is then downgraded to a WARN, mirroring the
-     * ACL-apply path.
+     * <em>every</em> startup so {@link StartupValidator} can verify the operator-created grant,
+     * detect a foreign writer, or warn when no principal is configured. Throws
+     * {@link ClusterAdminException} whose cause chain carries {@code SecurityDisabledException} (or
+     * {@code UnsupportedVersionException}) when the cluster has no authorizer — the verification is
+     * then downgraded to a WARN.
      */
     Set<String> describeTrackerWritePrincipals(String topic);
+
+    /**
+     * Per partition {@code 0..partitions-1}, the first committed offset whose record timestamp is at
+     * or after {@code timestampMs} ({@code Admin.listOffsets} with {@code OffsetSpec.forTimestamp},
+     * read-committed), or the log-end offset when no retained record is that new. Re-validation
+     * compares the dispatch group's committed tracker cursor against it (D14 cursor age) and reads
+     * the source's earliest retained record against {@code delay.max} with it (R-11).
+     */
+    Map<Integer, Long> offsetsAtOrAfter(String topic, int partitions, long timestampMs);
 }

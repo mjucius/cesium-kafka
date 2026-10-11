@@ -2,11 +2,13 @@ package com.jucius.cesium.kafka.core.admin;
 
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.CheckMode;
+import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.StartupChecks;
 import com.jucius.cesium.kafka.core.config.TrackerConfig;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Finding;
 import com.jucius.cesium.kafka.core.config.ValidationReport.Severity;
+import com.jucius.cesium.kafka.core.headers.DelayHeaderCodec;
 import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.kafka.KafkaClientFactory;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
@@ -28,14 +30,15 @@ import java.util.Set;
 import java.util.TreeSet;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.errors.SecurityDisabledException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Admin startup validation and tracker bootstrap (design §2.1, §3.1, §3.6, §7.6, §8; rows
- * R-7..R-11). Aggregates <em>every</em> environment finding into one
+ * Admin startup validation, tracker bootstrap, and runtime re-validation (design §2.1, §3.1, §3.6,
+ * §7.6, §8, D23; rows R-7..R-11). Aggregates <em>every</em> environment finding into one
  * {@link ValidationReport} — the caller fail-fasts on errors with the report intact, so an
  * operator fixes a broken environment in one round trip.
  *
@@ -51,9 +54,9 @@ import org.jspecify.annotations.Nullable;
  *       {@code remote.storage.enable=true} — those require the explicit, named
  *       {@code startup-checks.size-based-retention: ACKNOWLEDGED} acceptance.
  *   <li><strong>Tracker</strong> (§2.1, D4, D14, R-7/R-8): {@code CREATE} bootstrap creates the
- *       topic when absent with the §2.1 configs ({@link #trackerCreateConfigs}) and applies the
- *       R12 write ACL when {@code acl-principal} is configured; {@code FAIL} requires it to
- *       pre-exist. Either way the live topic is validated: partition parity with {@code P} (R-7
+ *       topic when absent with the §2.1 configs ({@link #trackerCreateConfigs}); {@code FAIL}
+ *       requires it to pre-exist. cesium never grants ACLs: the R12 write ACL is the operator's to
+ *       create (it can be created before the topic exists), and is only verified here. Either way the live topic is validated: partition parity with {@code P} (R-7
  *       runbook: grow the tracker first), {@code cleanup.policy} exactly {@code compact} (D4),
  *       and {@code delete.retention.ms} at or above the startup-validatable D14 floor
  *       {@code 2 × delay.max}.
@@ -70,6 +73,16 @@ import org.jspecify.annotations.Nullable;
  *       with the R-10 runbook; undecodable metadata is an integrity fail-fast (§3.6). Absent
  *       offsets and blank metadata (first run, operator-seeded offsets) pass.
  * </ul>
+ *
+ * <p>{@link #revalidate} is the runtime half (D23, ADR-0020), run every
+ * {@code startup-checks.revalidation-interval} on {@code cesium-admin}. It never creates a topic or
+ * applies an ACL. It re-runs the source, tracker, DLQ and destination checks against the live
+ * cluster and adds three that only make sense on a running engine: the source and tracker topic ids
+ * against the ones captured at startup (a change is the only fatal outcome, R17), the dispatch
+ * group's committed tracker cursor age against {@code delete.retention.ms / 2} (D14, on
+ * instances running dispatch), and, when the source evicts by size or tier under the
+ * {@code ACKNOWLEDGED} gate, whether its earliest retained record is already inside the
+ * {@code delay.max + margin} window (R-11).
  */
 public final class StartupValidator {
 
@@ -89,12 +102,16 @@ public final class StartupValidator {
     /** The broker config bounding committed-offset lifetime (D18, KIP-211). */
     public static final String OFFSETS_RETENTION_MINUTES = "offsets.retention.minutes";
 
+    /** The broker config capping committed offset metadata, which carries the cursor sidecar (§3.5). */
+    public static final String OFFSET_METADATA_MAX_BYTES = "offset.metadata.max.bytes";
+
     /** The §2.1 tracker {@code message.timestamp.type}. */
     public static final String LOG_APPEND_TIME = "LogAppendTime";
 
     // Kafka broker defaults assumed when a (fake) config map omits a key; real describeConfigs
     // returns resolved entries including defaults.
     private static final long DEFAULT_RETENTION_MS = 604_800_000L;
+    private static final int DEFAULT_OFFSET_METADATA_MAX_BYTES = 4096;
     private static final long DEFAULT_RETENTION_BYTES = -1L;
     private static final long DEFAULT_DELETE_RETENTION_MS = 86_400_000L;
     private static final long DEFAULT_MIN_COMPACTION_LAG_MS = 0L;
@@ -103,17 +120,23 @@ public final class StartupValidator {
     private static final String DEFAULT_TIMESTAMP_TYPE = "CreateTime";
 
     private final ClusterAdmin admin;
+    private final Clock clock;
     private final TopicVisibility visibility;
 
-    /** Creates a validator over the given admin boundary. */
+    /** Creates a validator over the given admin boundary with the system clock. */
     public StartupValidator(ClusterAdmin admin) {
-        this.admin = Objects.requireNonNull(admin, "admin");
-        this.visibility = new TopicVisibility(admin);
+        this(admin, Clock.systemUTC());
+    }
+
+    /** Creates a validator whose re-validation time checks read {@code clock}. */
+    public StartupValidator(ClusterAdmin admin, Clock clock) {
+        this(admin, clock, Thread::sleep);
     }
 
     /** Test seam: a virtual clock and a non-sleeping waiter make the metadata waits deterministic. */
     StartupValidator(ClusterAdmin admin, Clock clock, TopicVisibility.Waiter waiter) {
         this.admin = Objects.requireNonNull(admin, "admin");
+        this.clock = Objects.requireNonNull(clock, "clock");
         this.visibility = new TopicVisibility(admin, clock, waiter);
     }
 
@@ -133,10 +156,11 @@ public final class StartupValidator {
 
         String clusterId = fetchClusterId(findings);
         TopicFacts source = checkSource(config, findings);
-        checkTracker(config, source, findings);
+        TopicFacts tracker = checkTracker(config, source, findings);
         checkDlq(config, findings);
         checkDestination(config, source, findings);
         checkOffsetsRetention(config, findings);
+        OptionalInt offsetMetadataMaxBytes = checkOffsetMetadataMaxBytes(config, findings);
 
         IdentityBlob identity = null;
         if (clusterId != null && source != null) {
@@ -151,7 +175,206 @@ public final class StartupValidator {
         return new StartupValidationResult(
                 new ValidationReport(findings),
                 Optional.ofNullable(identity),
-                source == null ? OptionalInt.empty() : OptionalInt.of(source.partitionCount()));
+                source == null ? OptionalInt.empty() : OptionalInt.of(source.partitionCount()),
+                tracker == null ? Optional.empty() : Optional.of(tracker.topicId()),
+                offsetMetadataMaxBytes);
+    }
+
+    // ------------------------------------------------------------------ runtime re-validation (D23)
+
+    /**
+     * The outcome of one {@link #revalidate} round.
+     *
+     * @param identityChange present when the source or tracker topic id (or the cluster id) differs
+     *     from what startup captured: the one fatal re-validation outcome (R17)
+     * @param report every other finding; its errors degrade the instance and never stop it (D1)
+     */
+    public record Revalidation(Optional<String> identityChange, ValidationReport report) {}
+
+    /**
+     * One runtime re-validation round (D23, ADR-0020): the source, tracker, DLQ and destination
+     * checks against the live cluster, the topic-identity comparison against startup, the D14
+     * committed-cursor age when this instance runs dispatch, and the R-11 earliest-retained-record
+     * check under acknowledged size or tier eviction. It never creates a topic or applies an ACL,
+     * and an admin-plane failure becomes an ERROR finding rather than a throw.
+     *
+     * @param startupIdentity the cluster id and source topic id captured by {@link #validate}
+     * @param trackerTopicId the tracker topic id captured at startup
+     */
+    public Revalidation revalidate(CesiumConfig config, IdentityBlob startupIdentity, Uuid trackerTopicId) {
+        List<Finding> findings = new ArrayList<>();
+        List<String> identityChanges = new ArrayList<>();
+
+        String clusterId = fetchClusterId(findings);
+        String sourceTopic = config.route().source().topic();
+        TopicFacts source = revisit(sourceTopic, "route.source.topic", findings);
+        if (source != null) {
+            if (clusterId != null) {
+                IdentityBlob live = new IdentityBlob(clusterId, source.topicId());
+                if (!live.equals(startupIdentity)) {
+                    identityChanges.add("re-validation found the route identity changed since startup: "
+                            + startupIdentity.describeMismatch(live)
+                            + ". R17: a running engine stops rather than relay from a different topic.");
+                }
+            }
+            try {
+                Map<String, String> topicConfig = checkSourceConfigs(config, sourceTopic, findings);
+                checkEarliestRetained(config, source, topicConfig, findings);
+            } catch (ClusterAdminException e) {
+                findings.add(Finding.error(
+                        "route.source.topic", "could not re-validate the source topic: " + e.getMessage() + "."));
+            }
+        }
+
+        String trackerTopic = config.route().tracker().resolvedTopic(config.applicationId());
+        TopicFacts tracker = revisit(trackerTopic, "route.tracker", findings);
+        if (tracker != null) {
+            if (!tracker.topicId().equals(trackerTopicId)) {
+                identityChanges.add("re-validation found the tracker topic '" + trackerTopic + "' id changed: startup"
+                        + " saw " + trackerTopicId + " but the live topic is " + tracker.topicId()
+                        + " — it was recreated under the same name, so the in-memory index and committed cursors"
+                        + " no longer describe it. R17: a running engine stops on a topic identity change.");
+            } else {
+                try {
+                    long deleteRetentionMs = validateTracker(config, source, tracker, findings);
+                    if (config.roles().contains(Role.DISPATCH)) {
+                        checkCursorAge(config, tracker, deleteRetentionMs, findings);
+                    }
+                } catch (ClusterAdminException e) {
+                    findings.add(Finding.error(
+                            "route.tracker", "could not re-validate the tracker topic: " + e.getMessage() + "."));
+                }
+            }
+        }
+
+        checkDlq(config, findings);
+        checkDestination(config, source, findings);
+
+        Optional<String> identityChange =
+                identityChanges.isEmpty() ? Optional.empty() : Optional.of(String.join("; ", identityChanges));
+        return new Revalidation(identityChange, new ValidationReport(findings));
+    }
+
+    /**
+     * Re-describes a topic startup proved exists, waiting out metadata lag (see
+     * {@link TopicVisibility}). Absence is an ERROR finding, never fatal: a topic caught mid-recreation
+     * shows its new id on the next round.
+     */
+    private @Nullable TopicFacts revisit(String topic, String path, List<Finding> findings) {
+        try {
+            Optional<TopicFacts> facts = visibility.awaitVisible(topic);
+            if (facts.isEmpty()) {
+                findings.add(Finding.error(
+                        path,
+                        "topic '" + topic + "' existed at startup but no broker describes it now; restore it (§2.1)."));
+            }
+            return facts.orElse(null);
+        } catch (ClusterAdminException e) {
+            findings.add(Finding.error(path, "could not describe topic '" + topic + "': " + e.getMessage() + "."));
+            return null;
+        }
+    }
+
+    /**
+     * D14's observed term (ADR-0020): the dispatch group's committed tracker cursor must be younger
+     * than {@code delete.retention.ms / 2}. Under the {@code 2 x delay.max} floor a breach is
+     * still safe until the cursor's age reaches the full {@code delete.retention.ms}, so this alerts
+     * with half the retention left. A partition breaches when its committed offset sits below the
+     * first tracker offset appended at or after the cutoff. Skipped when the cutoff would precede the
+     * epoch (for example {@code delete.retention.ms = Long.MAX_VALUE}).
+     */
+    private void checkCursorAge(
+            CesiumConfig config, TopicFacts tracker, long deleteRetentionMs, List<Finding> findings) {
+        long nowMs = clock.millis();
+        long ageLimitMs = deleteRetentionMs / 2;
+        if (ageLimitMs >= nowMs) {
+            return;
+        }
+        long cutoffMs = nowMs - ageLimitMs;
+        String groupId = KafkaClientFactory.dispatchGroupId(config.applicationId());
+        Map<TopicPartition, OffsetAndMetadata> committed = admin.groupOffsets(groupId);
+        Map<Integer, Long> boundary = null;
+        Set<Integer> breached = new TreeSet<>();
+        for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : committed.entrySet()) {
+            if (!entry.getKey().topic().equals(tracker.name())) {
+                continue;
+            }
+            if (boundary == null) {
+                boundary = admin.offsetsAtOrAfter(tracker.name(), tracker.partitionCount(), cutoffMs);
+            }
+            Long firstYoungEnough = boundary.get(entry.getKey().partition());
+            if (firstYoungEnough != null && entry.getValue().offset() < firstYoungEnough) {
+                breached.add(entry.getKey().partition());
+            }
+        }
+        if (!breached.isEmpty()) {
+            findings.add(Finding.error(
+                    "route.tracker",
+                    "dispatch group '" + groupId + "' has a committed cursor older than delete.retention.ms / 2 ("
+                            + ageLimitMs + " ms) on tracker '" + tracker.name()
+                            + "' partition(s) " + breached + " (D14, ADR-0020): a replay from that cursor may need"
+                            + " tombstones the cleaner can remove once the cursor's age reaches delete.retention.ms ("
+                            + deleteRetentionMs + " ms), which turns a replay into duplicates. Raise"
+                            + " delete.retention.ms on the tracker (it applies live) or restore dispatch so the"
+                            + " cursor advances."));
+        }
+    }
+
+    /**
+     * R-11 under acknowledged size or tier eviction (§7.6): when the source's earliest retained record
+     * is already newer than {@code now - delay.max - margin} on a partition that has evicted records,
+     * eviction has reached payloads still inside the delay window and the retention margin is
+     * negative. A partition that was idle for longer than {@code delay.max} reads the same way, which
+     * the message says. Time-only retention is covered by the {@code retention.ms} comparison.
+     */
+    private void checkEarliestRetained(
+            CesiumConfig config, TopicFacts source, Map<String, String> topicConfig, List<Finding> findings) {
+        if (config.startupChecks().retention() == CheckMode.SKIP
+                || config.startupChecks().sizeBasedRetention() != StartupChecks.SizeBasedRetention.ACKNOWLEDGED
+                || !sizeOrTierEviction(topicConfig)) {
+            return;
+        }
+        long nowMs = clock.millis();
+        long windowMs =
+                DelayHeaderCodec.saturatedAddMillis(config.delay().max().toMillis(), RETENTION_MARGIN.toMillis());
+        if (windowMs >= nowMs) {
+            return;
+        }
+        int partitions = source.partitionCount();
+        Map<Integer, Long> earliest = admin.offsetsAtOrAfter(source.name(), partitions, 0L);
+        Map<Integer, Long> atCutoff = admin.offsetsAtOrAfter(source.name(), partitions, nowMs - windowMs);
+        Map<Integer, Long> end = admin.offsetsAtOrAfter(source.name(), partitions, Long.MAX_VALUE);
+        Set<Integer> negative = new TreeSet<>();
+        for (int partition = 0; partition < partitions; partition++) {
+            long first = earliest.getOrDefault(partition, 0L);
+            if (first > 0
+                    && first < end.getOrDefault(partition, first)
+                    && first == atCutoff.getOrDefault(partition, -1L)) {
+                negative.add(partition);
+            }
+        }
+        if (!negative.isEmpty()) {
+            findings.add(Finding.error(
+                    "startup-checks.size-based-retention",
+                    "source topic '" + source.name() + "' partition(s) " + negative + " retain no record older than"
+                            + " delay.max + margin (" + windowMs + " ms) although they have evicted records: size or"
+                            + " tier eviction is removing payloads still inside the delay window, so the retention"
+                            + " margin is negative (R-11, §7.6). Those payloads count in cesium_fetch_unfetchable_total"
+                            + " and resolve per dispatch.on-unfetchable-payload. Raise retention.bytes or the local"
+                            + " tier size. (A partition idle for longer than delay.max also reads this way.)"));
+        }
+    }
+
+    /** Whether the source evicts by size or tier; a parse problem was already reported by §7.6. */
+    private static boolean sizeOrTierEviction(Map<String, String> topicConfig) {
+        return parseLongConfig(
+                                topicConfig,
+                                TopicConfig.RETENTION_BYTES_CONFIG,
+                                DEFAULT_RETENTION_BYTES,
+                                new ArrayList<>())
+                        != -1
+                || Boolean.parseBoolean(
+                        topicConfig.getOrDefault(TopicConfig.REMOTE_LOG_STORAGE_ENABLE_CONFIG, "false"));
     }
 
     // ------------------------------------------------------------------ recorded identity (R-10)
@@ -200,7 +423,7 @@ public final class StartupValidator {
                                 + " the group offsets."));
                 continue;
             }
-            if (!recorded.matches(live)) {
+            if (!recorded.equals(live)) {
                 findings.add(Finding.error(
                         "route.source.topic",
                         "committed offset identity mismatch for " + partition + " (group '" + groupId + "'): "
@@ -263,23 +486,29 @@ public final class StartupValidator {
                         "source topic '" + topic + "' does not exist (§2.1); create it or fix the configuration."));
                 return null;
             }
-            Map<String, String> topicConfig = topicConfigs(topic);
-            if (cleanupPolicies(topicConfig).contains(TopicConfig.CLEANUP_POLICY_COMPACT)) {
-                findings.add(Finding.error(
-                        "route.source.topic",
-                        "source topic '" + topic + "' has cleanup.policy='"
-                                + topicConfig.getOrDefault(TopicConfig.CLEANUP_POLICY_CONFIG, DEFAULT_CLEANUP_POLICY)
-                                + "' — the source must not be compacted (§2.1, §7.6): cesium stores pointers only and"
-                                + " re-fetches payloads by offset; compaction makes offsets unfetchable. Use a"
-                                + " non-compacted source topic."));
-            }
-            checkSourceRetention(config, topic, topicConfig, findings);
+            checkSourceConfigs(config, topic, findings);
             return facts.get();
         } catch (ClusterAdminException e) {
             findings.add(Finding.error(
                     "route.source.topic", "could not validate the source topic: " + e.getMessage() + "."));
             return null;
         }
+    }
+
+    /** Source non-compaction and §7.6 retention; returns the effective configs it read. */
+    private Map<String, String> checkSourceConfigs(CesiumConfig config, String topic, List<Finding> findings) {
+        Map<String, String> topicConfig = topicConfigs(topic);
+        if (cleanupPolicies(topicConfig).contains(TopicConfig.CLEANUP_POLICY_COMPACT)) {
+            findings.add(Finding.error(
+                    "route.source.topic",
+                    "source topic '" + topic + "' has cleanup.policy='"
+                            + topicConfig.getOrDefault(TopicConfig.CLEANUP_POLICY_CONFIG, DEFAULT_CLEANUP_POLICY)
+                            + "' — the source must not be compacted (§2.1, §7.6): cesium stores pointers only and"
+                            + " re-fetches payloads by offset; compaction makes offsets unfetchable. Use a"
+                            + " non-compacted source topic."));
+        }
+        checkSourceRetention(config, topic, topicConfig, findings);
+        return topicConfig;
     }
 
     /** §7.6: time-, size-, and tier-aware source-retention validation (R-5, R-11, R13). */
@@ -300,7 +529,8 @@ public final class StartupValidator {
         boolean remoteStorage =
                 Boolean.parseBoolean(topicConfig.getOrDefault(TopicConfig.REMOTE_LOG_STORAGE_ENABLE_CONFIG, "false"));
 
-        long requiredMs = saturatedAdd(config.delay().max().toMillis(), RETENTION_MARGIN.toMillis());
+        long requiredMs =
+                DelayHeaderCodec.saturatedAddMillis(config.delay().max().toMillis(), RETENTION_MARGIN.toMillis());
         if (retentionMs != -1 && retentionMs < requiredMs) {
             findings.add(finding(
                     mode,
@@ -321,9 +551,9 @@ public final class StartupValidator {
                         "startup-checks.size-based-retention",
                         "ACKNOWLEDGED: source topic '" + topic + "' has " + detected
                                 + " — time-based validation cannot bound payload lifetime (§7.6, R13). This named"
-                                + " acceptance is logged and surfaced; the runtime earliest-available-age probe feeds"
-                                + " cesium_retention_margin_seconds, and expired payloads resolve via the"
-                                + " unfetchable-payload policy."));
+                                + " acceptance is logged and surfaced. Payloads evicted before dispatch count in"
+                                + " cesium_fetch_unfetchable_total and resolve per dispatch.on-unfetchable-payload;"
+                                + " monitor the source's earliest-record age on the broker side."));
             } else {
                 findings.add(Finding.error(
                         "startup-checks.size-based-retention",
@@ -338,7 +568,9 @@ public final class StartupValidator {
 
     // ------------------------------------------------------------------ tracker
 
-    private void checkTracker(CesiumConfig config, @Nullable TopicFacts source, List<Finding> findings) {
+    /** Bootstraps (CREATE) and validates the tracker; returns its facts, or null when it is unusable. */
+    private @Nullable TopicFacts checkTracker(
+            CesiumConfig config, @Nullable TopicFacts source, List<Finding> findings) {
         String topic = config.route().tracker().resolvedTopic(config.applicationId());
         try {
             Optional<TopicFacts> existing = admin.describeTopic(topic);
@@ -346,7 +578,7 @@ public final class StartupValidator {
                 if (config.route().tracker().bootstrap() == TrackerConfig.Bootstrap.CREATE) {
                     existing = bootstrapTracker(config, source, topic, findings);
                     if (existing.isEmpty()) {
-                        return;
+                        return null;
                     }
                 } else {
                     findings.add(Finding.error(
@@ -356,17 +588,19 @@ public final class StartupValidator {
                                     + " delete.retention.ms >= 2 x delay.max, min.compaction.lag.ms >= max(2 x"
                                     + " transaction timeout, 1h), segment.ms ~ 1h, LogAppendTime, partitions ="
                                     + " source partitions) or set route.tracker.bootstrap: CREATE."));
-                    return;
+                    return null;
                 }
             }
             validateTracker(config, source, existing.get(), findings);
+            return existing.get();
         } catch (ClusterAdminException e) {
             findings.add(
                     Finding.error("route.tracker", "could not validate the tracker topic: " + e.getMessage() + "."));
+            return null;
         }
     }
 
-    /** §2.1 {@code CREATE} bootstrap: create with the spec configs, then apply the R12 ACL. */
+    /** §2.1 {@code CREATE} bootstrap: create with the spec configs. */
     private Optional<TopicFacts> bootstrapTracker(
             CesiumConfig config, @Nullable TopicFacts source, String topic, List<Finding> findings) {
         if (source == null) {
@@ -383,7 +617,6 @@ public final class StartupValidator {
                 "route.tracker",
                 "created tracker topic '" + topic + "' with " + source.partitionCount()
                         + " partition(s) (mirroring the source) and the §2.1 configs " + configs + "."));
-        applyTrackerAcl(config, topic, findings);
         // The topic provably exists — CreateTopics was acknowledged by the controller above. A broker
         // still serving a metadata image from before that record answers UNKNOWN_TOPIC_OR_PARTITION,
         // which describeTopic necessarily reports as empty; wait that window out rather than calling a
@@ -419,39 +652,12 @@ public final class StartupValidator {
                 : Finding.info("route.tracker", message);
     }
 
-    private void applyTrackerAcl(CesiumConfig config, String topic, List<Finding> findings) {
-        Optional<String> principal = config.route().tracker().aclPrincipal();
-        if (principal.isEmpty() || principal.get().isBlank()) {
-            return;
-        }
-        try {
-            admin.grantTrackerWriteAcl(topic, principal.get());
-            findings.add(Finding.info(
-                    "route.tracker.acl-principal",
-                    "granted tracker write/read/describe on '" + topic + "' to principal '" + principal.get()
-                            + "' (R12: tracker write access restricted to the cesium principal is a normative"
-                            + " deployment requirement)."));
-        } catch (ClusterAdminException e) {
-            if (e.hasCause(SecurityDisabledException.class) || e.hasCause(UnsupportedVersionException.class)) {
-                findings.add(Finding.warning(
-                        "route.tracker.acl-principal",
-                        "the cluster has no authorizer, so the tracker write ACL could not be applied ("
-                                + e.getMessage() + "). R12: tracker write access restricted to the cesium principal"
-                                + " is a normative deployment requirement — a forged ADD is a duplicate-injection"
-                                + " primitive and a forged tombstone is a data-loss primitive; enable an authorizer"
-                                + " or enforce the restriction by other means."));
-            } else {
-                findings.add(Finding.error(
-                        "route.tracker.acl-principal",
-                        "failed to apply the tracker write ACL on '" + topic + "': " + e.getMessage()
-                                + " — R12 requires tracker write access restricted to the cesium principal; fix the"
-                                + " ACL permissions or apply it manually, then retry."));
-            }
-        }
-    }
-
-    /** §2.1 tracker validation, run for both bootstrap modes once the topic exists. */
-    private void validateTracker(
+    /**
+     * §2.1 tracker validation, run for both bootstrap modes once the topic exists.
+     *
+     * @return the live {@code delete.retention.ms}, for the re-validation cursor-age check
+     */
+    private long validateTracker(
             CesiumConfig config, @Nullable TopicFacts source, TopicFacts tracker, List<Finding> findings) {
         if (source != null && tracker.partitionCount() != source.partitionCount()) {
             findings.add(Finding.error(
@@ -527,16 +733,17 @@ public final class StartupValidator {
         }
 
         checkTrackerAcl(config, tracker.name(), findings);
+        return deleteRetentionMs;
     }
 
     /**
      * R12 tracker write-ACL verification, run on <em>every</em> startup once the topic exists — for
-     * both bootstrap modes. Kafka enforces ACLs continuously regardless of whether cesium re-applies
-     * them, so cesium DESCRIBEs the live grant and, at the {@code startup-checks.tracker-acl}
+     * both bootstrap modes. cesium never grants the ACL (the operator creates it), so it DESCRIBEs
+     * the live grant and, at the {@code startup-checks.tracker-acl}
      * strictness, reports when the configured principal's exclusive WRITE grant is missing, when a
      * foreign principal holds WRITE, when {@code acl-principal} is unset entirely, or when the cluster
      * has no authorizer to verify against. The default {@code WARN} surfaces any of these on every
-     * boot without blocking (backward-compatible); {@code FAIL} — recommended for production — refuses
+     * boot without blocking clusters that have no authorizer; {@code FAIL} — recommended for production — refuses
      * to start unless the R12 restriction is verifiably in force, since the whole security posture
      * delegates to this ACL and a forged ADD is a duplicate-injection primitive while a forged
      * tombstone is a data-loss primitive; {@code SKIP} omits the check for operators who enforce the
@@ -577,8 +784,8 @@ public final class StartupValidator {
             return;
         }
         if (principal.isEmpty()) {
-            // L3(c): the normative R12 control is not configured. Under the default FAIL this blocks
-            // startup; WARN surfaces it without blocking (the escape hatch for out-of-band enforcement).
+            // L3(c): the normative R12 control is not configured. Under FAIL this blocks startup; the
+            // default WARN surfaces it without blocking (the escape hatch for out-of-band enforcement).
             String liveState = writePrincipals.isEmpty()
                     ? "no ALLOW WRITE ACL is present on the topic, so on a permissive authorizer any principal can"
                             + " forge tracker records"
@@ -587,7 +794,7 @@ public final class StartupValidator {
             findings.add(finding(
                     mode,
                     "route.tracker.acl-principal",
-                    "route.tracker.acl-principal is unset, so cesium neither applies nor verifies the R12 tracker"
+                    "route.tracker.acl-principal is unset, so cesium cannot verify the R12 tracker"
                             + " write restriction — " + liveState
                             + ". Set route.tracker.acl-principal to the cesium principal (a forged ADD is a"
                             + " duplicate-injection primitive and a forged tombstone is a data-loss primitive), or"
@@ -605,9 +812,9 @@ public final class StartupValidator {
                     "route.tracker.acl-principal='" + configured + "' is configured but no matching ALLOW WRITE ACL"
                             + " exists on tracker topic '" + topic + "' (live ALLOW WRITE principals: "
                             + (writePrincipals.isEmpty() ? "none" : new TreeSet<>(writePrincipals))
-                            + ") — the R12 write restriction is not in force. Re-apply the grant (or set"
-                            + " route.tracker.bootstrap: CREATE on a run where the topic is absent), or restore it"
-                            + " out of band."));
+                            + ") — the R12 write restriction is not in force. Create the ALLOW WRITE ACL for that"
+                            + " principal on the tracker topic yourself (cesium never grants ACLs), or set"
+                            + " startup-checks.tracker-acl: WARN/SKIP if you enforce the restriction out of band."));
         }
         if (!foreign.isEmpty()) {
             // L3(b): a principal other than the configured cesium principal can write tracker
@@ -753,6 +960,48 @@ public final class StartupValidator {
         }
     }
 
+    // ------------------------------------------------------------------ broker offset-metadata cap
+
+    /**
+     * §3.5: the cursor sidecar rides in committed offset metadata, which the broker caps at
+     * {@code offset.metadata.max.bytes}. The sidecar budget already bounds the Base64 string the
+     * broker meters, so the two compare directly. Warn-only — the engine clamps the budget to the
+     * broker cap rather than refusing to start — and the broker value is returned for that clamp.
+     */
+    private OptionalInt checkOffsetMetadataMaxBytes(CesiumConfig config, List<Finding> findings) {
+        String path = "dispatch.cursor.sidecar-max-bytes";
+        int budget = config.dispatch().cursor().sidecarMaxBytes();
+        Optional<String> raw;
+        try {
+            raw = admin.brokerConfig(OFFSET_METADATA_MAX_BYTES);
+        } catch (ClusterAdminException e) {
+            findings.add(Finding.warning(
+                    path,
+                    "could not read broker " + OFFSET_METADATA_MAX_BYTES + " (" + e.getMessage()
+                            + "); verify manually that it is at least " + path + " (" + budget
+                            + ") — a larger sidecar fails the dispatch commit (§3.5)."));
+            return OptionalInt.empty();
+        }
+        int limit;
+        try {
+            limit = raw.map(value -> Integer.parseInt(value.trim())).orElse(DEFAULT_OFFSET_METADATA_MAX_BYTES);
+        } catch (NumberFormatException e) {
+            findings.add(Finding.warning(
+                    path,
+                    "broker " + OFFSET_METADATA_MAX_BYTES + "='" + raw.get() + "' is not a number; verify manually"
+                            + " that it is at least " + path + " (" + budget + ") (§3.5)."));
+            return OptionalInt.empty();
+        }
+        if (budget > limit) {
+            findings.add(Finding.warning(
+                    path,
+                    path + " (" + budget + ") exceeds broker " + OFFSET_METADATA_MAX_BYTES + " (" + limit
+                            + "); clamping the sidecar budget to " + limit + " so cursor commits stay within"
+                            + " the broker cap (§3.5). Raise the broker setting to keep the configured budget."));
+        }
+        return OptionalInt.of(limit);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static Finding finding(CheckMode mode, String path, String message) {
@@ -791,14 +1040,6 @@ public final class StartupValidator {
     private static long saturatedMultiply(long a, long b) {
         try {
             return Math.multiplyExact(a, b);
-        } catch (ArithmeticException e) {
-            return Long.MAX_VALUE;
-        }
-    }
-
-    private static long saturatedAdd(long a, long b) {
-        try {
-            return Math.addExact(a, b);
         } catch (ArithmeticException e) {
             return Long.MAX_VALUE;
         }

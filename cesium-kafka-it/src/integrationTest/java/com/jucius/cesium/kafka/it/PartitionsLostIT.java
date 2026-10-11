@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
  * is evicted (session timeout) it cannot cleanly revoke — on rejoin the cooperative consumer invokes
  * {@code onPartitionsLost} for the partitions it can no longer claim, and the dispatch loop responds
  * by dropping those shards with no flush, aborting any open transaction, then rejoining and replaying
- * from the committed cursor (§6 callbacks; {@code SchedulerStore.onPartitionsLost}).
+ * from the committed cursor (§6 callbacks; {@code TrackerBackedStore.onPartitionsLost}).
  *
  * <p>This is induced deterministically with Toxiproxy (R21): the proxied member is
  * {@link ToxiproxySupport#cut cut} past its session timeout — so the broker evicts it and reassigns

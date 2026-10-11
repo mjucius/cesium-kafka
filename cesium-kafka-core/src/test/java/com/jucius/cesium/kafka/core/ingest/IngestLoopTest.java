@@ -16,6 +16,7 @@ import com.jucius.cesium.kafka.core.headers.DlqReasons;
 import com.jucius.cesium.kafka.core.headers.RelayPartitioning;
 import com.jucius.cesium.kafka.core.headers.RelayRecordFactory;
 import com.jucius.cesium.kafka.core.headers.RelayTimestampPolicy;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
 import com.jucius.cesium.kafka.core.policy.IngestPolicyEngine;
 import com.jucius.cesium.kafka.core.policy.MalformedHeaderPolicy;
 import com.jucius.cesium.kafka.core.policy.OverMaxPolicy;
@@ -51,6 +52,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.errors.TransactionAbortableException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
@@ -240,7 +242,7 @@ class IngestLoopTest {
         h.startAssigned(P0);
         h.consumer.addRecord(record(P0, 0, delayMs("not-a-number")));
 
-        assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(h.events.contains("abort"), "FAIL aborts: the record is not consumed");
         assertEquals(0, h.producer().commitCount());
         assertEquals(
@@ -324,7 +326,7 @@ class IngestLoopTest {
         h.consumer.addRecord(record(P0, 0, noHeaders()));
         h.producer().fenceProducer();
 
-        assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertFalse(h.events.contains("abort"), "fatal path never tries to abort a fenced producer");
         assertEquals(0, h.producer().commitCount());
     }
@@ -436,6 +438,22 @@ class IngestLoopTest {
         h.loop.runOnce();
         assertEquals(1, h.producer().commitCount());
         assertEquals(1, h.producer().history().size(), "exactly one committed copy after the retry");
+    }
+
+    @Test
+    void postAmbiguityTransactionAbortableIsADefinitiveAbort() {
+        // KIP-890 TRANSACTION_ABORTABLE after an ambiguous timeout is the broker affirming the
+        // transaction did NOT commit: abort and rewind, the same as the dispatch loop.
+        Harness h = new Harness();
+        h.startAssigned(P0);
+        h.consumer.addRecord(record(P0, 0, noHeaders()));
+        h.producer().commitExceptionQueue.add(new TimeoutException("ambiguous"));
+        h.producer().commitExceptionQueue.add(new TransactionAbortableException("broker: not committed"));
+        h.loop.runOnce();
+
+        assertTrue(h.events.contains("abort"), "definitively not committed: abort and rewind");
+        assertEquals(1, h.producers.size(), "no in-doubt producer replacement");
+        assertEquals(0L, h.consumer.position(P0), "rewound to the batch start for the retry");
     }
 
     @Test
@@ -605,7 +623,7 @@ class IngestLoopTest {
         h.producer().failSendCallbackAt = 0;
         h.consumer.addRecord(record(P0, 0, noHeaders()));
 
-        IngestLoopFatalException failure = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("on-unrelayable=FAIL"), failure.getMessage());
         assertTrue(h.events.contains("abort"), "FAIL aborts: the record is not consumed");
         assertEquals(0, h.producer().commitCount());
@@ -697,7 +715,7 @@ class IngestLoopTest {
         h.startAssigned(P0, P1);
         h.consumer.addRecord(record(P1, 0, delayMs("60000")));
 
-        IngestLoopFatalException failure = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("I-7"), failure.getMessage());
         assertTrue(failure.getMessage().contains("grow the tracker topic first"), failure.getMessage());
         assertTrue(h.events.contains("abort"), "the batch aborts before the loop fails (§3.9 I-7)");
@@ -792,7 +810,7 @@ class IngestLoopTest {
         h.startAssigned(P0);
         h.consumer.setPollException(new NoOffsetForPartitionException(P0));
 
-        IngestLoopFatalException failure = assertThrows(IngestLoopFatalException.class, h.loop::runOnce);
+        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
         assertTrue(failure.getMessage().contains("auto.offset.reset=none"), failure.getMessage());
     }
 
@@ -943,7 +961,7 @@ class IngestLoopTest {
                         return producer;
                     },
                     store,
-                    new DelayHeaderCodec(delayMax, false),
+                    new DelayHeaderCodec(delayMax),
                     new IngestPolicyEngine(delayMax, onMalformed, onOverMax),
                     new RelayRecordFactory(DEST, DLQ, true, RelayTimestampPolicy.DISPATCH, RelayPartitioning.BY_KEY),
                     new IdentityBlob("test-cluster", TOPIC_ID),

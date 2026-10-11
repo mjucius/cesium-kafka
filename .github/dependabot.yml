@@ -8,7 +8,7 @@
 #     gradle.properties, and the build scripts, so the jackson/logback (audit L8) and other library
 #     pins keep pace with upstream patch releases and SCA advisories.
 #
-# Weekly cadence keeps PR churn low for a pre-1.0 project; grouped minor/patch PRs reduce noise.
+# Weekly cadence keeps PR churn low; grouped minor/patch PRs reduce noise.
 version: 2
 updates:
   - package-ecosystem: "github-actions"

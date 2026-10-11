@@ -7,14 +7,20 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.jucius.cesium.kafka.core.admin.IdentityBlob;
 import com.jucius.cesium.kafka.core.admin.StartupValidationResult;
 import com.jucius.cesium.kafka.core.admin.StartupValidator;
+import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
-import com.jucius.cesium.kafka.core.ingest.IngestLoopFatalException;
+import com.jucius.cesium.kafka.core.loop.LoopFatalException;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import org.apache.kafka.clients.admin.AlterConfigOp;
 import org.apache.kafka.clients.admin.Config;
+import org.apache.kafka.clients.admin.ConfigEntry;
+import org.apache.kafka.clients.admin.RecordsToDelete;
 import org.apache.kafka.clients.admin.RemoveMembersFromConsumerGroupOptions;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Producer;
@@ -30,7 +36,9 @@ import org.junit.jupiter.api.Test;
  * bootstrap writing the §2.1 tracker configs, DLQ existence when a policy routes to it, the §7.6
  * retention floor in FAIL mode, the R13 size-based-retention acknowledgment gate, the R-10
  * source-recreation topic-ID fail-fast, and the I-9 {@code auto.offset.reset=none} fail-fast
- * after the group's committed offsets disappear.
+ * after the group's committed offsets disappear. Three runtime re-validation cases (D23) close it:
+ * the R-11 earliest retained record under acknowledged eviction, the D14 committed-cursor age, and
+ * a source recreated under a running engine.
  */
 class StartupChecksIT extends KafkaIT {
 
@@ -190,6 +198,52 @@ class StartupChecksIT extends KafkaIT {
     }
 
     @Test
+    void revalidationFlagsAcknowledgedEvictionInsideTheDelayWindow() {
+        String source = createTopic("src", 1, Map.of("retention.bytes", "1073741824"));
+        String destination = createTopic("dst", 1);
+        String dlq = createTopic("dlq", 1);
+        harness = EngineHarness.builder()
+                .source(source)
+                .destination(destination)
+                .dlq(dlq)
+                .acknowledgeSizeBasedRetention()
+                .build();
+        StartupValidationResult startup = harness.validate();
+        assertFalse(startup.report().hasErrors(), () -> startup.report().render());
+        IdentityBlob identity = startup.identity().orElseThrow();
+        Uuid trackerId = topicId(harness.trackerTopic());
+
+        // Offsets 0 and 1 are older than delay.max + margin (P1D + 1h); offset 2 is fresh.
+        long now = System.currentTimeMillis();
+        long old = now - Duration.ofDays(2).toMillis();
+        try (Producer<byte[], byte[]> producer = newProducer()) {
+            produce(producer, source, 0, old, "k", "v0");
+            produce(producer, source, 0, old, "k", "v1");
+            produce(producer, source, 0, now, "k", "v2");
+        }
+        TopicPartition partition = new TopicPartition(source, 0);
+
+        // Eviction (deleteRecords stands in for size eviction) that leaves an old record retained:
+        // the margin is still positive.
+        get(ADMIN.deleteRecords(Map.of(partition, RecordsToDelete.beforeOffset(1)))
+                .all());
+        StartupValidator.Revalidation clean = harness.revalidate(identity, trackerId, Clock.systemUTC());
+        assertFalse(clean.report().hasErrors(), () -> clean.report().render());
+
+        // Eviction past every record older than the window: the margin is negative.
+        get(ADMIN.deleteRecords(Map.of(partition, RecordsToDelete.beforeOffset(2)))
+                .all());
+        StartupValidator.Revalidation flagged = harness.revalidate(identity, trackerId, Clock.systemUTC());
+        assertTrue(flagged.identityChange().isEmpty());
+        assertTrue(
+                flagged.report().errors().stream()
+                        .anyMatch(f -> f.path().equals("startup-checks.size-based-retention")
+                                && f.message().contains("partition(s) [0]")
+                                && f.message().contains("R-11")),
+                () -> flagged.report().render());
+    }
+
+    @Test
     void sourceRecreationFailsFastViaIdentityBlobMismatch() {
         String source = createTopic("src", 1);
         String destination = createTopic("dst", 1);
@@ -276,9 +330,95 @@ class StartupChecksIT extends KafkaIT {
         // skip nor a mass duplicate is acceptable — the operator chooses the reset point.
         harness.start();
         Throwable death = harness.awaitDeath(WAIT);
-        IngestLoopFatalException fatal = assertInstanceOf(IngestLoopFatalException.class, death);
+        LoopFatalException fatal = assertInstanceOf(LoopFatalException.class, death);
         assertTrue(fatal.getMessage().contains("auto.offset.reset=none"), fatal.getMessage());
         assertTrue(fatal.getMessage().contains("offset-reset runbook"), fatal.getMessage());
+    }
+
+    @Test
+    void revalidationFlagsAnOldCursorUntilDeleteRetentionIsRaised() {
+        String source = createTopic("src", 1);
+        String destination = createTopic("dst", 1);
+        String dlq = createTopic("dlq", 1);
+        harness = EngineHarness.builder()
+                .roles(Role.INGEST, Role.DISPATCH)
+                .source(source)
+                .destination(destination)
+                .dlq(dlq)
+                .build();
+        StartupValidationResult startup = harness.validate(); // CREATE bootstrap: delete.retention.ms = 2 x P1D
+        assertFalse(startup.report().hasErrors(), () -> startup.report().render());
+        String tracker = harness.trackerTopic();
+        TopicPartition trackerPartition = new TopicPartition(tracker, 0);
+
+        // One appended tracker record (LogAppendTime: now) and a dispatch cursor still in front of it.
+        try (Producer<byte[], byte[]> producer = newProducer()) {
+            produce(producer, tracker, 0, System.currentTimeMillis(), "k", "v");
+        }
+        get(ADMIN.alterConsumerGroupOffsets(
+                        harness.dispatchGroupId(), Map.of(trackerPartition, new OffsetAndMetadata(0L)))
+                .all());
+
+        // The only way to age a fresh record past delete.retention.ms / 2 (= 24 h here) is to
+        // read the round 30 h in the future.
+        Clock future = Clock.offset(Clock.systemUTC(), Duration.ofHours(30));
+        IdentityBlob identity = startup.identity().orElseThrow();
+        Uuid trackerId = topicId(tracker);
+
+        StartupValidator.Revalidation breached = harness.revalidate(identity, trackerId, future);
+        assertTrue(breached.identityChange().isEmpty());
+        assertTrue(
+                breached.report().errors().stream()
+                        .anyMatch(f -> f.path().equals("route.tracker")
+                                && f.message().contains("committed cursor older than delete.retention.ms / 2")),
+                () -> breached.report().render());
+
+        // Raising delete.retention.ms to 4 days moves the cutoff to 18 h before now: clean again.
+        ConfigResource resource = new ConfigResource(ConfigResource.Type.TOPIC, tracker);
+        get(ADMIN.incrementalAlterConfigs(Map.of(
+                        resource,
+                        List.of(new AlterConfigOp(
+                                new ConfigEntry(
+                                        "delete.retention.ms",
+                                        Long.toString(Duration.ofDays(4).toMillis())),
+                                AlterConfigOp.OpType.SET))))
+                .all());
+        await("revalidation clean after raising delete.retention.ms")
+                .atMost(WAIT)
+                .until(() -> !harness.revalidate(identity, trackerId, future)
+                        .report()
+                        .hasErrors());
+    }
+
+    @Test
+    void revalidationReportsASourceRecreatedUnderARunningEngineAsAnIdentityChange() {
+        String source = createTopic("src", 1);
+        String destination = createTopic("dst", 1);
+        String dlq = createTopic("dlq", 1);
+        harness = EngineHarness.builder()
+                .source(source)
+                .destination(destination)
+                .dlq(dlq)
+                .build();
+        StartupValidationResult startup = harness.validate();
+        assertFalse(startup.report().hasErrors(), () -> startup.report().render());
+        IdentityBlob identity = startup.identity().orElseThrow();
+        Uuid trackerId = topicId(harness.trackerTopic());
+
+        get(ADMIN.deleteTopics(List.of(source)).all());
+        await("source topic deletion").atMost(WAIT).until(() -> !topicExists(source));
+        await("source topic recreation").atMost(WAIT).ignoreExceptions().until(() -> {
+            if (!topicExists(source)) {
+                createNamedTopic(source, 1, Map.of());
+            }
+            return topicExists(source) && !topicId(source).equals(identity.sourceTopicId());
+        });
+
+        String change = harness.revalidate(identity, trackerId, Clock.systemUTC())
+                .identityChange()
+                .orElseThrow(() -> new AssertionError("a recreated source must be an identity change"));
+        assertTrue(change.contains("recreated under the same name"), change);
+        assertTrue(change.contains("R17"), change);
     }
 
     private static Uuid topicId(String topic) {

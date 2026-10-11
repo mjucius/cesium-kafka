@@ -2,196 +2,219 @@ package com.jucius.cesium.kafka.app.lifecycle;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.jucius.cesium.kafka.api.store.RouteDescriptor;
-import com.jucius.cesium.kafka.api.store.TrackerBackedStore;
-import com.jucius.cesium.kafka.app.lifecycle.CesiumEngine.LoopSpec;
-import com.jucius.cesium.kafka.core.admin.IdentityBlob;
+import com.jucius.cesium.kafka.app.health.ShardRecovery;
+import com.jucius.cesium.kafka.core.admin.StartupValidator;
 import com.jucius.cesium.kafka.core.config.CesiumConfig;
 import com.jucius.cesium.kafka.core.config.DispatchConfig;
-import com.jucius.cesium.kafka.core.config.IngestConfig;
 import com.jucius.cesium.kafka.core.config.InstanceId;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.config.RouteConfig;
 import com.jucius.cesium.kafka.core.config.TopicRef;
 import com.jucius.cesium.kafka.core.config.ValidationReport;
-import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStoreProvider;
+import com.jucius.cesium.kafka.store.tracker.KafkaTrackerStore;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
-import org.apache.kafka.common.Uuid;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * The config-to-engine wiring decisions that do not need a broker (design §6, §10): role selection
- * and worker counts ({@link CesiumEngine#planLoops}), store resolution by {@code store.type}
- * ({@link CesiumEngine#resolveStore}), and the M5-obligation-#10 partition-aware heap re-validation
- * ({@link CesiumEngine#heapBudgetReport}).
+ * The config-to-engine wiring decisions that do not need a broker (design §6, §10): the sidecar
+ * budget, and the health and re-validation plumbing.
  */
 class CesiumEngineWiringTest {
 
-    private static final long FOUR_GIB = 4L * 1024 * 1024 * 1024;
-    private static final long SIXTY_FOUR_MIB = 64L * 1024 * 1024;
-
-    // ------------------------------------------------------------------ role selection / workers
-
-    @Test
-    void ingestOnlyRoleStartsOnlyIngestWorkers() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.INGEST), 3, 5));
-        assertEquals(
-                List.of(new LoopSpec(Role.INGEST, 0), new LoopSpec(Role.INGEST, 1), new LoopSpec(Role.INGEST, 2)),
-                specs,
-                "ingest-only roles must start exactly ingest.workers ingest loops and no dispatch loop");
-    }
-
-    @Test
-    void dispatchOnlyRoleStartsOnlyDispatchWorkers() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.DISPATCH), 4, 2));
-        assertEquals(List.of(new LoopSpec(Role.DISPATCH, 0), new LoopSpec(Role.DISPATCH, 1)), specs);
-    }
-
-    @Test
-    void bothRolesStartIngestThenDispatchWithDistinctOrdinals() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.INGEST, Role.DISPATCH), 2, 2));
-        assertEquals(
-                List.of(
-                        new LoopSpec(Role.INGEST, 0),
-                        new LoopSpec(Role.INGEST, 1),
-                        new LoopSpec(Role.DISPATCH, 0),
-                        new LoopSpec(Role.DISPATCH, 1)),
-                specs);
-    }
-
-    @Test
-    void defaultWorkerCountsAreOneEach() {
-        List<LoopSpec> specs = CesiumEngine.planLoops(config(Set.of(Role.INGEST, Role.DISPATCH), 1, 1));
-        assertEquals(2, specs.size());
-        assertEquals(1, specs.stream().filter(s -> s.role() == Role.INGEST).count());
-        assertEquals(1, specs.stream().filter(s -> s.role() == Role.DISPATCH).count());
-    }
-
-    // ------------------------------------------------------------------ store resolution by type
-
-    @Test
-    void resolvesTheKafkaTrackerStoreByTypeId() {
-        TrackerBackedStore store = CesiumEngine.resolveStore(KafkaTrackerStoreProvider.TYPE_ID);
-        assertInstanceOf(TrackerBackedStore.class, store);
-    }
-
-    @Test
-    void unknownStoreTypeFailsFast() {
-        EngineStartupException failure =
-                assertThrows(EngineStartupException.class, () -> CesiumEngine.resolveStore("does-not-exist"));
-        assertTrue(failure.getMessage().contains("does-not-exist"), failure::getMessage);
-    }
-
-    // ------------------------------------------------------------------ heap re-validation (M5 #10)
-
-    @Test
-    void heapBudgetPassesAtASinglePartitionOnAGenerousHeap() {
-        ValidationReport report = CesiumEngine.heapBudgetReport(config(Set.of(Role.DISPATCH), 1, 1), 1, FOUR_GIB);
-        assertFalse(report.hasErrors(), report::render);
-    }
-
-    @Test
-    void heapBudgetBreachesAtTheRealPartitionCount() {
-        // 100k partitions x 2,000,000 default entries x 64 B/entry far exceeds the 16 MiB budget
-        // (64 MiB heap / 4): the estimate-of-1 load passed, the real partition count must fail (#10).
-        ValidationReport report =
-                CesiumEngine.heapBudgetReport(config(Set.of(Role.DISPATCH), 1, 1), 100_000, SIXTY_FOUR_MIB);
-        assertTrue(report.hasErrors(), report::render);
-        assertTrue(
-                report.errors().stream()
-                        .anyMatch(f -> f.path().equals("dispatch.max-pending-per-partition")
-                                && f.message().contains("exceeds the heap budget")),
-                report::render);
-    }
-
-    // ------------------------------------------------------------------ route descriptor
-
-    /**
-     * {@link CesiumEngine#buildRouteDescriptor} re-describes the source, destination and tracker
-     * <em>after</em> startup validation already described them successfully. An unknown-topic answer
-     * there is therefore broker metadata lag — possibly from a different node than validation asked —
-     * not a vanished topic, so the path must wait it out rather than fail startup.
-     *
-     * <p>These are the regression guard for that: reverting the call to a single-shot
-     * {@code describeTopic} turns them red.
-     */
     @Nested
-    class BuildRouteDescriptor {
+    class RecoverySnapshot {
 
-        private final LaggingClusterAdmin admin = new LaggingClusterAdmin();
-        private final CesiumConfig config = config(Set.of(Role.INGEST), 1, 1);
-        private final IdentityBlob identity = new IdentityBlob("cluster-1", Uuid.randomUuid());
+        private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        private final Map<Integer, long[]> previous = new HashMap<>();
 
-        private String tracker() {
-            return config.route().tracker().resolvedTopic(config.applicationId());
-        }
-
-        private void givenAllTopicsExist() {
-            admin.addTopic("src", 3);
-            admin.addTopic("dst", 3);
-            admin.addTopic(tracker(), 3);
+        private AtomicLong shard(int partition, long state, long remaining) {
+            AtomicLong stateValue = new AtomicLong(state);
+            AtomicLong remainingValue = new AtomicLong(remaining);
+            Gauge.builder(KafkaTrackerStore.SHARD_STATE_METRIC, stateValue::get)
+                    .tag("partition", Integer.toString(partition))
+                    .register(registry);
+            Gauge.builder(KafkaTrackerStore.REPLAY_REMAINING_METRIC, remainingValue::get)
+                    .tag("partition", Integer.toString(partition))
+                    .register(registry);
+            return remainingValue;
         }
 
         @Test
-        void aVisibleClusterCostsExactlyOneDescribePerTopic() {
-            givenAllTopicsExist();
+        void reportsNonActiveShardsWithASlopeEta() {
+            AtomicLong remaining = shard(1, 1, 1_000);
+            shard(0, 0, 0);
+            shard(2, 2, 0); // ACTIVE: omitted
 
-            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
-
-            assertEquals("src", route.sourceTopic());
-            assertEquals("dst", route.destinationTopic());
-            assertEquals(tracker(), route.trackerTopic());
             assertEquals(
-                    Map.of("src", 1, "dst", 1, tracker(), 1), admin.describeCalls, "the happy path must not add RPCs");
+                    List.of(
+                            new ShardRecovery(0, ShardRecovery.State.ASSIGNED, 0, -1),
+                            new ShardRecovery(1, ShardRecovery.State.RECOVERING, 1_000, -1)),
+                    CesiumEngine.recoverySnapshot(registry, 10_000, previous),
+                    "no ETA from a single sample");
+
+            remaining.set(800); // 200 records in 1 s -> 800 records left ~ 4 s
+            assertEquals(
+                    new ShardRecovery(1, ShardRecovery.State.RECOVERING, 800, 4_000),
+                    CesiumEngine.recoverySnapshot(registry, 11_000, previous).get(1));
+
+            // A stalled backlog has no estimable ETA.
+            assertEquals(
+                    -1,
+                    CesiumEngine.recoverySnapshot(registry, 12_000, previous)
+                            .get(1)
+                            .etaMillis());
         }
 
         @Test
-        void aTransientlyInvisibleTopicIsWaitedOutRatherThanReportedVanished() {
-            givenAllTopicsExist();
-            // The tracker is the one cesium itself just created, so it is the likeliest to lag.
-            admin.invisibleForDescribes(tracker(), 2);
-
-            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
-
-            assertEquals(tracker(), route.trackerTopic());
-            assertEquals(3, admin.describeCalls.get(tracker()), "two lagging answers, then the real one");
+        void emptyWithoutStoreGauges() {
+            assertEquals(List.of(), CesiumEngine.recoverySnapshot(registry, 0, previous));
         }
-
-        @Test
-        void everyRouteTopicIsAwaitedNotJustTheTracker() {
-            givenAllTopicsExist();
-            admin.invisibleForDescribes("src", 1);
-            admin.invisibleForDescribes("dst", 1);
-
-            RouteDescriptor route = CesiumEngine.buildRouteDescriptor(admin, config, identity, 3);
-
-            assertEquals("src", route.sourceTopic());
-            assertEquals("dst", route.destinationTopic());
-            assertEquals(2, admin.describeCalls.get("src"));
-            assertEquals(2, admin.describeCalls.get("dst"));
-        }
-
-        // The terminal case — a topic that NEVER becomes visible must still fail startup rather than
-        // wait forever — is deliberately not asserted here. Reaching it means spending the whole
-        // TopicVisibility budget, which costs ~10 s of real sleeping in this module (there is no
-        // clock/waiter seam across the module boundary, and widening TopicVisibility's API for one
-        // test is not worth it). Budget expiry is already pinned in TopicVisibilityTest
-        // (aTopicThatTrulyDoesNotExistReturnsEmptyAfterTheBudget); all that is left uncovered here is
-        // describeOrFail's three-line orElseThrow.
     }
 
-    // ------------------------------------------------------------------ helper
+    // ------------------------------------------------------------------ re-validation (D23)
 
-    /** A structurally valid config (route + DLQ + defaults) with the given roles and worker counts. */
-    private static CesiumConfig config(Set<Role> roles, int ingestWorkers, int dispatchWorkers) {
+    @Nested
+    class Revalidation {
+
+        private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        private final CesiumEngine engine =
+                new CesiumEngine(config(Set.of(Role.DISPATCH)), registry, Clock.systemUTC(), Duration.ofSeconds(1));
+
+        private StartupValidator.Revalidation errors(String... paths) {
+            List<ValidationReport.Finding> findings = new ArrayList<>();
+            for (String path : paths) {
+                findings.add(ValidationReport.Finding.error(path, "broken"));
+            }
+            return new StartupValidator.Revalidation(Optional.empty(), new ValidationReport(findings));
+        }
+
+        private double errorsGauge() {
+            return registry.get(CesiumEngine.REVALIDATION_ERRORS_GAUGE).gauge().value();
+        }
+
+        @Test
+        void degradedCauseCombinesLoopsAndRevalidation() {
+            assertNull(CesiumEngine.degradedCause(Set.of(), null));
+            assertEquals("parked-and-degraded loop(s): dispatch", CesiumEngine.degradedCause(Set.of("dispatch"), null));
+            assertEquals("re-validation: x", CesiumEngine.degradedCause(Set.of(), "re-validation: x"));
+            assertEquals(
+                    "parked-and-degraded loop(s): ingest; re-validation: x",
+                    CesiumEngine.degradedCause(Set.of("ingest"), "re-validation: x"));
+        }
+
+        @Test
+        void anIdentityChangeIsFatal() {
+            engine.onRevalidation(new StartupValidator.Revalidation(
+                    Optional.of("re-validation found the route identity changed since startup"),
+                    new ValidationReport(List.of())));
+
+            Throwable cause = engine.fatalCause().orElseThrow();
+            assertTrue(cause.getMessage().contains("identity changed"), cause::getMessage);
+        }
+
+        @Test
+        void errorsDegradeAndACleanRoundClears() {
+            engine.onRevalidation(errors("route.tracker", "route.tracker", "route.dlq.topic"));
+
+            assertTrue(engine.fatalCause().isEmpty(), "errors degrade; they never stop the engine (D1)");
+            assertEquals(3.0, errorsGauge());
+            assertEquals("re-validation: 3 error(s) at route.tracker, route.dlq.topic", engine.revalidationCause());
+
+            engine.onRevalidation(errors());
+
+            assertEquals(0.0, errorsGauge());
+            assertNull(engine.revalidationCause());
+        }
+
+        @Test
+        void everythingIsIgnoredOnceStopping() {
+            engine.stop(Duration.ofSeconds(1));
+
+            engine.onRevalidation(errors("route.tracker"));
+            engine.onRevalidation(new StartupValidator.Revalidation(
+                    Optional.of("identity changed"), new ValidationReport(List.of())));
+
+            assertTrue(engine.fatalCause().isEmpty());
+            assertEquals(0.0, errorsGauge());
+            assertNull(engine.revalidationCause());
+        }
+
+        @Test
+        void aThrowingRoundIsReportedAndTheNextRoundStillRuns() throws Exception {
+            AtomicInteger calls = new AtomicInteger();
+            BlockingQueue<StartupValidator.Revalidation> results = new LinkedBlockingQueue<>();
+            ScheduledExecutorService executor = CesiumEngine.scheduleRevalidation(
+                    Duration.ofMillis(10),
+                    "orders",
+                    () -> {
+                        if (calls.incrementAndGet() == 1) {
+                            throw new IllegalStateException("admin exploded");
+                        }
+                        return errors();
+                    },
+                    results::add);
+            try {
+                StartupValidator.Revalidation first = results.poll(10, TimeUnit.SECONDS);
+                StartupValidator.Revalidation second = results.poll(10, TimeUnit.SECONDS);
+
+                assertNotNull(first);
+                assertTrue(
+                        first.report().errors().getFirst().message().contains("round could not complete"),
+                        first.report()::render);
+                assertNotNull(second, "a throwing round must not cancel the schedule");
+                assertFalse(second.report().hasErrors());
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ sidecar budget (§3.5)
+
+    @Nested
+    class SidecarBudget {
+
+        @Test
+        void theConfiguredBudgetIsClampedToTheBrokerCap() {
+            assertEquals(2048, CesiumEngine.sidecarBudget(2048, OptionalInt.of(4096)));
+            assertEquals(4096, CesiumEngine.sidecarBudget(8192, OptionalInt.of(4096)));
+        }
+
+        @Test
+        void anUnknownBrokerCapPassesTheBudgetThrough() {
+            assertEquals(8192, CesiumEngine.sidecarBudget(8192, OptionalInt.empty()));
+        }
+
+        @Test
+        void aBrokerCapBelowTheStoreMinimumFloorsAtTheMinimum() {
+            assertEquals(
+                    DispatchConfig.Cursor.MIN_SIDECAR_MAX_BYTES, CesiumEngine.sidecarBudget(3072, OptionalInt.of(100)));
+        }
+    }
+
+    /** A structurally valid config (route + DLQ + defaults) with the given roles. */
+    private static CesiumConfig config(Set<Role> roles) {
         return new CesiumConfig(
                 "orders",
                 InstanceId.of("slot-0"),
@@ -201,8 +224,6 @@ class CesiumEngineWiringTest {
                 null,
                 null,
                 null,
-                new IngestConfig(ingestWorkers, null),
-                new DispatchConfig(dispatchWorkers, null, null, null, null, null, null, null, null, null),
                 null,
                 null);
     }

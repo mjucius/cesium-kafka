@@ -1,5 +1,6 @@
 package com.jucius.cesium.kafka.it;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -10,6 +11,7 @@ import com.jucius.cesium.kafka.api.store.CompletionReason;
 import com.jucius.cesium.kafka.core.config.Role;
 import com.jucius.cesium.kafka.core.headers.DlqReasons;
 import com.jucius.cesium.kafka.store.tracker.TrackerWireFormat;
+import io.micrometer.core.instrument.Counter;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -134,6 +136,15 @@ class PayloadExpiryDlqIT extends KafkaIT {
                 CompletionReason.DISPATCHED.name(),
                 completionReason(trackerLog, alive.offset()),
                 "the survivor's tombstone carries DISPATCHED");
+        // The dispatch-side loss notice is counted (post-commit, so await the dispatch thread).
+        await().atMost(WAIT).until(() -> {
+            Counter dlqRecords = dispatchHarness
+                    .meterRegistry()
+                    .find("cesium.dlq.records")
+                    .tag("reason", DlqReasons.PAYLOAD_EXPIRED)
+                    .counter();
+            return dlqRecords != null && dlqRecords.count() == 1.0;
+        });
 
         dispatchHarness.stop();
     }
