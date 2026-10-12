@@ -71,8 +71,8 @@ import org.apache.kafka.common.Uuid;
  * so a brand-new ingest group has no position and the loop fail-fasts by design (I-9). The harness
  * performs the documented operator runbook step once per harness: it seeds committed offset 0 for
  * every source partition via {@code Admin.alterConsumerGroupOffsets} before the first ingest
- * start. Group B needs no seeding — the dispatch loop's provable-first-run seek (§3.6 step 2) is
- * production behavior and the harness exercises it as such.
+ * start. Group B needs no seeding — the dispatch loop's seek to the beginning of a partition with
+ * no committed cursor (§3.6 step 2) is production behavior and the harness exercises it as such.
  *
  * <p>Crash helpers wire to {@link CrashPoints}; tests must {@link CrashPoints#reset()} between
  * crash and restart (and in teardown). {@link #kill()} is the SIGKILL stand-in for points the
@@ -201,7 +201,7 @@ final class EngineHarness implements AutoCloseable {
                             meterRegistry,
                             clock)),
                     relayFactory(),
-                    new KafkaDispatchAdmin(admin, trackerTopic(), dispatchGroupId()),
+                    new KafkaDispatchAdmin(admin, trackerTopic()),
                     meterRegistry,
                     clock);
             dispatch = spawn("it-dispatch-", loop, loop::stop);
@@ -237,6 +237,15 @@ final class EngineHarness implements AutoCloseable {
     /** The dispatch analog of {@link #awaitDeath}: waits for the dispatch loop thread to die. */
     Throwable awaitDispatchDeath(Duration timeout) {
         return awaitLoopDeath(dispatch, "dispatch", timeout);
+    }
+
+    /** Fails, with the throwable that killed it as the cause, when the dispatch loop thread is dead. */
+    void assertDispatchAlive() {
+        Objects.requireNonNull(dispatch, "dispatch loop was never started");
+        if (!dispatch.thread.isAlive()) {
+            throw new AssertionError(
+                    "dispatch loop of " + config.instanceId().value() + " died", dispatch.failure.get());
+        }
     }
 
     @Override

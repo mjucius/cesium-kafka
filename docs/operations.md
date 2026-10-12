@@ -63,8 +63,8 @@ an optional DLQ.
 > fail-fast). At runtime, ingest fails fast on the first record from a source partition that has no
 > tracker partition (I-7). Re-validation also re-checks parity every
 > `startup-checks.revalidation-interval`; a mismatch found there degrades readiness and alerts
-> (`cesium_revalidation_errors`) instead of exiting (§13, ADR-0020). Growing either topic still
-> needs a stop ([§9](#9-growing-partitions-runbook)).
+> (`cesium_revalidation_errors`) instead of exiting (§13, ADR-0020). Growing the source still
+> needs ingest stopped ([§9](#9-growing-partitions-runbook)).
 
 The DLQ topic's existence is validated whenever a policy routes to it. Create it with a partition
 count that suits your DLQ-drain tooling (it need not match the source).
@@ -167,7 +167,7 @@ Getting them wrong can cause a duplicate or silent loss.
 | Setting | Required value | Why it matters |
 |---|---|---|
 | `cleanup.policy` | `compact` (never `compact,delete`) | `compact,delete` would delete a still-pending ADD older than retention → silent loss (D4). Compaction-only means a lone pending ADD can never expire. |
-| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. On dispatch instances, re-validation checks the committed-cursor age against `delete.retention.ms / 2` and degrades + alerts on a breach; the oldest-pending term is covered by it, since a replay starts at the cursor (ADR-0020, [§4](#4-lowering-delaymax-runbook)). |
+| `delete.retention.ms` | **`≥ 2 × max(delay.max, observed oldest-pending age, committed-cursor age)`** | In replay overflow-fallback mode, a replayer's cursor can sit as far back as the oldest pending entry. If a completion tombstone it needs was already deleted, the entry looks pending → duplicate. The `delay.max` term is a startup FAIL. On dispatch instances, re-validation checks the committed-cursor age against `delete.retention.ms / 2` and degrades + alerts on a breach; the oldest-pending term is covered by it, since a replay starts at the cursor (ADR-0020, [§4](#4-lowering-delaymax-runbook)). A partition with no committed cursor replays from its beginning and has no cursor age to check (ADR-0022). |
 | `min.compaction.lag.ms` | `≥ max(2 × transaction.timeout.ms, 1 h)` | Keeps the cleaner away from the active tail / LSO region. Below the floor is a startup FAIL. |
 | `segment.ms` | `≈ 1 h` | So cleaning happens. Larger is a WARN (delays tombstone collection, grows disk). |
 | `message.timestamp.type` | `LogAppendTime` | So tracker record timestamps reflect append order. Otherwise a WARN. |
@@ -237,7 +237,7 @@ Kafka ≥ 3.0; a transactional producer that commits offsets needs `READ` on the
 | Seek consumer (group-less) | `Topic` *source* | READ (**no `Group` ACL**) |
 | Ingest txn producer | `TransactionalId` `cesium.<app>.ingest.*` (prefixed); `Topic` *tracker* / *destination* / *DLQ*; `Group` `cesium.<app>.ingest` | WRITE; WRITE; READ |
 | Dispatch txn producer | `TransactionalId` `cesium.<app>.dispatch.*` (prefixed); `Topic` *destination* / *tracker* / *DLQ*; `Group` `cesium.<app>.dispatch` | WRITE; WRITE; READ |
-| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: identity check, first-run probe, the dispatch group's cursor-age read); **`CREATE` bootstrap only:** `Cluster` CREATE. The checks run at startup and every `startup-checks.revalidation-interval`; re-validation needs no extra grant (`listOffsets` by timestamp needs only Topic DESCRIBE) | per cell |
+| Admin client | `Cluster` (DESCRIBE + DESCRIBE_CONFIGS: broker configs, tracker ACL check); `Topic` *source/dest/tracker/DLQ* (DESCRIBE + DESCRIBE_CONFIGS); `Group` both (DESCRIBE: identity check, the dispatch group's cursor-age read); **`CREATE` bootstrap only:** `Cluster` CREATE. The checks run at startup and every `startup-checks.revalidation-interval`; re-validation needs no extra grant (`listOffsets` by timestamp needs only Topic DESCRIBE) | per cell |
 
 > **The `TransactionalId` and `Group` ACLs are required (M3).** cesium's transactional ids
 > (`cesium.<app>.<role>.<instance>.0`) and `group.instance.id`s
@@ -345,8 +345,10 @@ undetectable (risk #12) and is the one case where you must reason about correctn
 ## 7. Offsets retention vs outage tolerance
 
 cesium locks `auto.offset.reset=none` on both consumer groups (D18). After an outage longer than the
-broker's `offsets.retention.minutes`, the committed offsets expire (KIP-211) and cesium fails fast.
+broker's `offsets.retention.minutes`, the committed offsets expire (KIP-211) and ingest fails fast.
 The alternatives are silent loss (a `latest` reset) or mass duplication (an `earliest` reset).
+Dispatch replays the tracker from the beginning instead, which is correct but may be slow
+([ADR-0022](adr/0022-tracker-partition-without-cursor-replays-from-beginning.md)).
 
 - Set `startup-checks.max-tolerated-outage` (default `P7D`) to the longest outage you must survive.
   Startup checks it against the broker's `offsets.retention.minutes` and FAILs (or WARNs, per
@@ -354,7 +356,7 @@ The alternatives are silent loss (a `latest` reset) or mass duplication (an `ear
 - Ensure broker `offsets.retention.minutes` ≥ your `max-tolerated-outage`. This is usually the
   fix: raise the broker setting (it defaults to 7 days on many clusters) to cover your worst planned
   downtime.
-- The first run is special: see the [first-run / offset-reset runbook](#143-runtime-fail-fast-exit-1-readiness-false).
+- The ingest group's first run needs a one-time seed: see the [first-run / offset-reset runbook](#143-runtime-fail-fast-exit-1-readiness-false).
 
 ---
 
@@ -378,33 +380,39 @@ per loop and, for dispatch, by seek-fetch I/O ([§12](#12-broker-iops-budgeting-
 
 ## 9. Growing partitions (runbook)
 
-The tracker partition count must equal the source partition count, and growing either topic needs
-the engine stopped. A new partition has no committed offset, and `auto.offset.reset=none` is locked
-(D18), so a running loop stops the moment it is assigned one: dispatch on a new tracker partition,
-ingest on a new source partition. Re-validation may report the count mismatch first
-([§14.5](#145-re-validation-errors-not-an-exit)); that finding only degrades readiness, and the loop
-still stops when it is assigned the new partition.
+The tracker partition count must equal the source partition count. A new source partition has no
+committed ingest offset and `auto.offset.reset=none` is locked (D18), so an ingest loop stops the
+moment it is assigned one. Growing the source therefore needs ingest stopped. The tracker needs no
+stop and no seeding, because a dispatch loop replays a tracker partition with no committed cursor
+from its beginning ([ADR-0022](adr/0022-tracker-partition-without-cursor-replays-from-beginning.md)).
+Re-validation may report the count mismatch while you work
+([§14.5](#145-re-validation-errors-not-an-exit)); that finding only degrades readiness.
 
-1. Stop every cesium instance of the application, in every role.
-2. Wait until both consumer groups, `cesium.<application-id>.ingest` and
-   `cesium.<application-id>.dispatch`, are empty. Kafka resets offsets only for an inactive group,
-   and a stopped static member stays registered until its session times out: `session.timeout.ms`
-   ([§10](#10-kubernetes-rollout-recipe)), or the broker's `group.consumer.session.timeout.ms` under
-   `kafka.group-protocol: consumer`. Run this for each group until it reports `Empty`:
+1. Stop every cesium instance whose `roles` include `ingest`. Under the default roles,
+   `[ingest, dispatch]`, that is every instance. Dispatch-only instances can keep running.
+2. Wait until the ingest group, `cesium.<application-id>.ingest`, reports `Empty`. Kafka resets
+   offsets only for an inactive group, and a stopped static member stays registered until its
+   session times out: `session.timeout.ms` ([§10](#10-kubernetes-rollout-recipe)), or the broker's
+   `group.consumer.session.timeout.ms` under `kafka.group-protocol: consumer`.
 
    ```
-   kafka-consumer-groups.sh --bootstrap-server <brokers> --describe --group cesium.<application-id>.dispatch --state
+   kafka-consumer-groups.sh --bootstrap-server <brokers> --describe --group cesium.<application-id>.ingest --state
    ```
+
+   Also wait until the instances you stopped have left the dispatch group,
+   `cesium.<application-id>.dispatch`. `--describe --members` lists the members still in it; if you
+   stopped every dispatch instance, wait for `Empty`. Under the classic protocol, a static leader
+   that rejoins before its session times out keeps its old assignment (KIP-814), and nobody would
+   assign the new tracker partitions.
 
 3. Grow the tracker topic to the target count
    (`kafka-topics.sh --bootstrap-server <brokers> --alter --topic <tracker> --partitions <n>`).
 4. Grow the source topic to the same count. Under `route.relay.partitioning: SOURCE_PARTITION`, grow
    the destination too; startup validates it equal.
-5. Seed only the new partitions to earliest, in both groups. Growing from 4 to 6 partitions:
+5. Seed only the new source partitions to earliest in the ingest group. Growing from 4 to 6
+   partitions:
 
    ```
-   kafka-consumer-groups.sh --bootstrap-server <brokers> --group cesium.<application-id>.dispatch \
-     --reset-offsets --topic <tracker>:4,5 --to-earliest --execute
    kafka-consumer-groups.sh --bootstrap-server <brokers> --group cesium.<application-id>.ingest \
      --reset-offsets --topic <source>:4,5 --to-earliest --execute
    ```
@@ -414,11 +422,19 @@ still stops when it is assigned the new partition.
    ingest would then deliver everything still retained on them a second time. This is the
    [§14.3](#143-runtime-fail-fast-exit-1-readiness-false) first-run offset reset, scoped to the new
    partitions.
-6. Restart the instances.
+6. Restart the stopped instances.
+7. Check that every tracker partition, `0` to `<n>-1`, is listed with a `CONSUMER-ID`. A partition
+   missing from the output, or shown with `-`, has no owner:
+
+   ```
+   kafka-consumer-groups.sh --bootstrap-server <brokers> --describe --group cesium.<application-id>.dispatch
+   ```
 
 Producers can keep writing throughout; the earliest seed picks up anything written to a new source
-partition before the restart. Adding partitions changes key→partition hashing for new records;
-existing pending entries keep their original partition.
+partition before the restart. Running dispatch instances take on the new tracker partitions at
+their next metadata refresh (`metadata.max.age.ms`, 5 minutes by default), so entries on those
+partitions can dispatch up to that much late. Adding partitions changes key→partition hashing for
+new records; existing pending entries keep their original partition.
 
 ---
 
@@ -730,7 +746,7 @@ Discovered after config binds, against the live cluster:
 | Source `retention.ms` < `delay.max + margin` (`startup-checks.retention: FAIL`) | Raise source retention above `delay.max`, lower `delay.max`, or set the check to `WARN`/`SKIP` accepting the payload-expiry risk. |
 | Size/tier eviction detected, not acknowledged | Set `startup-checks.size-based-retention: ACKNOWLEDGED` (named acceptance) or remove `retention.bytes`/tiered storage from the source. |
 | Tracker topic missing in `FAIL` bootstrap mode | Pre-provision the tracker topic per [§1](#1-topics-and-bootstrap-create-vs-fail)/[§3](#3-tracker-settings-that-correctness-depends-on), or use `CREATE`. |
-| Tracker partition count ≠ source | Grow the tracker to match and seed the new partitions ([§9](#9-growing-partitions-runbook)). |
+| Tracker partition count ≠ source | Grow the tracker to match and seed the new source partitions ([§9](#9-growing-partitions-runbook)). |
 | Tracker `cleanup.policy` ≠ `compact` (e.g. `compact,delete`) | Set `cleanup.policy=compact`; `compact,delete` causes silent loss (D4). |
 | Tracker `delete.retention.ms` below the floor | Raise it to `≥ 2 × delay.max`, or lower `delay.max` and drain ([§4](#4-lowering-delaymax-runbook)). |
 | Tracker `min.compaction.lag.ms` below floor | Raise to `≥ max(2 × transaction.timeout.ms, 1 h)`. |
@@ -747,7 +763,6 @@ Discovered after config binds, against the live cluster:
 | Failure (and the message) | Runbook |
 |---|---|
 | **Ingest: no committed offset**: *no committed offset for assigned source partition(s) and auto.offset.reset=none is locked: either committed offsets expired (broker offsets.retention.minutes shorter than the outage) or this is a first run; an operator must seed group offsets explicitly* | **First run:** seed the ingest group's offsets to your chosen start (typically earliest) once, e.g. `kafka-consumer-groups.sh --group cesium.<application-id>.ingest --topic <source> --reset-offsets --to-earliest --execute`. **After an outage > offsets retention:** the operator chooses the reset point explicitly (earliest = reprocess/possible duplicates; a later point = skip). Raise broker `offsets.retention.minutes` to prevent recurrence ([§7](#7-offsets-retention-vs-outage-tolerance)). **After the source grew:** the new partitions have no offset; follow [§9](#9-growing-partitions-runbook). |
-| **Dispatch: no committed cursor on a non-first run** | Same class as above for group B: committed cursors expired or were removed. The dispatch group seeks to beginning only on a provable first run; otherwise it fails fast. Treat as a tracker/offset integrity event ([§6](#6-tracker-disaster-recovery-runbook)). **After the tracker grew:** the new partitions have no cursor; follow [§9](#9-growing-partitions-runbook) instead. |
 | **Dispatch: tracker offset out of range**: *the tracker topic was truncated or recreated under the same name (§3.6 integrity, R-9). Never auto-reset — follow the tracker DR runbook* | The tracker was truncated/recreated. Follow [§6](#6-tracker-disaster-recovery-runbook). cesium will not auto-reset into an empty log. |
 | **Committed-offset identity mismatch** (source recreated) at a runtime offset fetch | Same as the startup identity mismatch ([§14.2](#142-startup-validation-against-the-cluster-exit-1)). |
 | **Topic identity change found by re-validation**: *fatal engine failure (re-validation)*, with *re-validation found the route identity changed since startup* or *the tracker topic '…' id changed* | The source or tracker was recreated under the same name while the engine ran (R17). The engine exits within one `startup-checks.revalidation-interval`. For the source, follow the startup identity mismatch row; for the tracker, follow [§6](#6-tracker-disaster-recovery-runbook). |

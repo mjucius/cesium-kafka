@@ -94,8 +94,8 @@ import org.slf4j.LoggerFactory;
  * {@code read_committed} the OffsetFetch sets {@code require_stable} and blocks through
  * {@code UNSTABLE_OFFSET_COMMIT} until every pending transactional offset commit for the
  * partition resolves; (2) integrity checks — a committed offset below the partition beginning is
- * a fail-fast ("tracker truncated/recreated", R-9), a missing offset is a fail-fast unless the
- * whole group provably never committed (the explicit first-run seek-to-beginning, D18); the
+ * a fail-fast ("tracker truncated/recreated", R-9), a missing offset starts the partition from
+ * its beginning (a full replay of the compacted tracker is correct, ADR-0022); the
  * cursor-sidecar identity blob is validated by the store inside {@code beginRecovery} (§3.6 step
  * 2 — the sidecar encoding is store-owned and opaque here); (3) only then is the barrier
  * snapshotted — HW via {@code Admin.listOffsets(latest, READ_UNCOMMITTED)} (never the consumer's
@@ -261,7 +261,7 @@ public final class DispatchLoop implements Runnable {
      * @param store the tracker-backed store whose index this loop feeds and drains
      * @param fetcher the §7 payload re-fetch pass; the loop owns its lifecycle from here on
      * @param relayFactory builds destination relays and loss notices (§2.4)
-     * @param admin the §3.6 barrier snapshots and first-run probe (the cesium-admin plane)
+     * @param admin the §3.6 barrier snapshots (the cesium-admin plane)
      * @param meterRegistry metrics sink (§9 inventory); the loop's gauges are removed on close
      * @param clock injectable time source; the loop never reads wall time directly
      */
@@ -497,8 +497,8 @@ public final class DispatchLoop implements Runnable {
     /**
      * The locked {@code auto.offset.reset=none} surfaced a partition with no committed offset from
      * {@code poll()}. Give it a provisional position so the poll can proceed: the partition is
-     * still paused, and {@link #resolveCursor} runs for it later in this same iteration — proving
-     * the first run or failing fast ({@link #firstRunCursor}) before any of its records is applied.
+     * still paused, and {@link #resolveCursor} runs for it later in this same iteration and seeks it
+     * to its beginning ({@link #beginningCursor}) before any of its records is applied.
      */
     private void handleMissingCommittedOffsets(Set<TopicPartition> partitions) {
         consumer.seekToBeginning(partitions);
@@ -600,7 +600,7 @@ public final class DispatchLoop implements Runnable {
         long beginning = beginningBoxed == null ? 0L : beginningBoxed;
         final TrackerCursor cursor;
         if (offset == null) {
-            cursor = firstRunCursor(tp, beginning);
+            cursor = beginningCursor(tp, beginning);
         } else {
             // Step 2 (R11): a committed offset below the beginning means truncation/recreation.
             if (offset.offset() < beginning) {
@@ -621,18 +621,16 @@ public final class DispatchLoop implements Runnable {
         pendingBarriers.put(partition, new PendingBarrier(epoch, cursor, admin.trackerHighWatermark(partition)));
     }
 
-    /** The §3.6 explicit first-run path: provable only when the whole group has never committed. */
-    private TrackerCursor firstRunCursor(TopicPartition tp, long beginning) {
-        if (admin.groupHasCommittedOffsets()) {
-            throw new LoopFatalException(
-                    "no committed offset for " + tp + " while the dispatch group has committed offsets elsewhere"
-                            + " (auto.offset.reset=none locked): committed offsets expired or were removed — an"
-                            + " operator must seed the group offsets explicitly; see the offset-reset runbook"
-                            + " (§3.6, D18)");
-        }
+    /**
+     * The §3.6 no-cursor path: replay the partition from its beginning. Correct whatever the cause,
+     * under the same D14 floor as every replay: each completed entry in the compacted tracker is
+     * tombstone-paired or fully compacted (ADR-0022).
+     */
+    private TrackerCursor beginningCursor(TopicPartition tp, long beginning) {
         log.warn(
-                "provable first run for {}: starting recovery from the partition beginning {} — a full replay of"
-                        + " the compacted tracker is correct but may be slow (§3.6 step 2)",
+                "no committed cursor for {} (a first run, a newly added partition, or offsets deleted for this"
+                        + " partition): starting recovery from the partition beginning {}; a full replay of the"
+                        + " compacted tracker is correct but may be slow (§3.6 step 2)",
                 tp,
                 beginning);
         return new TrackerCursor(beginning, "");

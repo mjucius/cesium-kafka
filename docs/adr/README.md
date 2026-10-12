@@ -36,6 +36,7 @@ failure matrix need a corresponding test and an ADR.
 | [0019](0019-2-0-stability-baseline.md) | 2.0 stability baseline | Accepted | Post-approval rev 4 |
 | [0020](0020-runtime-revalidation.md) | Runtime re-validation | Accepted | D23, D14, R-7, R-11, R17 |
 | [0021](0021-store-spi-folded-into-core.md) | Store SPI folded into core; config surface trimmed | Accepted | Post-approval rev 5 |
+| [0022](0022-tracker-partition-without-cursor-replays-from-beginning.md) | A tracker partition with no committed cursor replays from its beginning | Accepted | §3.6, D18, R6, R11, R-7; post-approval rev 6 |
 
 ADRs 0001–0015 are the set planned in design §12. 0016 and 0017 record three later project-owner
 decisions: the fastutil index backing, and the bundle of Kafka 4.0 broker floor, repo-only
@@ -44,4 +45,6 @@ publishing, and app as product surface. The design records them in the revision 
 fix: a bounded wait for metadata of topics whose existence startup has already proven. 0019 records
 the move to 2.0.0 and the stability promise that starts there. 0020 records runtime re-validation
 and the degrade-not-stop policy for its findings. 0021 folds the unused store SPI into core and trims
-the config keys the 2.0 review found had no real use; it supersedes 0003.
+the config keys the 2.0 review found had no real use; it supersedes 0003. 0022 drops the
+"provable first run" test. The dispatch loop replays any tracker partition with no committed cursor
+from its beginning, so neither a rebalance before the first commits nor tracker growth stops it.

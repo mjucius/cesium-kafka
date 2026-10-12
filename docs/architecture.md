@@ -17,7 +17,9 @@ a message waits, cesium stores only a `(sourcePartition, sourceOffset, dispatchA
 (~40 B/entry measured) and re-fetches the payload from the source topic at dispatch time. Scheduler
 state is made durable in an internal compacted **tracker** topic (see
 [overview.md](overview.md#3-the-main-actors) for what it stores and why), so a restart or rebalance
-replays only a bounded window, never the whole history.
+replays only a bounded window from the committed cursor. A tracker partition with no committed
+cursor (first run, a new partition, deleted offsets) replays from its beginning
+([ADR-0022](adr/0022-tracker-partition-without-cursor-replays-from-beginning.md)).
 
 The design goals behind everything below: millions of pending entries in a modest heap; zero
 per-entry allocation in the steady-state hot path; no busy-polling; bounded replay on

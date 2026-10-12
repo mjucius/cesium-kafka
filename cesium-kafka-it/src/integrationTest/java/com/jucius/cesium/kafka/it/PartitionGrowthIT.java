@@ -19,10 +19,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * The operations.md §9 growing-partitions runbook, end to end (R-7). A new partition has no
- * committed offset and {@code auto.offset.reset=none} is locked (D18), so growth is offline: stop
- * the engine, wait for both groups to empty, grow the tracker then the source, seed only the new
- * partitions to earliest in both groups, restart. A delayed record on the new source partition must
+ * The operations.md §9 growing-partitions runbook, end to end (R-7). A new source partition has no
+ * committed ingest offset and {@code auto.offset.reset=none} is locked (D18), so source growth is
+ * offline: stop the engine, wait for both groups to empty, grow the tracker then the source, seed
+ * only the new source partitions to earliest, restart. The dispatch group is not seeded: its loop
+ * starts the new tracker partition from the beginning (ADR-0022). It still has to empty, because a
+ * static leader rejoining a group that is still Stable keeps its old assignment (KIP-814) and the
+ * new tracker partition would stay unassigned. A delayed record on the new source partition must
  * then be delivered after its delay.
  */
 class PartitionGrowthIT extends KafkaIT {
@@ -37,7 +40,7 @@ class PartitionGrowthIT extends KafkaIT {
     }
 
     @Test
-    void offlineGrowthWithSeededNewPartitionsDeliversFromANewSourcePartition() {
+    void offlineGrowthSeedingOnlyNewSourcePartitionsDeliversFromANewSourcePartition() {
         String source = createTopic("src", 1);
         String destination = createTopic("dst", 1);
         String dlq = createTopic("dlq", 1);
@@ -67,14 +70,12 @@ class PartitionGrowthIT extends KafkaIT {
         readExactlyCommitted(destination, 1, WAIT);
         harness.stop();
 
-        // Runbook: offsets can only be altered once both groups are empty.
+        // Runbook: ingest offsets can only be altered once the group is empty; the dispatch group
+        // must empty so the restart is a fresh join that assigns the new tracker partition.
         awaitEmpty(harness.ingestGroupId());
         awaitEmpty(harness.dispatchGroupId());
         get(ADMIN.createPartitions(Map.of(tracker, NewPartitions.increaseTo(2))).all());
         get(ADMIN.createPartitions(Map.of(source, NewPartitions.increaseTo(2))).all());
-        get(ADMIN.alterConsumerGroupOffsets(
-                        harness.dispatchGroupId(), Map.of(new TopicPartition(tracker, 1), new OffsetAndMetadata(0L)))
-                .all());
         get(ADMIN.alterConsumerGroupOffsets(
                         harness.ingestGroupId(), Map.of(new TopicPartition(source, 1), new OffsetAndMetadata(0L)))
                 .all());

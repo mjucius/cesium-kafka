@@ -57,14 +57,14 @@ Legend for the Lane column:
 | Row | Fault | Covering test(s) | Lane |
 |-----|-------|------------------|------|
 | R-1 | Full restart | `DispatchRestartRecoveryIT`; `CursorReplayIT`; `KafkaTrackerStoreRecoveryTest` | PR (kip848: [finding 2](#gaps-and-concerns)) |
-| R-2 | Scale-out | `RebalanceScaleIT` (scale 1→2→1); `CooperativeRevocationIT` | nightly |
+| R-2 | Scale-out | `RebalanceScaleIT` (scale 1→2→1); `CooperativeRevocationIT`; `TakeoverBeforeFirstCommitIT` (a fresh deployment's rebalance moves partitions before their first cursor commit; the new owner replays them from the beginning) | nightly + PR |
 | R-3 | `onPartitionsLost` (fenced member) | `PartitionsLostIT` | nightly |
 | R-4 | Tracker ADD ages (compaction-only, never expires) | `CompactionIT` (lone pending ADD survives cleaning); `TrackerBackedStoreContract` pre-compacted-log scripts | nightly + contract |
 | R-5 | Source payload expires while pending | `StartupValidatorTest`/`StartupChecksIT` (retention validation); `PayloadExpiryDlqIT` (residual D-9) | PR |
 | R-6 | Clock skew between dispatch workers | No EOS test (skew has no EOS impact); surfaced via `dispatch_lag` histogram | n/a; see [gap 3](#gaps-and-concerns) |
-| R-7 | Tracker/source partition-count drift | `StartupValidatorTest`; `StartupChecksIT` (mismatch ⇒ startup fail-fast); `StartupValidatorTest$Revalidate` (runtime drift degrades); `PartitionGrowthIT` (offline growth runbook) | PR |
+| R-7 | Tracker/source partition-count drift | `StartupValidatorTest`; `StartupChecksIT` (mismatch ⇒ startup fail-fast); `StartupValidatorTest$Revalidate` (runtime drift degrades); `PartitionGrowthIT` (growth runbook: ingest stopped and seeded, the new tracker partition unseeded); `DispatchLoopTest` (`missingCommittedOffsetWithCommitsElsewhereSeeksToBeginning`) | PR |
 | R-8 | `delete.retention.ms` below the D14 floor ⇒ startup FAIL; runtime floor and committed-cursor age degrade | `StartupChecksIT` (cursor-age breach, cleared by raising `delete.retention.ms`); `AppQuickstartIT` (degrade-then-clear through the app); `StartupValidatorTest$Revalidate`; `CompactionIT` (startup rejection); `StartupValidatorTest` | nightly + PR |
-| R-9 | Tracker topic deleted/recreated/truncated ⇒ fail-fast | `DispatchLoopTest` (`committedCursorBelowBeginningIsFailFast`, `missingCommittedOffsetWithGroupHistoryIsFailFast`); the out-of-range poll path has no dedicated test | unit |
+| R-9 | Tracker topic deleted/recreated/truncated ⇒ fail-fast | `DispatchLoopTest` (`committedCursorBelowBeginningIsFailFast`, `committedCursorAboveBarrierIsFailFast`); the out-of-range poll path has no dedicated test | unit |
 | R-10 | Source topic recreated (same name) ⇒ topic-ID mismatch; under a running engine ⇒ re-validation fatal | `StartupChecksIT` (recreation under a running engine ⇒ identity change); `CesiumEngineWiringTest` (identity change ⇒ fatal path); `AppQuickstartIT` (engine exits non-zero); `StartupChecksIT` (source recreation ⇒ identity-blob mismatch); `StartupValidatorTest`, `IdentityBlobTest` | PR |
 | R-11 | Source evicting by `retention.bytes`/tiered ⇒ explicit ack; acknowledged eviction inside `delay.max + margin` ⇒ re-validation degrades | `StartupValidatorTest$Revalidate` (earliest retained record vs the window); `StartupChecksIT` (size-based-retention acknowledgment gate); `StartupValidatorTest` | PR |
 
@@ -79,7 +79,7 @@ Legend for the Lane column:
 | 3 | Zombie fencing (deterministic) | `ZombieFencingIT`, `ZombieStaticIdFencingIT` | nightly (classic); KIP-848 [finding 2](#gaps-and-concerns) |
 | 4 | LSO / barrier hazard (non-negotiable) | `LsoBarrierHazardIT` | PR + kip848 |
 | 5 | Barrier-ordering hazard I8 (non-negotiable) | `BarrierOrderingI8IT` | PR + kip848 |
-| 6 | Rebalance (scale, cooperative, static zero-movement) | `RebalanceScaleIT`, `CooperativeRevocationIT`, `PartitionsLostIT` | nightly (classic); KIP-848 [finding 2](#gaps-and-concerns) |
+| 6 | Rebalance (scale, cooperative, static zero-movement) | `RebalanceScaleIT`, `CooperativeRevocationIT`, `PartitionsLostIT`; `TakeoverBeforeFirstCommitIT` (PR) | nightly (classic); KIP-848 [finding 2](#gaps-and-concerns) |
 | 7 | Cursor-bounded replay incl. heterogeneous delays | `CursorReplayIT`, `DispatchRestartRecoveryIT` (pins survive partial dispatch) | PR |
 | 8 | Compaction | `CompactionIT` + broker-free backstop `TrackerBackedStoreContract` pre-compacted-log | nightly + contract |
 | 9 | Integrity & environment checks | `StartupChecksIT`, `PayloadExpiryDlqIT`, `HeaderPolicyIT` | PR |

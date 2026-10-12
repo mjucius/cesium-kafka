@@ -6,6 +6,7 @@
   amends [ADR-0002](0002-pointer-only-payloads-and-retention-validation.md),
   [ADR-0005](0005-tracker-format-compaction-only-and-tombstone-retention-floor.md) and
   [ADR-0018](0018-bounded-wait-for-proven-topic-metadata.md)
+- **Amended by:** [ADR-0022](0022-tracker-partition-without-cursor-replays-from-beginning.md) (only the ingest loop still exits on a new partition's missing offset; tracker growth needs no dispatch seeding; a partition with no committed cursor replays from its beginning, with no cursor age to check)
 
 ## Context
 

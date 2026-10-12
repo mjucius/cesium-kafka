@@ -83,7 +83,7 @@ privilege means granting that one principal exactly the ACLs below and nothing e
 |   |  | `Group` · `cesium.<app>.dispatch` | READ | `sendOffsetsToTransaction` commits the cursor |
 | 6 | **Admin client** | `Cluster` | DESCRIBE, DESCRIBE_CONFIGS | `describeCluster`, broker-config validation, `describeAcls` (tracker ACL check) |
 |   |  | `Topic` · *source*, *destination*, *tracker*, *DLQ* | DESCRIBE, DESCRIBE_CONFIGS | topic-config validation at startup and every `startup-checks.revalidation-interval`; `listOffsets` by timestamp (re-validation cursor-age and retention checks) |
-|   |  | `Group` · `cesium.<app>.ingest`, `cesium.<app>.dispatch` | DESCRIBE | `listConsumerGroupOffsets`: startup source-identity check (ingest group), first-run probe and re-validation cursor-age check (dispatch group) |
+|   |  | `Group` · `cesium.<app>.ingest`, `cesium.<app>.dispatch` | DESCRIBE | `listConsumerGroupOffsets`: startup source-identity check (ingest group), re-validation cursor-age check (dispatch group) |
 |   |  | `Cluster` (`CREATE` bootstrap only) | CREATE | `createTopics` (tracker). cesium never calls `createAcls`, so it needs no ALTER |
 
 Row 6's checks run at startup and again every `startup-checks.revalidation-interval` (default 5 min,

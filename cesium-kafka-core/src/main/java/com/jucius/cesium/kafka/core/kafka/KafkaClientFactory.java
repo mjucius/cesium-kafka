@@ -169,7 +169,7 @@ public final class KafkaClientFactory {
     /**
      * Group B's consumer group id for an application: {@code cesium.<applicationId>.dispatch}
      * (design §3.3). Static for the same reason as {@link #ingestGroupId(String)}: non-client
-     * collaborators (the dispatch admin's first-run probe, lag tooling docs) derive the name
+     * collaborators (the re-validation cursor-age check, lag tooling docs) derive the name
      * without building a factory.
      */
     public static String dispatchGroupId(String applicationId) {
@@ -208,8 +208,8 @@ public final class KafkaClientFactory {
      * byte-array deserialization, auto-commit off, {@code isolation.level=read_committed} (D17:
      * replay must never apply aborted records, and the offset fetch's {@code require_stable} wait
      * is the I8 synchronization point), {@code auto.offset.reset=none} (D18: resets are explicit
-     * operator decisions; group B's only sanctioned reset is the provable first-run seek, §3.6),
-     * the derived group id and static-membership id (D21).
+     * operator decisions; group B seeks a partition with no committed cursor to its beginning
+     * explicitly, §3.6), the derived group id and static-membership id (D21).
      */
     public Properties trackerConsumerProperties() {
         Properties props = new Properties();

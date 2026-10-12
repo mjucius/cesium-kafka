@@ -307,7 +307,7 @@ public final class TrackerStoreHarness {
         return cursor;
     }
 
-    /** The last durably committed cursor, or the provable-first-run cursor {@code (0, "")}. */
+    /** The last durably committed cursor, or the no-cursor start {@code (0, "")} (§3.6 step 2). */
     public TrackerCursor committedCursor(int partition) {
         return lastCommitted.getOrDefault(partition, new TrackerCursor(0, ""));
     }

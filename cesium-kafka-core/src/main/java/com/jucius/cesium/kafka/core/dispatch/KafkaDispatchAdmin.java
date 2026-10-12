@@ -3,14 +3,11 @@ package com.jucius.cesium.kafka.core.dispatch;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.ListOffsetsOptions;
 import org.apache.kafka.clients.admin.ListOffsetsResult;
 import org.apache.kafka.clients.admin.OffsetSpec;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.IsolationLevel;
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 
 /**
@@ -27,18 +24,14 @@ public final class KafkaDispatchAdmin implements DispatchAdmin {
 
     private final Admin admin;
     private final String trackerTopic;
-    private final String groupId;
 
     /**
      * @param admin the shared admin client; the caller owns its lifecycle
      * @param trackerTopic the resolved tracker topic name barriers are snapshotted on
-     * @param groupId the dispatch group id ({@code cesium.<applicationId>.dispatch}) probed for
-     *     the first-run proof
      */
-    public KafkaDispatchAdmin(Admin admin, String trackerTopic, String groupId) {
+    public KafkaDispatchAdmin(Admin admin, String trackerTopic) {
         this.admin = Objects.requireNonNull(admin, "admin");
         this.trackerTopic = Objects.requireNonNull(trackerTopic, "trackerTopic");
-        this.groupId = Objects.requireNonNull(groupId, "groupId");
     }
 
     @Override
@@ -50,23 +43,5 @@ public final class KafkaDispatchAdmin implements DispatchAdmin {
                 .toCompletionStage()
                 .toCompletableFuture()
                 .thenApply(ListOffsetsResult.ListOffsetsResultInfo::offset);
-    }
-
-    @Override
-    public boolean groupHasCommittedOffsets() {
-        final Map<TopicPartition, OffsetAndMetadata> offsets;
-        try {
-            offsets = admin.listConsumerGroupOffsets(groupId)
-                    .partitionsToOffsetAndMetadata()
-                    .get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new KafkaException("interrupted while probing committed offsets for group " + groupId, e);
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() == null ? e : e.getCause();
-            throw new KafkaException("could not probe committed offsets for group " + groupId, cause);
-        }
-        // The broker returns null metadata entries for partitions it knows without offsets.
-        return offsets.values().stream().anyMatch(Objects::nonNull);
     }
 }

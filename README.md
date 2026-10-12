@@ -43,7 +43,10 @@ What is supported, and how stable:
   payloads stay in your source topic and are re-fetched at dispatch time. Millions of pending
   messages fit in a modest heap.
 - Durable and recoverable. Scheduler state lives in an internal compacted tracker topic. Restarts
-  and rebalances replay a bounded window (committed-cursor + sidecar design), never the full history.
+  and rebalances replay a bounded window (committed-cursor + sidecar design). Only a tracker
+  partition with no committed cursor (first run, a new partition, deleted offsets) replays from its
+  beginning
+  ([ADR-0022](docs/adr/0022-tracker-partition-without-cursor-replays-from-beginning.md)).
 - Pluggable scheduler store SPI with a published contract-test kit. The tracker-topic store is the
   main implementation; database-backed stores can plug in.
 - No silent failure modes. Every fault path ends in a retry, an explicit DLQ record, a degraded

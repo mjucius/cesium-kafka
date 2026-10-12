@@ -158,9 +158,8 @@ class DispatchLoopTest {
     }
 
     @Test
-    void firstRunSeeksToBeginningOnlyWhenProvable() {
+    void firstRunSeeksToBeginning() {
         Harness h = new Harness();
-        h.admin.groupHasOffsets = false; // no committed offsets anywhere: provable first run
         h.start(0); // note: no committed offset seeded
         h.loop.runOnce();
 
@@ -171,28 +170,34 @@ class DispatchLoopTest {
     }
 
     @Test
-    void noOffsetFromPollStillGoesThroughTheFirstRunProof() {
+    void noOffsetFromPollStillResolvesTheCursorInTheSameIteration() {
         // poll() surfaces the missing position before resolveCursor runs; the provisional seek
-        // must not bypass the first-run proof, which still decides in the same iteration.
+        // must not bypass resolveCursor, which still decides in the same iteration.
         Harness h = new Harness();
-        h.admin.groupHasOffsets = true;
+        h.seedCommitted(1, 7L, ""); // the group has committed elsewhere
         h.start(0);
         h.consumer.setPollException(new NoOffsetForPartitionException(tracker(0)));
+        h.loop.runOnce();
 
-        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
-        assertTrue(failure.getMessage().contains("offset-reset runbook"), failure.getMessage());
-        assertTrue(h.store.recoveries.isEmpty(), "never auto-reset (D18)");
+        assertEquals(List.of(new ScriptedTrackerStore.RecoveryCall(0, 0L, "", 0L)), h.store.recoveries);
     }
 
     @Test
-    void missingCommittedOffsetWithGroupHistoryIsFailFast() {
+    void missingCommittedOffsetWithCommitsElsewhereSeeksToBeginning() {
+        // A rebalance moved the partition before its first commit, the tracker grew, or an operator
+        // deleted this partition's offset: replaying it from the beginning is correct (ADR-0022).
         Harness h = new Harness();
-        h.admin.groupHasOffsets = true; // the group committed before: this is expiry, not first run
+        h.seedCommitted(1, 7L, ""); // the group has committed elsewhere
+        h.admin.barrierValues.put(0, 9L);
         h.start(0);
+        h.consumer.updateBeginningOffsets(Map.of(tracker(0), 4L)); // the cleaner removed the head
 
-        LoopFatalException failure = assertThrows(LoopFatalException.class, h.loop::runOnce);
-        assertTrue(failure.getMessage().contains("offset-reset runbook"), failure.getMessage());
-        assertTrue(h.store.recoveries.isEmpty(), "never auto-reset (D18)");
+        h.loop.runOnce();
+
+        assertEquals(
+                List.of(new ScriptedTrackerStore.RecoveryCall(0, 4L, "", 9L)),
+                h.store.recoveries,
+                "recovery from the partition beginning, not offset 0, with an empty sidecar");
     }
 
     @Test
@@ -1206,7 +1211,6 @@ class DispatchLoopTest {
         private final List<String> events;
         final Map<Integer, Long> barrierValues = new HashMap<>();
         private final Map<Integer, CompletableFuture<Long>> pendingBarriers = new HashMap<>();
-        boolean groupHasOffsets;
 
         FakeDispatchAdmin(List<String> events) {
             this.events = events;
@@ -1227,11 +1231,6 @@ class DispatchLoopTest {
                 return pending;
             }
             return CompletableFuture.completedFuture(barrierValues.getOrDefault(partition, 0L));
-        }
-
-        @Override
-        public boolean groupHasCommittedOffsets() {
-            return groupHasOffsets;
         }
     }
 

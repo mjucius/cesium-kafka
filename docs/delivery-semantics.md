@@ -236,9 +236,10 @@ guard is an outage budget (`startup-checks.max-tolerated-outage`) rather than a 
 floor. If a group's offsets expire after an outage longer than the broker's offsets retention, the
 next fetch finds no committed offset.
 
-cesium refuses to guess. `auto.offset.reset=none` is locked on both groups (D18). A missing offset
-surfaces as `NoOffsetForPartitionException` and fails fast with a runbook instead of silently
-resetting. Both alternatives do silent damage:
+cesium refuses to guess. `auto.offset.reset=none` is locked on both groups (D18). A missing ingest
+offset surfaces as `NoOffsetForPartitionException` and fails fast with a runbook instead of silently
+resetting; group B's missing cursor is the one case with a correct answer (§8.2). Both alternatives
+do silent damage:
 
 - `auto.offset.reset=latest` would skip everything between the lost offset and the live end,
   losing it silently.
@@ -251,12 +252,14 @@ compares the broker's `offsets.retention.minutes` against
 ### 8.2 First-run seeding (the one legitimate explicit reset)
 
 A brand-new deployment has no committed offsets, which to a machine looks the same as expired
-offsets; hence the locked `none`. First run is therefore an explicit operator step: group A's offsets
-are seeded once (the quickstart's `topic-init` step does this), and group B performs an explicit
-seek-to-beginning only when it can prove a true first run (no committed offsets anywhere for the
-whole group). A replay-from-beginning of the compacted tracker is correct (completed entries are
-tombstone-paired or fully compacted), but it is logged prominently and may be slow. This is the
-"correct-but-slow replay from zero" case.
+offsets; hence the locked `none`. Group A's first run is therefore an explicit operator step: its
+offsets are seeded once (the quickstart's `topic-init` step does this). Group B needs no seed. It
+seeks any tracker partition with no committed cursor to its beginning, whether that is a first run,
+a newly added tracker partition, expired offsets, or offsets an operator deleted
+([ADR-0022](adr/0022-tracker-partition-without-cursor-replays-from-beginning.md)). A
+replay-from-beginning of the compacted tracker is correct (completed entries are tombstone-paired
+or fully compacted; like any replay it relies on the tombstone-retention floor of §8.3), but it is
+logged prominently and may be slow. This is the "correct-but-slow replay from zero" case.
 
 ### 8.3 Tombstone retention and topic identity
 

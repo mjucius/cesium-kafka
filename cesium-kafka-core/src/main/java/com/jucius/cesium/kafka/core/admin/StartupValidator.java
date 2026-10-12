@@ -931,8 +931,9 @@ public final class StartupValidator {
                     "startup-checks.max-tolerated-outage",
                     "could not read broker " + OFFSETS_RETENTION_MINUTES + "; verify manually that it covers"
                             + " startup-checks.max-tolerated-outage (" + maxOutage
-                            + ") — committed offsets expiring during an outage fail-fast under"
-                            + " auto.offset.reset=none (D18, R6, KIP-211)."));
+                            + ") — committed offsets expiring during an outage make ingest fail fast under"
+                            + " auto.offset.reset=none; dispatch replays the tracker from its beginning"
+                            + " (D18, R6, KIP-211, ADR-0022)."));
             return;
         }
         long minutes;
@@ -954,8 +955,9 @@ public final class StartupValidator {
                     "broker " + OFFSETS_RETENTION_MINUTES + " (" + minutes + " min = " + retentionMs
                             + " ms) is below startup-checks.max-tolerated-outage (" + maxOutage
                             + ") (D18, R6, KIP-211): an outage longer than the broker's offsets retention expires"
-                            + " the committed offsets, and auto.offset.reset=none then fail-fasts — silent skip or"
-                            + " mass duplication is never an option. Raise " + OFFSETS_RETENTION_MINUTES
+                            + " the committed offsets; ingest then fail-fasts under auto.offset.reset=none (silent"
+                            + " skip or mass duplication is never an option) and dispatch replays the tracker from"
+                            + " its beginning (ADR-0022). Raise " + OFFSETS_RETENTION_MINUTES
                             + " or lower startup-checks.max-tolerated-outage."));
         }
     }

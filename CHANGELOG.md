@@ -25,11 +25,22 @@ All notable changes to this project will be documented in this file. The format 
   `gradle-wrapper.properties` comment describing 9.8.0; corrected.
 - SHA-pinned `actions/upload-artifact` v7.0.1 → v7.0.2 (Dependabot PR [#32]). The pin `cf430e0` is
   the commit the `v7.0.2` tag resolves to.
+- Core (internal): `DispatchAdmin.groupHasCommittedOffsets` is removed, and `KafkaDispatchAdmin`
+  no longer takes the dispatch group id.
 
 ### Fixed
 - Since 1.0, setting `CESIUM_KAFKA_OPTS`, which the Dockerfile and operations.md advertise for JVM
   flags, made startup exit 78. The environment overlay read it as an override of an unknown key
   `kafka-opts`. The overlay now skips the variable, as it already skipped `CESIUM_CONFIG`.
+- Since 1.0, a dispatch loop exited when it was assigned a tracker partition with no committed
+  cursor while the dispatch group had committed on another partition. On a fresh multi-instance
+  deployment under live traffic, a cooperative rebalance that moved partitions before their first
+  cursor commit could stop every dispatch instance until an operator seeded the dispatch group.
+  Tracker growth stopped dispatch the same way. The loop now replays such a partition from its
+  beginning with a WARN (ADR-0022). Behavior change: deleting the dispatch group's offsets for
+  specific tracker partitions no longer stops dispatch; those partitions replay from the beginning.
+  The growth runbook (operations.md §9) no longer seeds the dispatch group and ends by checking
+  that every tracker partition has an owner; the ingest side is unchanged.
 
 ## [2.0.0] - 2026-10-11
 

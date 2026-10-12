@@ -332,8 +332,7 @@ public final class CesiumEngine implements AutoCloseable {
             Admin adminClient, TrackerBackedStore sharedStore, IdentityBlob identity, int partitionCount) {
         KafkaClientFactory clients = new KafkaClientFactory(config);
         RelayRecordFactory relay = buildRelayFactory();
-        KafkaDispatchAdmin dispatchAdmin = new KafkaDispatchAdmin(
-                adminClient, trackerTopic(), KafkaClientFactory.dispatchGroupId(config.applicationId()));
+        KafkaDispatchAdmin dispatchAdmin = new KafkaDispatchAdmin(adminClient, trackerTopic());
         try {
             spawnLoopBodies(clients, relay, dispatchAdmin, sharedStore, identity, partitionCount);
             registerForHealth(Role.INGEST, ingestHandles);

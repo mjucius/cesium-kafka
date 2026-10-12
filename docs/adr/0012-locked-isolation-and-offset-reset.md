@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-06-06
 - **Design reference:** [`../design.md`](../design.md) §3.4 (D17, D18; revisions R5, R6)
+- **Amended by:** [ADR-0022](0022-tracker-partition-without-cursor-replays-from-beginning.md) (group B replays any tracker partition with no committed cursor from its beginning; the provable-first-run test is gone)
 
 ## Context
 
