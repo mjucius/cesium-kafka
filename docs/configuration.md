@@ -46,6 +46,7 @@ engine failures, exit with code 1.
 | Within a map-key segment (e.g. `kafka.*.properties`) | single `_` maps to `.` | `CESIUM_KAFKA__PROPERTIES__BOOTSTRAP_SERVERS` → `kafka.properties.bootstrap.servers` |
 | List values | comma-separated | `CESIUM_ROLES=ingest,dispatch` |
 | Reserved | `CESIUM_CONFIG` names the config file, so the overlay skips it | `CESIUM_CONFIG=/etc/cesium/cesium.yaml` |
+| Reserved | `CESIUM_KAFKA_OPTS` holds JVM flags for the start script, so the overlay skips it | `CESIUM_KAFKA_OPTS="-Xmx4g"` |
 
 Segments are matched case-insensitively (they are lowercased first). Because every `_` inside a
 map-key segment becomes `.`, a map key that contains `-` or `_` cannot be set from the environment:

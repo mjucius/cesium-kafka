@@ -63,6 +63,9 @@ public final class CesiumConfigLoader {
      */
     public static final String CONFIG_PATH_ENV = "CESIUM_CONFIG";
 
+    /** Reserved: the start script ({@code bin/cesium-kafka}) reads JVM flags from it; the overlay skips it. */
+    private static final String JVM_OPTS_ENV = "CESIUM_KAFKA_OPTS";
+
     private static final String ENV_PREFIX = "CESIUM_";
     private static final String ENV_SEPARATOR = "__";
     private static final Pattern ENV_REFERENCE = Pattern.compile("\\$\\{env:([A-Za-z_][A-Za-z0-9_]*)}");
@@ -161,8 +164,9 @@ public final class CesiumConfigLoader {
     private void applyEnvironmentOverlay(ObjectNode tree, List<Finding> findings) {
         environment.entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(ENV_PREFIX))
-                // Skip the reserved config-file selector — it is not a CESIUM_ override path.
-                .filter(entry -> !entry.getKey().equals(CONFIG_PATH_ENV))
+                // Skip the config-file selector and the start script's JVM flags; neither is an override path.
+                .filter(entry -> !entry.getKey().equals(CONFIG_PATH_ENV)
+                        && !entry.getKey().equals(JVM_OPTS_ENV))
                 .sorted(Map.Entry.comparingByKey()) // deterministic finding order
                 .forEach(entry -> {
                     String name = entry.getKey();

@@ -125,6 +125,19 @@ class EnvOverlayTest {
     }
 
     @Test
+    void reservedJvmOptsEnvIsNotTreatedAsAnOverride() {
+        // The start script reads JVM flags from CESIUM_KAFKA_OPTS; the loader used to reject it as
+        // unknown key 'kafka-opts' (exit 78). Setting it must change neither the findings nor the config.
+        Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
+        CesiumConfigLoader.LoadedConfig baseline =
+                LoaderTestSupport.loader(Map.of()).load(file);
+        CesiumConfigLoader.LoadedConfig withOpts = LoaderTestSupport.loader(Map.of("CESIUM_KAFKA_OPTS", "-Xmx256m"))
+                .load(file);
+        assertEquals(baseline.report().findings(), withOpts.report().findings());
+        assertEquals(baseline.config(), withOpts.config());
+    }
+
+    @Test
     void envVarsOutsideThePrefixAreIgnored() {
         Path file = LoaderTestSupport.write(dir, LoaderTestSupport.MINIMAL_YAML);
         CesiumConfig config = LoaderTestSupport.loader(Map.of("PATH", "/usr/bin", "CESIUM", "not-prefixed"))

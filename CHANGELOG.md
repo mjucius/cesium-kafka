@@ -13,6 +13,11 @@ All notable changes to this project will be documented in this file. The format 
 - SHA-pinned `actions/upload-artifact` v7.0.1 → v7.0.2 (Dependabot PR [#32]). The pin `cf430e0` is
   the commit the `v7.0.2` tag resolves to.
 
+### Fixed
+- Since 1.0, setting `CESIUM_KAFKA_OPTS`, which the Dockerfile and operations.md advertise for JVM
+  flags, made startup exit 78. The environment overlay read it as an override of an unknown key
+  `kafka-opts`. The overlay now skips the variable, as it already skipped `CESIUM_CONFIG`.
+
 ## [2.0.0] - 2026-10-11
 
 Cleanup and fixes from an over-engineering audit and a docs-versus-code audit, released as 2.0.0
