@@ -1026,7 +1026,7 @@ The ~190 k rec/s dispatch figure is a best-case burst and is not a sustained SLA
 - **SECURITY.md**: tracker write-ACL requirement (without it, tracker writes can inject duplicates or lose data), principal/credential guidance, reserved HMAC option, vulnerability reporting.
 - **docs/adr/**: ADR-0001 two-consumer-group architecture; 0002 pointer-only payloads + retention policy; 0003 sealed two-archetype SPI; 0004 one route per process; 0005 tracker format + compaction-only + tombstone-retention floor; 0006 classic protocol default / 848 promotion criteria; 0007 ASCII-decimal headers; 0008 timestamp=DISPATCH; 0009 HW barrier (not LSO) + snapshot ordering; 0010 ring-binary-search index (no hash map); 0011 cursor v2 (position + pinned-entry sidecar); 0012 locked isolation/auto.offset.reset + offsets-retention posture; 0013 readiness decoupling + static membership; 0014 in-doubt commit taxonomy; 0015 penalty box + enforced fetch budgets.
 - **CONTRIBUTING.md** (build, test tiers, formatting, ADR process), **CODE_OF_CONDUCT.md**, **CHANGELOG.md** (keep-a-changelog), **NOTICE**; MIT LICENSE (present).
-- **Javadoc** complete for `api` and `testkit` (they are the product surface), `-Werror` on published modules.
+- **Javadoc** complete for `api` and `testkit` (they are the product surface), `-Werror` on published modules. (Revision 5: both modules folded into core, and their doclint gate went with them. No module is published.)
 
 ---
 
@@ -1094,10 +1094,10 @@ Dependency notes: M2/M3 can proceed in parallel with M4 after M1; M5 depends on 
 
 ## Open questions for the project owner
 
-1. Publish to Maven Central from day one, and confirm `com.jucius.cesium` group-id/domain ownership.
+1. Publish to Maven Central from day one, and confirm `com.jucius.cesium` group-id/domain ownership. Resolved by revision 2 / [ADR-0017](adr/0017-kafka-4-floor-and-repo-only-publishing.md): repo-only publishing, with GitHub Release archives and no Maven Central.
 2. Embeddable-library mode commitment: core is multi-engine by construction. Is the programmatic API a supported v1 surface or internal-until-1.x? Resolved by revision 4 / ADR-0019: internal.
 3. Cancellation API scope for 1.x (tracker `CANCEL 0x02` reserved; ring/index already supports it). The tracker write-ACL is now a v1 requirement regardless; a cancellation API would additionally need an authenticated front door (it must not be "produce to the internal topic").
-4. Minimum supported broker version statement: design recommends 4.0+ (KIP-890 v2, 848 testing); is a 3.x-broker support floor required (changes ops-guide guidance and the transactions-v2 posture)?
+4. Minimum supported broker version statement: design recommends 4.0+ (KIP-890 v2, 848 testing); is a 3.x-broker support floor required (changes ops-guide guidance and the transactions-v2 posture)? Resolved by revision 2 / [ADR-0017](adr/0017-kafka-4-floor-and-repo-only-publishing.md): Kafka 4.0+ brokers only.
 5. Sub-second delays: the delay path costs ingest-commit + tracker-consume (~100–500 ms); document as best-effort, or relay-immediately below a threshold?
 6. Admin endpoint (per-partition pending counts, penalty-box state, drain trigger) in v1, or metrics-only?
-7. Confirm the `delay.max` default reduction to P1D is acceptable for the launch positioning (longer delays fully supported, but opt-in via the sizing worksheet).
+7. Confirm the `delay.max` default reduction to P1D is acceptable for the launch positioning (longer delays fully supported, but opt-in via the sizing worksheet). Resolved: `P1D` has shipped as the default since 1.0 ([configuration.md](configuration.md)).
