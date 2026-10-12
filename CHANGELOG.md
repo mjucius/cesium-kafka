@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+- Build only (Dependabot PR [#31]): Gradle 9.8.0 → 9.8.1. The distribution and the committed
+  `gradle-wrapper.jar` match Gradle's published SHA-256 checksums. Dependabot left the
+  `gradle-wrapper.properties` comment describing 9.8.0; corrected.
+- SHA-pinned `actions/upload-artifact` v7.0.1 → v7.0.2 (Dependabot PR [#32]). The pin `cf430e0` is
+  the commit the `v7.0.2` tag resolves to.
+
 ## [2.0.0] - 2026-10-11
 
 Cleanup and fixes from an over-engineering audit and a docs-versus-code audit, released as 2.0.0
