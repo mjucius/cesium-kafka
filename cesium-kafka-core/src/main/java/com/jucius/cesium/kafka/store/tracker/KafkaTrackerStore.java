@@ -37,8 +37,9 @@ import org.slf4j.LoggerFactory;
  * the engine produces inside its own transactions (design §4.3).
  *
  * <p><strong>Threading</strong> (per the {@link TrackerBackedStore}
- * contract): {@link #encodeSchedule} is ingest-thread and pure; everything else runs on the
- * single dispatch thread owning the affected partitions, so no method here locks. All time
+ * contract): {@link #encodeSchedule} is ingest-thread and pure, and {@link #oldestPendingDeadlineMs}
+ * reads a volatile snapshot; everything else runs on the single dispatch thread owning the
+ * affected partitions, so no method here locks. All time
  * decisions arrive as {@code nowMs} arguments from the engine's clock; the store keeps no clock
  * state of its own.
  *
@@ -208,6 +209,9 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
             w.index.revokePartition(partition); // O(1) drop; pending entries are durable in the tracker
             removeGauges(w, state);
         }
+        // Not left to maintenance(): a loop iteration that returns early (poll failure, in-doubt
+        // backoff) skips it, and the gauge would keep aging a deadline this instance no longer owns.
+        publishOldestPendingDeadline(w);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -450,6 +454,11 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
     }
 
     @Override
+    public long oldestPendingDeadlineMs() {
+        return wiring().oldestPendingDeadlineMs;
+    }
+
+    @Override
     public long pendingCount(int partition) {
         return wiring().index.pendingCount(partition);
     }
@@ -536,6 +545,22 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         for (Int2ObjectMap.Entry<PartitionState> entry : w.states.int2ObjectEntrySet()) {
             drainShardCounters(w, entry.getIntKey(), entry.getValue());
         }
+        publishOldestPendingDeadline(w);
+    }
+
+    /**
+     * Publishes the earliest pending deadline over ACTIVE shards for the overdue gauge. The raw
+     * shard deadline, not the index's: penalty-boxed entries are late too. Dispatch thread only,
+     * never from the gauge: {@code nextDeadlineMs()} may rebuild the heap.
+     */
+    private static void publishOldestPendingDeadline(Wiring w) {
+        long oldest = Long.MAX_VALUE;
+        for (Int2ObjectMap.Entry<PartitionState> entry : w.states.int2ObjectEntrySet()) {
+            if (entry.getValue().active) {
+                oldest = Math.min(oldest, w.index.shard(entry.getIntKey()).nextDeadlineMs());
+            }
+        }
+        w.oldestPendingDeadlineMs = oldest;
     }
 
     @Override
@@ -763,6 +788,9 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
         final Counter heapRebuilds;
         final Counter logSweeps;
         final Counter recoveryOverBudget;
+
+        /** Earliest pending deadline over ACTIVE shards, published by maintenance and on shard drop. */
+        volatile long oldestPendingDeadlineMs = Long.MAX_VALUE;
 
         Wiring(
                 String clusterId,

@@ -72,6 +72,11 @@ final class FakeTrackerStore implements TrackerBackedStore {
     }
 
     @Override
+    public long oldestPendingDeadlineMs() {
+        throw offLimits();
+    }
+
+    @Override
     public long pendingCount(int partition) {
         throw offLimits();
     }

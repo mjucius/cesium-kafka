@@ -85,6 +85,11 @@ final class StubTrackerStore implements TrackerBackedStore {
     }
 
     @Override
+    public long oldestPendingDeadlineMs() {
+        throw new UnsupportedOperationException("codec stub");
+    }
+
+    @Override
     public long pendingCount(int partition) {
         throw new UnsupportedOperationException("codec stub");
     }

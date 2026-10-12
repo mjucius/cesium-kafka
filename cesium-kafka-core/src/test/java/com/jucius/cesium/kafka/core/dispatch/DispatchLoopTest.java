@@ -3,6 +3,7 @@ package com.jucius.cesium.kafka.core.dispatch;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -724,6 +725,22 @@ class DispatchLoopTest {
         h.loop.runOnce(); // success: clear degraded
         assertFalse(h.loop.isDegraded(), "degraded clears on the first successful commit");
         assertEquals(1, h.producer().commitCount());
+    }
+
+    @Test
+    void pendingOldestDeadlineGaugeReportsOverdueSecondsAndDeregistersOnClose() {
+        Harness h = new Harness();
+        String name = DispatchLoop.PENDING_OLDEST_DEADLINE_METRIC;
+        assertEquals(0.0, h.gaugeValue(name), "nothing pending");
+
+        h.store.oldestPendingDeadlineMs = NOW + 5_000;
+        assertEquals(0.0, h.gaugeValue(name), "pending but not yet due");
+        h.clock.advanceMillis(7_500);
+        assertEquals(2.5, h.gaugeValue(name), "due 2.5 s ago by the loop's clock");
+
+        h.loop.stop();
+        h.loop.run(); // the stop flag is already set: start, then straight to closeClients
+        assertNull(h.registry.find(name).gauge(), "removed with the loop's other gauges");
     }
 
     // ------------------------------------------------------------------ due-storm liveness (D-12)

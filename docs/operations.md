@@ -617,6 +617,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | `cesium_fetch_duration_seconds` | timer (histogram) | | per fetch pass; attributes cold-segment / degraded-broker cost |
 | `cesium_fetch_penalized_partitions` | gauge | | penalty-box occupancy |
 | `cesium_pending_entries` | gauge | `partition` | live index size; a step-collapse is the tracker-integrity canary (R-9) |
+| `cesium_pending_oldest_deadline_seconds` | gauge | | how long the most overdue pending entry on an ACTIVE shard has been due; `0` when nothing is due. Penalty-boxed entries count; RECOVERING shards are left out |
 | `cesium_pinned_entries` | gauge | `partition` | sidecar occupancy; sustained at max ⇒ overflow mode |
 | `cesium_cursor_sidecar_bytes` | gauge | `partition` | encoded sidecar size vs budget |
 | `cesium_shard_paused` | gauge | `partition` | backpressure pause state |
@@ -633,14 +634,6 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | `cesium_store_heap_rebuilds_total` | counter | | dispatch-heap rebuilds across shards |
 | `cesium_store_log_sweeps_total` | counter | | arrival-log sweeps across shards |
 | `cesium_recovery_over_budget_total` | counter | | recovery seed/replay refused because the backlog would exceed the heap budget (H1); the process then fails fast |
-
-> **Not yet emitted (specified in design `§9`, deferred).** Do not write alerts against these; the
-> series do not exist in this release: `cesium_lso_lag`,
-> `cesium_store_recovery_duration_seconds`,
-> `cesium_store_replay_records_total`,
-> `cesium_pending_oldest_deadline_seconds`, `cesium_index_bytes_estimate`. Use the proxies noted
-> below until they land. (`cesium_lso_lag` is deferred in the dispatch loop because it needs a
-> per-partition read_uncommitted/read_committed offset diff from the admin plane.)
 
 ### Health endpoints
 
@@ -663,6 +656,7 @@ In Prometheus exposition, counters end in `_total`; timers expose `_seconds_coun
 | Re-validation error | `cesium_revalidation_errors > 0` | The environment broke under a running engine: a tracker setting below the §3 floors, a committed cursor older than `delete.retention.ms / 2`, partition drift, a missing topic, a retention change, or a round that could not complete. The ERROR log on `cesium-admin` names it. Fix it live, except partition drift, which needs the offline [§9](#9-growing-partitions-runbook) procedure; the next clean round clears the flag ([§14.5](#145-re-validation-errors-not-an-exit)). |
 | Loop stalled | `time() − cesium_loop_last_iteration_timestamp_seconds > N` | A loop stopped iterating. Page; check thread/JVM health. |
 | Dispatch precision SLO | `histogram_quantile(0.99, cesium_dispatch_lag_seconds_bucket) > SLO` | Lateness over budget. Investigate commit/IO/GC tails ([performance.md](performance.md)). |
+| Overdue backlog | `cesium_pending_oldest_deadline_seconds > N` with a `for:` window longer than a normal dispatch batch (e.g. `for: 5m`) | Due entries are not going out: a slow or rejecting destination, a source partition held in the penalty box, or a stalled dispatch loop. `cesium_dispatch_lag_seconds` can't show this, because it only times entries that were dispatched. Check `cesium_degraded`, `cesium_fetch_penalized_partitions` and the dispatch logs. Replaying shards are left out; Slow replay covers them. |
 | Poll-gap approaching eviction | `cesium_dispatch_poll_gap_seconds > 0.5 × max.poll.interval.ms/1000` | Risk of group eviction under a due-storm. Lower `dispatch.drain.max-slice` or `dispatch.batch.max-entries`. |
 | Transaction aborts | `rate(cesium_transactions_total{result="aborted"}[5m]) > threshold` | Fencing/contention churn. Correlate with rebalances. |
 | In-doubt commits | `increase(cesium_transactions_total{result="in_doubt"}[15m]) > 0` | Ambiguous commits resolved by the I9 procedure. Investigate broker/commit latency. |
@@ -684,6 +678,21 @@ the [§2](#2-the-tracker-sizing-worksheet) worksheet, group-B consumer lag (the 
 position, so lag reads approximately correctly except in sidecar-overflow mode), and the source's
 earliest-record age. Use `cesium_pinned_entries` + `cesium_cursor_sidecar_bytes` for overflow
 detection.
+
+**Tracker LSO stall (no metric).** An open tracker transaction holds the partition's last stable
+offset (LSO) below its high watermark (HW). Group B reads with `read_committed`, so it sees
+nothing past the LSO. New schedules stay out of the index, and a recovering shard can't reach its
+barrier. `cesium_pending_oldest_deadline_seconds` can't see the held-back entries, because it
+only reads the index. Once `kafka.transactions.timeout` (default 30 s, D9) has passed, the
+broker aborts the transaction on its next timed-out-transaction scan
+(`transaction.abort.timed.out.transaction.cleanup.interval.ms`, default 10 s). At the defaults a
+stall clears by itself within about 40 s. Restarting the instance that owned the transaction,
+with the same `instance-id`, clears it sooner, because `initTransactions()` resolves the
+predecessor's open transaction.
+To confirm a stall, list the tracker partition's latest offset with `Admin.listOffsets` twice,
+under `IsolationLevel.READ_UNCOMMITTED` (the HW) and `READ_COMMITTED` (the LSO). On a busy
+tracker the two differ briefly all the time. An LSO that stays put while the HW moves on, for
+longer than the timeout plus one scan interval, is a broker-side problem.
 
 ---
 

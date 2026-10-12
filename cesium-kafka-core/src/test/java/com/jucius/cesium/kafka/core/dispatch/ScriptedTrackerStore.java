@@ -58,6 +58,7 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
     final Set<Integer> recovering = new HashSet<>();
     final Set<Integer> forceRecovering = new HashSet<>();
     long nextDeadlineMs = Long.MAX_VALUE;
+    long oldestPendingDeadlineMs = Long.MAX_VALUE;
 
     ScriptedTrackerStore(List<String> events) {
         this.events = events;
@@ -77,6 +78,11 @@ final class ScriptedTrackerStore implements TrackerBackedStore {
     @Override
     public long nextDeadlineMs() {
         return nextDeadlineMs;
+    }
+
+    @Override
+    public long oldestPendingDeadlineMs() {
+        return oldestPendingDeadlineMs;
     }
 
     @Override

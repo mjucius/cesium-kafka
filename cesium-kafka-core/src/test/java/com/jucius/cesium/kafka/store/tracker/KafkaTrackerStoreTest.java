@@ -499,6 +499,33 @@ class KafkaTrackerStoreTest {
                 ctx.registry().find(KafkaTrackerStore.REPLAY_REMAINING_METRIC).gauge());
     }
 
+    @Test
+    void oldestPendingDeadlineIsPublishedByMaintenanceOverActiveShardsOnly() {
+        FixedIdentityStoreContext ctx = FixedIdentityStoreContext.defaults();
+        KafkaTrackerStore store = activeStore(ctx, 0);
+        store.maintenance();
+        assertEquals(Long.MAX_VALUE, store.oldestPendingDeadlineMs(), "nothing pending");
+
+        feedSchedule(store, 0, new ScheduledRef(0, 10, T0 + 2_000, false));
+        assertEquals(Long.MAX_VALUE, store.oldestPendingDeadlineMs(), "published by maintenance, not read live");
+        store.maintenance();
+        assertEquals(T0 + 2_000, store.oldestPendingDeadlineMs());
+
+        store.onPartitionsAssigned(Set.of(1));
+        store.beginRecovery(1, new TrackerCursor(0, ""), 3);
+        feedSchedule(store, 0, new ScheduledRef(1, 20, T0, false)); // replayed ADD, older deadline
+        store.maintenance();
+        assertEquals(T0 + 2_000, store.oldestPendingDeadlineMs(), "a RECOVERING shard is ignored");
+
+        store.onTrackerPosition(1, 3); // promoted ACTIVE
+        store.penalizeSourcePartition(1, T0 + 60_000);
+        store.maintenance();
+        assertEquals(T0, store.oldestPendingDeadlineMs(), "minimum across ACTIVE shards, penalty box included");
+
+        store.onPartitionsRevoked(Set.of(1));
+        assertEquals(T0 + 2_000, store.oldestPendingDeadlineMs(), "republished on drop, without a maintenance pass");
+    }
+
     private static double gauge(FixedIdentityStoreContext ctx, String name) {
         return ctx.registry().get(name).tag("partition", "0").gauge().value();
     }

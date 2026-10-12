@@ -164,9 +164,10 @@ import org.slf4j.LoggerFactory;
  * the dispatch-lag histogram, and {@code cesium_dlq_records_total} for the dispatch-side
  * {@code payload-expired} and {@code unrelayable} DLQ notices) flush after {@code commitTransaction} returns, so abort/retry
  * cycles never inflate them. {@code cesium_pending_entries}/{@code cesium_shard_state} are
- * store-owned gauges and not duplicated here; {@code cesium_lso_lag} needs a per-partition
- * read_uncommitted/read_committed offset diff from the admin plane and is deferred to the
- * observability milestone (M7) rather than half-implemented on the hot path.
+ * store-owned gauges and not duplicated here. {@code cesium_pending_oldest_deadline_seconds} is
+ * registered here because the loop owns the clock; it reads the deadline the store publishes in
+ * {@code maintenance()}. There is no HW − LSO gauge (design §9, revision 6), because the broker
+ * aborts a hung tracker transaction after {@code kafka.transactions.timeout}.
  *
  * <p>{@link CrashPoints} fire at the §3.9 dispatch points D-1…D-3 (no-ops outside tests).
  */
@@ -182,6 +183,12 @@ public final class DispatchLoop implements Runnable {
      * completes on the admin thread, and the loop must notice promptly without busy-spinning.
      */
     static final long RECOVERY_WAIT_POLL_MS = 10;
+
+    /**
+     * Metric: seconds the most overdue pending entry on an ACTIVE shard has been due,
+     * {@code max(0, now - store.oldestPendingDeadlineMs())}; {@code 0} when nothing is due (§9).
+     */
+    static final String PENDING_OLDEST_DEADLINE_METRIC = "cesium.pending.oldest.deadline.seconds";
 
     private final DispatchLoopConfig config;
     private final Consumer<byte[], byte[]> consumer;
@@ -241,6 +248,7 @@ public final class DispatchLoop implements Runnable {
     private final Gauge heartbeatGauge;
     private final Gauge pollGapGauge;
     private final Gauge penalizedPartitionsGauge;
+    private final Gauge pendingOldestDeadlineGauge;
     private final MeterRegistry registry;
 
     /**
@@ -313,6 +321,12 @@ public final class DispatchLoop implements Runnable {
         // (a plain int field) — a benign stale read, never an exception, acceptable for a gauge.
         this.penalizedPartitionsGauge = Gauge.builder("cesium.fetch.penalized.partitions", penaltyStreaks, Map::size)
                 .description("source partitions currently in the §7.3 fetch penalty box (penalty-box occupancy, §9)")
+                .register(registry);
+        // The store publishes the deadline once per iteration (maintenance); the loop owns the clock.
+        this.pendingOldestDeadlineGauge = Gauge.builder(
+                        PENDING_OLDEST_DEADLINE_METRIC,
+                        () -> Math.max(0, clock.millis() - store.oldestPendingDeadlineMs()) / 1000.0)
+                .description("how long the most overdue pending entry on an ACTIVE shard has been due (§9)")
                 .register(registry);
     }
 
@@ -1345,6 +1359,7 @@ public final class DispatchLoop implements Runnable {
         registry.remove(heartbeatGauge);
         registry.remove(pollGapGauge);
         registry.remove(penalizedPartitionsGauge);
+        registry.remove(pendingOldestDeadlineGauge);
         for (Gauge gauge : registeredPausedGauges) {
             registry.remove(gauge);
         }

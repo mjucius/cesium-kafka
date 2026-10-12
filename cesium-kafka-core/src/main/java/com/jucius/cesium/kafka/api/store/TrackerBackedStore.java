@@ -16,10 +16,11 @@ import org.jspecify.annotations.Nullable;
  * as the source record. Scheduler-state mutations therefore commit or abort atomically with
  * destination writes and consumer offsets (design §4.3).
  *
- * <p><strong>Threading.</strong> {@link #encodeSchedule} is called on the ingest thread. Every
- * other method is confined to the single dispatch thread owning the affected partitions, so a
- * store needs no locking. Ingest and dispatch never share mutable state: ADDs reach the in-memory
- * index only via the tracker topic and the dispatch thread's own consumer.
+ * <p><strong>Threading.</strong> {@link #encodeSchedule} is called on the ingest thread and
+ * {@link #oldestPendingDeadlineMs} on any thread. Every other method is confined to the single
+ * dispatch thread owning the affected partitions, so a store needs no locking. Ingest and
+ * dispatch never share mutable state: ADDs reach the in-memory index only via the tracker topic
+ * and the dispatch thread's own consumer.
  */
 public interface TrackerBackedStore extends AutoCloseable {
 
@@ -274,6 +275,20 @@ public interface TrackerBackedStore extends AutoCloseable {
      * zero poll timeout.
      */
     long nextDeadlineMs();
+
+    /**
+     * Earliest {@code dispatchAtMs} over the pending entries of ACTIVE partitions as of the last
+     * {@link #maintenance()} or partition drop, or {@link Long#MAX_VALUE} when none is pending. Feeds the dispatch
+     * loop's {@code cesium_pending_oldest_deadline_seconds} gauge (design §9). Unlike
+     * {@link #nextDeadlineMs} it ignores the penalty box, because a penalized entry is still late,
+     * and it skips recovering partitions, whose replayed ADDs look overdue until their completions
+     * replay.
+     *
+     * <p>Unlike every other dispatch-side method, this one is safe to call from any thread, because
+     * the gauge reads it on the scrape thread. It returns the published snapshot and never touches
+     * the index.
+     */
+    long oldestPendingDeadlineMs();
 
     /**
      * Stamps a not-before deadline on a source partition whose payload fetches failed transiently

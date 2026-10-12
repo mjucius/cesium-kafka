@@ -223,6 +223,9 @@ class AppQuickstartIT extends KafkaIT {
                 metrics.body().contains("cesium_ingest_records_total"), "ingest disposition counter must be exposed");
         assertTrue(metrics.body().contains("cesium_shard_state{"), "per-shard recovery state feeding /health/ready");
         assertTrue(metrics.body().contains("cesium_replay_remaining_records{"), "per-shard replay backlog");
+        assertTrue(
+                metrics.body().contains("cesium_pending_oldest_deadline_seconds"),
+                "the overdue-backlog gauge must be exposed");
 
         // Recovery + degraded are readiness DETAIL, not gates (D21, §3.8): the instance stays ready.
         HttpResponse<String> ready = get("/health/ready");

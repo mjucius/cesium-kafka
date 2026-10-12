@@ -6,7 +6,20 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+- `cesium_pending_oldest_deadline_seconds`, an untagged gauge: how long the most overdue pending
+  entry on an ACTIVE shard has been due, or `0` when nothing is due. `cesium_dispatch_lag_seconds`
+  only times entries that went out; this gauge sees due entries held back by a slow destination,
+  a source partition in the penalty box, or a stalled dispatch loop. Penalty-boxed entries count;
+  RECOVERING shards are left out, so restarts and takeovers don't spike it. operations.md §13 adds
+  an "Overdue backlog" alert.
+
 ### Changed
+- Design §9 drops four metrics that were specified but never emitted: `cesium_lso_lag`,
+  `cesium_store_recovery_duration_seconds`, `cesium_store_replay_records_total` and
+  `cesium_index_bytes_estimate`; each row gives its reason (revision 6). operations.md §13 loses
+  its "Not yet emitted" block and its promise of proxy metrics, and gains a note on confirming a
+  tracker LSO stall by hand.
 - Build only (Dependabot PR [#31]): Gradle 9.8.0 → 9.8.1. The distribution and the committed
   `gradle-wrapper.jar` match Gradle's published SHA-256 checksums. Dependabot left the
   `gradle-wrapper.properties` comment describing 9.8.0; corrected.

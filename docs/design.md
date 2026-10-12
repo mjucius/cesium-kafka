@@ -3,7 +3,8 @@
 A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exactly-once via Kafka transactions (KIP-447/KIP-890 era), pointer-only payload re-seek, and one scheduler store (an in-memory index durably backed by a Kafka tracker topic). This document is the implementation specification; post-approval revision 5 (ADR-0021) removed the pluggable store SPI, so the §4 SPI text below is historical.
 
 > Changes made after approval (revisions 1–3 on 2026-06-05, revision 4 on 2026-10-07, revision 5 on
-> 2026-10-08; project-owner decisions). Later sections cite these as post-approval revisions 1–5.
+> 2026-10-08, revision 6 on 2026-10-12; project-owner decisions). Later sections cite these as
+> post-approval revisions 1–6.
 > 1. Index backing uses fastutil instead of hand-rolled chunked arrays. §5's structures are built
 >    from fastutil primitive collections (`fastutil-core`, store-kafka module only): parallel
 >    `LongBigArrayBigList`s for the entry pool with an `IntArrayList` free-slot stack;
@@ -65,6 +66,10 @@ A rewrite of the Kafka delayed-message relay: Java 21+, kafka-clients 4.x, exact
 >    (`*.workers` removed). The startup heap-budget check, `headers.accept-binary-long-values`, the
 >    `-Dcesium.*` overlay, the tracker ACL grant on CREATE and `ingest.max-batch` are removed. Wire
 >    formats are unchanged.
+> 6. §9's five unbuilt metrics are settled. `cesium_pending_oldest_deadline_seconds` ships,
+>    computed over ACTIVE shards only. `cesium_lso_lag`, `cesium_store_recovery_duration_seconds`,
+>    `cesium_store_replay_records_total` and `cesium_index_bytes_estimate` are dropped from the
+>    spec; each §9 row gives the reason.
 
 ## Design revisions
 
@@ -720,7 +725,7 @@ GC guidance (ops doc): the index is long-lived, chunked, and allocation-free in 
 ### 5.5 Recovery, cursor mechanics, cross-partition scheduling
 
 - Shard state machine: `ASSIGNED → RECOVERING → ACTIVE`, exits `REVOKED`/`LOST`; identical under classic-eager, classic-cooperative, and KIP-848 incremental protocols (per-partition, additive, idempotent).
-- Recovery is sidecar seeding plus ordinary consumption from the cursor offset to the HW barrier (§3.6); replay and live tailing share one code path (`onTrackerRecord`). Replay throughput is fetch-bound: ~1–3 M records/s per partition. With the v2 cursor, the replay range ≈ traffic since the last successful commit (+ downtime traffic); in overflow mode the formula is `completion_rate × age(cut) + pending` (§3.5). Live progress: `cesium_replay_remaining_records{partition}` (barrier − position) and `cesium_store_recovery_duration_seconds`.
+- Recovery is sidecar seeding plus ordinary consumption from the cursor offset to the HW barrier (§3.6); replay and live tailing share one code path (`onTrackerRecord`). Replay throughput is fetch-bound: ~1–3 M records/s per partition. With the v2 cursor, the replay range ≈ traffic since the last successful commit (+ downtime traffic); in overflow mode the formula is `completion_rate × age(cut) + pending` (§3.5). Live progress: `cesium_replay_remaining_records{partition}` (barrier − position) and `cesium_shard_state{partition}` (revision 6: `cesium_store_recovery_duration_seconds` is dropped).
 - Self-consumed COMPLETE echoes: ring search finds the entry already finalized at commit ⇒ no-op (R2).
 - Cross-partition scheduling: a small binary heap of partitions keyed by `peekNextDispatchTime()` (size = owned partitions), consulted together with the penalty box (§7); `nextDue = partitionHeap.min()` drives the poll timeout (§6), so there is no busy-polling. As shipped, `TrackerIndex` keeps no partition heap: `drainDue` and `nextDeadlineMs` scan the owned shards in O(owned partitions), taking `max(shard deadline, penalty not-before)` per partition.
 
@@ -862,10 +867,9 @@ Health (decoupled from recovery, D21):
 
 Metric inventory (final names, `cesium_` prefix):
 
-> **Not all of these ship yet.** Rows marked **[not yet emitted]** are specified here but were
-> deferred past M8. Those series do not exist in the release, so no alert may be written against
-> them. [`docs/operations.md`](operations.md) §13 is the authoritative inventory of what a
-> running cesium actually exposes, and lists the proxy metrics to use until these land.
+> Rows noted "revision 6: dropped" were specified but never built; the note gives the reason.
+> [`docs/operations.md`](operations.md) §13 is the authoritative inventory of what a running
+> cesium exposes.
 
 | Metric | Type | Tags | Meaning |
 |---|---|---|---|
@@ -874,13 +878,13 @@ Metric inventory (final names, `cesium_` prefix):
 | `cesium_dispatch_lag_seconds` | histogram | | actual − scheduled; the headline precision SLO |
 | `cesium_dispatch_poll_gap_seconds` | gauge | | max time between group-B polls; alert ≪ `max.poll.interval.ms` (§6) |
 | `cesium_pending_entries` | gauge | `partition` | index size, refreshed every dispatch-loop iteration; alert on step-collapse (tracker-integrity canary, R-9) |
-| `cesium_pending_oldest_deadline_seconds` | gauge | | **[not yet emitted]** now − earliest deadline |
+| `cesium_pending_oldest_deadline_seconds` | gauge | | `max(0, now − earliest pending deadline)` over ACTIVE shards (revision 6: RECOVERING shards are left out, because replayed ADDs look overdue until their completions replay; penalty-boxed entries count); `0` when nothing is due |
 | `cesium_pinned_entries` | gauge | `partition` | sidecar occupancy; sustained at max ⇒ overflow mode (§3.5) |
 | `cesium_cursor_sidecar_bytes` | gauge | `partition` | encoded sidecar size vs budget |
 | `cesium_replay_remaining_records` | gauge | `partition` | barrier − position, live during recovery (`0` when ASSIGNED/ACTIVE); feeds replay-ETA alert |
 | `cesium_shard_state` / `cesium_shard_paused` | gauge | `partition` | `0`=ASSIGNED / `1`=RECOVERING / `2`=ACTIVE; backpressure pause state |
-| `cesium_store_recovery_duration_seconds` | timer | `partition` | **[not yet emitted]** replay time per assignment |
-| `cesium_store_replay_records_total` | counter | `kind=add\|complete\|seeded` | **[not yet emitted]** replay volume |
+| `cesium_store_recovery_duration_seconds` | timer | `partition` | replay time per assignment (revision 6: dropped; `cesium_shard_state` and `cesium_replay_remaining_records` cover live progress, and the RECOVERING → ACTIVE edge is internal to the store, which keeps no clock) |
+| `cesium_store_replay_records_total` | counter | `kind=add\|complete\|seeded` | replay volume (revision 6: dropped; the `kind` values don't match the tracker record types, since unknown-reason tombstones, CANCEL and invalid records fit none, and `cesium_replay_remaining_records` shows the volume) |
 | `cesium_transactions_total` | counter | `loop`, `result=committed\|aborted\|in_doubt`, `cause` | fencing aborts ⇒ duplicates prevented; in-doubt occurrences |
 | `cesium_txn_commit_seconds` | timer | `loop` | |
 | `cesium_fetch_attempts_total` / `_misses_total` / `_unfetchable_total` | counter | | seek-fetch outcomes; sustained misses = alert |
@@ -894,8 +898,8 @@ Metric inventory (final names, `cesium_` prefix):
 | `cesium_revalidation_errors` | gauge | | errors found by the last re-validation round (D23); `0` when clean; alert > 0 |
 | `cesium_tracker_invalid_records_total` | counter | | wire-format violations on tracker (malformed/version-skew); foreign-writer canary. Does not detect well-formed forgeries (L2; competent tampering needs broker authorizer audit logging or the reserved `store.kafka.hmac.*`) |
 | `cesium_degraded` | gauge | `loop` | park-and-degrade state (§3.8); the triggering cause is logged, not tagged, because a gauge's identity must be stable across cause changes (Micrometer registration) |
-| `cesium_lso_lag` | gauge | `partition` | **[not yet emitted]** HW − LSO: detects stuck-transaction stalls |
-| `cesium_index_bytes_estimate` | gauge | | **[not yet emitted]** capacity tracking vs the process-wide cap |
+| `cesium_lso_lag` | gauge | `partition` | HW − LSO: detects stuck-transaction stalls (revision 6: dropped; it would need a periodic admin sampler making two `listOffsets` calls per partition, and the broker already bounds a stall by aborting the transaction after `kafka.transactions.timeout`, D9, default 30 s; operations.md §13 says how to confirm a stall by hand) |
+| `cesium_index_bytes_estimate` | gauge | | capacity tracking vs the process-wide cap (revision 6: dropped; it would be `sum(cesium_pending_entries) × 64`, which PromQL computes today) |
 | `cesium_loop_last_iteration_timestamp_seconds` | gauge | `loop` | feeds liveness |
 
 The operations runbook ties alerts to remedies: re-validation errors (cursor age vs tombstone retention, partition drift, retention), pinned-entry overflow (raise sidecar budget / inspect long-delay producers), abort-rate and in-doubt spikes, LSO stalls, replay ETA over budget, DLQ drain, partition-count drift (offline growth with seeded offsets), tracker-size growth vs worksheet (broker-side), penalty-box dwell, pending-collapse (tracker integrity), degraded-state procedures. Lag-tooling note: group B's committed offsets now track position closely (v2 cursor), so standard consumer-lag tooling reads approximately correctly; only sidecar-overflow mode shows inflated lag (documented).
