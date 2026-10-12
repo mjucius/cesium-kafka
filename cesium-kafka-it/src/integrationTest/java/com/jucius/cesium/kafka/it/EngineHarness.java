@@ -39,7 +39,6 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -49,8 +48,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 
 /**
@@ -462,43 +459,13 @@ final class EngineHarness implements AutoCloseable {
                 config.route().relay().partitioning());
     }
 
-    /**
-     * The documented first-run operator step (I-9 runbook): seed committed offset 0 for every
-     * source partition that has none, exactly once per harness. Restarts after the loop committed
-     * find offsets present and never rewind.
-     */
+    /** {@link ScenarioSupport#seedIngestOffsets}, exactly once per harness. */
     private void seedFirstRunOffsets() {
         if (offsetsSeeded) {
             return;
         }
-        String source = sourceTopic();
-        try {
-            int partitions = admin.describeTopics(List.of(source))
-                    .allTopicNames()
-                    .get()
-                    .get(source)
-                    .partitions()
-                    .size();
-            Map<TopicPartition, OffsetAndMetadata> existing = admin.listConsumerGroupOffsets(ingestGroupId())
-                    .partitionsToOffsetAndMetadata()
-                    .get();
-            Map<TopicPartition, OffsetAndMetadata> seed = new HashMap<>();
-            for (int p = 0; p < partitions; p++) {
-                TopicPartition tp = new TopicPartition(source, p);
-                if (!existing.containsKey(tp)) {
-                    seed.put(tp, new OffsetAndMetadata(0L));
-                }
-            }
-            if (!seed.isEmpty()) {
-                admin.alterConsumerGroupOffsets(ingestGroupId(), seed).all().get();
-            }
-            offsetsSeeded = true;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new AssertionError("interrupted while seeding first-run offsets", e);
-        } catch (Exception e) {
-            throw new AssertionError("seeding first-run group offsets failed", e);
-        }
+        ScenarioSupport.seedIngestOffsets(admin, sourceTopic(), ingestGroupId());
+        offsetsSeeded = true;
     }
 
     // ------------------------------------------------------------------ plumbing types

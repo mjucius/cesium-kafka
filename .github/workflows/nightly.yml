@@ -3,7 +3,8 @@ name: Nightly
 # Design §13 nightly lane: the full integration matrix (heavy Toxiproxy / compaction /
 # multi-instance scenarios that the PR lane defers by tag), the non-blocking KIP-848
 # consumer-protocol variants (D12 — continue-on-error until the ADR-0006 promotion), and the
-# @Tag("soak") memory-ceiling / JOL-footprint lane (§11.2/§11.4). Scheduled + manually dispatchable.
+# @Tag("soak") memory-ceiling / JOL-footprint / crash-loop lane (§11.2/§11.3-12/§11.4). Scheduled +
+# manually dispatchable.
 
 on:
   schedule:
@@ -151,7 +152,7 @@ jobs:
           if-no-files-found: ignore
 
   soak:
-    name: Soak — @Tag("soak") (store JOL footprint + 1M-entry memory ceilings, §11.2/§11.4)
+    name: Soak — @Tag("soak") (store JOL footprint + 1M-entry memory ceilings + crash loop, §11.2/§11.3-12/§11.4)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -169,12 +170,24 @@ jobs:
         run: ./gradlew soakTest
       - name: Reclaim any leaked containers before the broker-backed soak perf
         run: docker system prune -f || true
+      # soakPerf runs both broker-backed soak ITs, split into two invocations so each gets a fresh
+      # worker JVM, the same isolation lever integration-full uses. Each invocation clears the
+      # task's report directories, so SoakPerfIT's are moved aside before the crash loop runs.
       - name: Scaled soak perf IT (@Tag("soak"), broker-backed, exactly-once + never-early invariant)
         # The design §11.4 soak invariant checker against a real broker (cesium-kafka-it:soakPerf), at
         # the SCALED-DOWN default (a few hundred k entries over a couple of minutes) so it fits a CI
         # box and proves the harness + invariant checker. The full 100M/12GB/ZGC/24h run is a manual
         # dedicated-host lane (the exact command + JVM flags are in SoakPerfIT's javadoc).
-        run: ./gradlew :cesium-kafka-it:soakPerf
+        run: ./gradlew :cesium-kafka-it:soakPerf --tests "com.jucius.cesium.kafka.it.SoakPerfIT"
+      - name: Keep SoakPerfIT's reports; the next soakPerf invocation clears them
+        run: |
+          mv cesium-kafka-it/build/test-results/soakPerf cesium-kafka-it/build/test-results/soakPerf-SoakPerfIT
+          mv cesium-kafka-it/build/reports/tests/soakPerf cesium-kafka-it/build/reports/tests/soakPerf-SoakPerfIT
+      - name: Crash-loop soak IT (@Tag("soak"), separate engine JVMs under SIGKILL + crash points, §11.3-12)
+        # Three app processes under sustained load, SIGKILLed and crash-point-halted for 6 minutes,
+        # then the same invariants plus an empty DLQ. Child logs land in
+        # cesium-kafka-it/build/reports/tests/soak-children/, which the upload below archives.
+        run: ./gradlew :cesium-kafka-it:soakPerf --tests "com.jucius.cesium.kafka.it.CrashLoopSoakIT"
       - name: Upload soak reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

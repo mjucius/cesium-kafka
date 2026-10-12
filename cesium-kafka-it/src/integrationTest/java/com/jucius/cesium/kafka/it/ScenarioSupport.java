@@ -9,18 +9,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 
 /**
- * Shared producers and metric readers for the M6 fencing/rebalance scenario suites
+ * Shared producers, metric readers and the first-run offset seed for the scenario suites
  * ({@link ZombieFencingIT}, {@link CooperativeRevocationIT}, {@link PartitionsLostIT}). Kept tiny
  * and dependency-free so each scenario class reads as its own story; the heavy lifting lives in the
  * M6 harness ({@link ToxiproxySupport}, {@link MultiInstanceSupport}, {@link FencingProbe}).
@@ -79,6 +82,41 @@ final class ScenarioSupport {
                     throw new IllegalStateException("scenario produce failed", e.getCause());
                 }
             }
+        }
+    }
+
+    /**
+     * The documented first-run operator step (D18/§3.6, I-9 runbook): {@code auto.offset.reset} is
+     * locked to {@code none}, so seed committed offset 0 for every {@code source} partition that
+     * {@code ingestGroup} has no offset for, exactly what the quickstart's {@code topic-init}
+     * container does via the CLI. Partitions the loop already committed are never rewound.
+     */
+    static void seedIngestOffsets(Admin admin, String source, String ingestGroup) {
+        try {
+            int partitions = admin.describeTopics(List.of(source))
+                    .allTopicNames()
+                    .get()
+                    .get(source)
+                    .partitions()
+                    .size();
+            Map<TopicPartition, OffsetAndMetadata> existing = admin.listConsumerGroupOffsets(ingestGroup)
+                    .partitionsToOffsetAndMetadata()
+                    .get();
+            Map<TopicPartition, OffsetAndMetadata> seed = new HashMap<>();
+            for (int p = 0; p < partitions; p++) {
+                TopicPartition tp = new TopicPartition(source, p);
+                if (!existing.containsKey(tp)) {
+                    seed.put(tp, new OffsetAndMetadata(0L));
+                }
+            }
+            if (!seed.isEmpty()) {
+                admin.alterConsumerGroupOffsets(ingestGroup, seed).all().get();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while seeding first-run offsets", e);
+        } catch (Exception e) {
+            throw new AssertionError("seeding first-run group offsets failed", e);
         }
     }
 

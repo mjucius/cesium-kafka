@@ -85,7 +85,7 @@ Legend for the Lane column:
 | 9 | Integrity & environment checks | `StartupChecksIT`, `PayloadExpiryDlqIT`, `HeaderPolicyIT` | PR |
 | 10 | Degradation (park + penalty box) | `DegradationIT` (penalty box); park-and-degrade in `DispatchLoopTest` / `IngestLoopTest` | nightly + unit |
 | 11 | KIP-848 lane | LSO + barrier-ordering kip848 variants (pass); zombie, rebalance and kill-and-restart are [findings](#gaps-and-concerns) (gap 2) | nightly (continue-on-error) |
-| 12 | Crash-loop soak (true SIGKILL, separate JVMs) | Not built | [gap 1](#gaps-and-concerns) |
+| 12 | Crash-loop soak (true SIGKILL, separate JVMs) | `CrashLoopSoakIT` | nightly (`soakPerf`); see [gap 1](#gaps-and-concerns) |
 
 ---
 
@@ -115,14 +115,24 @@ consumer protocol when the §8 tuning or the K8s static-membership recipe sets t
 
 ## Gaps and concerns
 
-1. **§11.3-12 crash-loop soak (true SIGKILL): not built.** The multi-instance harness kills
-   instances in-JVM (`EngineHarness.kill()` = interrupt loop threads + drop the in-memory store). That
-   models "process died without a graceful commit", but it is not an OS `SIGKILL`. Every
-   fencing guarantee asserted here rests on broker-side, JVM-agnostic mechanisms (`initTransactions()`
-   fencing a stale `transactional.id`, `TxnOffsetCommit` epoch rejection, session eviction), so the
-   in-JVM model is sound for §11.3-3/-4/-5/-6. The randomized crash-loop soak under sustained load
-   with an invariant checker still needs forked JVMs (`ProcessBuilder` + a tiny `main`) and is
-   deferred to a later milestone (nightly soak), per the design's phasing.
+1. **§11.3-12 crash-loop soak: built at CI scale; the scenario ITs still kill in-JVM.**
+   `CrashLoopSoakIT` runs three app processes, each its own JVM, under 200 records/s of delayed
+   load for 6 minutes. Every 5–20 s it SIGKILLs one, and half the restarts arm a random §3.9 crash
+   point at which the child halts itself. Afterwards every record must reach the destination exactly
+   once and never early, and the DLQ must be empty. A real process death adds what an in-JVM kill
+   can't model: no shutdown hook runs, the OS closes the sockets, and the producer's unsent batches
+   die with the process. The three processes boot together on a fresh deployment under live load,
+   so a rebalance can move a tracker partition before its first cursor commit. The new owner
+   replays that partition from its beginning
+   ([ADR-0022](adr/0022-tracker-partition-without-cursor-replays-from-beginning.md)). Before
+   ADR-0022 that owner exited, and that is how an early run of this soak failed.
+
+   Every other multi-instance scenario still kills in-JVM (`EngineHarness.kill()`: interrupt the
+   loop threads, drop the in-memory store). Their fencing guarantees rest on broker-side mechanisms
+   (`initTransactions()` fencing a stale `transactional.id`, `TxnOffsetCommit` epoch rejection,
+   session eviction), so that model is sound for §11.3-3/-4/-5/-6. Not covered: the full 24 h /
+   100 M-entry soak lane, which stays a manual dedicated-host run (`SoakPerfIT` javadoc), and crash
+   loops under `group.protocol=consumer`.
 
 2. **KIP-848 fencing / rebalance scenarios: documented incompatibilities, classic-only for now.**
    On `apache/kafka:4.3.0` two behaviours differ under `group.protocol=consumer`:
@@ -176,6 +186,7 @@ consumer protocol when the §8 tuning or the K8s static-membership recipe sets t
 
 6. **§11.4 performance: built, non-gating.** The `nightly.yml` `soak` job runs the `@Tag("soak")`
    memory-ceiling / JOL-footprint tests (`ShardFootprintTest`, `TrackerBackedStoreContract` 1M-entry
-   soak) and the scaled `SoakPerfIT` (`soakPerf`); the `macro-perf` job runs the `*PerfIT` suite; the
-   `benchmarks` job runs the JMH module (`continue-on-error`). The >10% JMH regression gate is
-   report-only (`results/compare.py`). See [performance.md](performance.md).
+   soak), the scaled `SoakPerfIT` and the `CrashLoopSoakIT` crash loop (`soakPerf`); the `macro-perf`
+   job runs the `*PerfIT` suite; the `benchmarks` job runs the JMH module (`continue-on-error`).
+   The >10% JMH regression gate is report-only (`results/compare.py`). See
+   [performance.md](performance.md).

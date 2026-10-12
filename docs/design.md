@@ -940,7 +940,7 @@ cesium-kafka/
 │   └── com.jucius.cesium.kafka.app.{config,lifecycle,health,metrics,logging}
 ├── cesium-kafka-benchmarks/           # JMH + JOL footprint tests (not CI-gating; nightly)
 ├── cesium-kafka-it/                   # Testcontainers integration (instances in-JVM; kill = EngineHarness.kill()),
-│                                      # EOS/fencing/LSO/barrier-ordering scenarios, soak, macro perf
+│                                      # EOS/fencing/LSO/barrier-ordering scenarios, soak (crash loop: forked JVMs), macro perf
 ├── config/cesium-example.yaml, config/docker-compose.yaml   # README quickstart (apache/kafka 4.x KRaft + cesium)
 ├── docs/                              # §12
 └── .github/workflows/                 # §13
@@ -970,7 +970,7 @@ JUnit 5 abstract classes; implementers subclass with a factory. `TrackerBackedSt
 
 ### 11.3 Integration (Testcontainers `org.testcontainers.kafka.KafkaContainer`, `apache/kafka:4.x` KRaft; `apache/kafka-native` for fast smoke; Toxiproxy for deterministic network faults). **Process model: cesium instances run as separate JVMs** (so SIGKILL/crash-point tests are real). **PR runs one representative lane** (classic protocol, 2 instances, split roles); the full matrix (× `group.protocol=consumer`, × 1 instance, × combined roles) runs nightly (R21).
 
-> **As shipped:** cesium instances run in-JVM. A kill is `EngineHarness.kill()` (interrupt the loop threads, drop the in-memory store), not an OS SIGKILL. The fencing scenarios rest on broker-side mechanisms (transactional and static-member fencing, session eviction), so this is sound for them. Scenario 12, which needs a real SIGKILL, is not built ([failure-matrix-coverage.md](failure-matrix-coverage.md#gaps-and-concerns), gap 1).
+> **As shipped:** scenarios 1–11 run cesium instances in-JVM. A kill there is `EngineHarness.kill()` (interrupt the loop threads, drop the in-memory store), not an OS SIGKILL. The fencing scenarios rest on broker-side mechanisms (transactional and static-member fencing, session eviction), so this is sound for them. Scenario 12 forks separate app JVMs and SIGKILLs them ([failure-matrix-coverage.md](failure-matrix-coverage.md#gaps-and-concerns), gap 1).
 
 1. Happy path: immediate + `cesium-delay-ms` + `cesium-deliver-at` + precedence; key/value/headers preserved (control stripped), provenance stamped, timestamp policy honored; past deliver-at relays immediately.
 2. Restart-recovery with crash-point injection (test-only `CrashPoints` seam) at I-2/I-3/I-4/D-1/D-2/D-3: after restart, a `read_committed` verifier sees each input exactly once; a `read_uncommitted` consumer counts the aborted batches (proves the aborts happened rather than nothing happened).
@@ -983,7 +983,7 @@ JUnit 5 abstract classes; implementers subclass with a factory. `TrackerBackedSt
 9. Integrity & environment checks: retention-expiry ⇒ DLQ loss-notice JSON contract; malformed/over-max DLQ records match §2.4; partition mismatch ⇒ EX_CONFIG; CREATE mode applies §2.1 configs (+ ACL when configured; revision 5: it no longer grants the ACL); source/tracker topic recreation ⇒ topic-ID mismatch fail-fast; tracker committed-offset>end ⇒ fail-fast; group A offsets removed ⇒ `auto.offset.reset=none` fail-fast with runbook exit code; size-based-retention acknowledgment gate.
 10. Degradation: kill destination ISR below min.insync ⇒ dispatch parks and degrades (no crash-loop, membership stable), recovers when ISR returns; degraded-flag and alert metrics asserted. Penalty box: Toxiproxy-degrade one source partition's leader ⇒ healthy partitions' `dispatch_lag` unaffected.
 11. KIP-848 lane: scenarios 2/3/4/5/6 with `group.protocol=consumer` (non-blocking nightly job, promotion ADR-tracked).
-12. Crash-loop soak (nightly): randomized SIGKILL/crash-point loop (separate JVMs) under sustained load with an invariant checker (every delayed input exactly once, never before its requested time minus skew tolerance).
+12. Crash-loop soak (nightly): randomized SIGKILL/crash-point loop (separate JVMs) under sustained load with an invariant checker (every delayed input exactly once, never before its requested time minus skew tolerance). As shipped, `CrashLoopSoakIT` runs three app processes at 200 records/s for 6 minutes and also requires an empty DLQ.
 
 ### 11.4 Performance (benchmarks module + nightly macro job; JMH archived per run; >10% regression gate aspirational/non-blocking; see the measured note)
 

@@ -38,8 +38,8 @@ import org.apache.kafka.common.TopicPartition;
  * <em>broker-side</em> mechanisms that are JVM-agnostic: {@code initTransactions()} fencing a stale
  * {@code transactional.id}, {@code TxnOffsetCommit} rejection on a stale member/generation epoch, a
  * duplicate {@code group.instance.id} join fencing the prior static member, and session-timeout
- * eviction. None depend on OS process semantics. The crash-loop soak (§11.3-12), which needs true
- * SIGKILL, is not built; no IT in this suite forks a JVM.
+ * eviction. None depend on OS process semantics. The crash-loop soak (§11.3-12), which needs a true
+ * SIGKILL, is the one IT that forks JVMs: {@link CrashLoopSoakIT}.
  */
 final class MultiInstanceSupport implements AutoCloseable {
 

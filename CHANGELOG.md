@@ -13,6 +13,12 @@ All notable changes to this project will be documented in this file. The format 
   a source partition in the penalty box, or a stalled dispatch loop. Penalty-boxed entries count;
   RECOVERING shards are left out, so restarts and takeovers don't spike it. operations.md §13 adds
   an "Overdue backlog" alert.
+- Test infrastructure: `CrashLoopSoakIT`, the design §11.3-12 crash-loop soak that was never built.
+  It runs three app processes, each in its own JVM, under delayed load for 6 minutes, SIGKILLs them
+  and halts some at armed §3.9 crash points. Then it checks that every record arrived exactly once
+  and never early, and that the DLQ is empty. It runs nightly in the `soak` job, which now calls
+  `soakPerf` once per soak IT. `SoakPerfIT` shares its invariant checker. Commands and knobs are in
+  performance.md §8.
 
 ### Changed
 - Design §9 drops four metrics that were specified but never emitted: `cesium_lso_lag`,

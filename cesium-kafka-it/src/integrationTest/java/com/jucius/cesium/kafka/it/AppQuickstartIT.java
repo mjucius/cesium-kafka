@@ -29,7 +29,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -137,7 +136,7 @@ class AppQuickstartIT extends KafkaIT {
             config = configSource.config();
         }
         String ingestGroup = KafkaClientFactory.ingestGroupId(config.applicationId());
-        seedFirstRunOffsets(source, ingestGroup);
+        ScenarioSupport.seedIngestOffsets(ADMIN, source, ingestGroup);
 
         Clock clock = Clock.systemUTC();
         registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
@@ -263,7 +262,7 @@ class AppQuickstartIT extends KafkaIT {
                 .build()) {
             config = configSource.config();
         }
-        seedFirstRunOffsets(source, KafkaClientFactory.ingestGroupId(config.applicationId()));
+        ScenarioSupport.seedIngestOffsets(ADMIN, source, KafkaClientFactory.ingestGroupId(config.applicationId()));
         registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         engine = new CesiumEngine(config, registry, Clock.systemUTC(), SHUTDOWN_BUDGET);
 
@@ -327,23 +326,6 @@ class AppQuickstartIT extends KafkaIT {
         return get(ADMIN.describeTopics(List.of(topic)).allTopicNames())
                 .get(topic)
                 .topicId();
-    }
-
-    /**
-     * The documented first-run operator step (D18/§3.6, I-9 runbook): {@code auto.offset.reset} is
-     * locked to {@code none}, so seed committed offset 0 for every source partition before the ingest
-     * loop starts — exactly what the quickstart's {@code topic-init} container does via the CLI.
-     */
-    private static void seedFirstRunOffsets(String source, String ingestGroup) {
-        int partitions = get(ADMIN.describeTopics(List.of(source)).allTopicNames())
-                .get(source)
-                .partitions()
-                .size();
-        Map<TopicPartition, OffsetAndMetadata> seed = new HashMap<>();
-        for (int p = 0; p < partitions; p++) {
-            seed.put(new TopicPartition(source, p), new OffsetAndMetadata(0L));
-        }
-        get(ADMIN.alterConsumerGroupOffsets(ingestGroup, seed).all());
     }
 
     private void assertLoopMdc(String messagePrefix, String loop, String txn) {

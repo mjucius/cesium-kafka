@@ -1,8 +1,5 @@
 package com.jucius.cesium.kafka.it;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
-
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
 import com.jucius.cesium.kafka.core.config.Role;
 import java.nio.charset.StandardCharsets;
@@ -21,9 +18,9 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Soak — <strong>sustained mixed delayed traffic with an exactly-once + not-before-time invariant
- * checker</strong> (design §11.3-12 / §11.4 soak lane). Drives a few hundred thousand heterogeneously
+ * checker</strong> (design §11.4 soak lane). Drives a few hundred thousand heterogeneously
  * delayed entries through the full {@link EngineHarness} (ingest + dispatch + re-fetch) over a few
- * minutes and asserts the two soak invariants on every delivered record:
+ * minutes and asserts the two soak invariants ({@link DeliveryInvariants}) on every delivered record:
  *
  * <ol>
  *   <li><strong>exactly once</strong> — each delayed input appears on the destination exactly once
@@ -45,7 +42,7 @@ import org.slf4j.LoggerFactory;
  *   # the worker's command-line -Xmx (default 1536m) would clobber it and the JVM would fail to start.
  *   JAVA_TOOL_OPTIONS="-XX:+UseZGC -XX:+ZGenerational \
  *       -XX:+AlwaysPreTouch -XX:StartFlightRecording=filename=soak.jfr,dumponexit=true" \
- *   ./gradlew :cesium-kafka-it:soakPerf \
+ *   ./gradlew :cesium-kafka-it:soakPerf --tests '*SoakPerfIT' \
  *       -Dsoak.maxHeap=12g -Dsoak.minHeap=12g \
  *       -Dsoak.total=100000000 -Dsoak.windowMs=86400000 -Dsoak.partitions=64 \
  *       -Dsoak.timeoutMin=1560
@@ -69,9 +66,6 @@ class SoakPerfIT extends KafkaIT {
 
     /** Minimum lead before the earliest entry is due — every entry is pending before its due time. */
     private static final int MIN_LEAD_MS = 2_000;
-
-    /** Clock-skew tolerance for the not-before-time invariant (§11.3-12 "minus skew tolerance"). */
-    private static final long SKEW_TOLERANCE_MS = 150;
 
     private static final int TIMEOUT_MIN = Integer.getInteger("soak.timeoutMin", 15);
 
@@ -123,49 +117,27 @@ class SoakPerfIT extends KafkaIT {
         }
         double produceSeconds = (System.nanoTime() - produceStartNanos) / 1e9;
 
-        // Drain the whole stream; read_committed gives exactly-once already, the invariant loop re-proves it.
+        // Drain the whole stream; read_committed gives exactly-once already, the checker re-proves it.
         List<ConsumerRecord<byte[], byte[]>> delivered =
                 readExactlyCommitted(destination, TOTAL, Duration.ofMinutes(TIMEOUT_MIN), RETRY_GRACE);
 
-        // Invariant 1: exactly once — byKey throws on any duplicate key, and the size must equal TOTAL.
-        var byKey = byKey(delivered);
-        assertTrue(byKey.size() == TOTAL, "exactly-once: expected " + TOTAL + " distinct keys, saw " + byKey.size());
-
-        // Invariant 2: never early — dispatch instant ≥ requested time − skew tolerance, for every record.
-        long worstEarlyMs = 0;
-        long maxLateMs = 0;
-        int earlyViolations = 0;
-        for (ConsumerRecord<byte[], byte[]> record : delivered) {
-            int i = Integer.parseInt(utf8(record.key()).substring("s-".length()));
-            long earlyBy = deliverAt[i] - record.timestamp(); // positive ⇒ delivered BEFORE requested
-            if (earlyBy > SKEW_TOLERANCE_MS) {
-                earlyViolations++;
-                worstEarlyMs = Math.max(worstEarlyMs, earlyBy);
-            }
-            maxLateMs = Math.max(maxLateMs, record.timestamp() - deliverAt[i]);
-        }
+        long maxLateMs = DeliveryInvariants.check(
+                delivered, TOTAL, key -> deliverAt[Integer.parseInt(key.substring("s-".length()))]);
 
         log.info(
                 "SOAK (scaled): total={} partitions={} window={}ms | produced in {}s; exactly-once OK ({} keys); "
-                        + "not-before-time: {} violations (worst early {}ms, tol {}ms); maxLate={}ms",
+                        + "not-before-time OK (tol {}ms); maxLate={}ms",
                 TOTAL,
                 PARTITIONS,
                 WINDOW_MS,
                 String.format("%.1f", produceSeconds),
-                byKey.size(),
-                earlyViolations,
-                worstEarlyMs,
-                SKEW_TOLERANCE_MS,
+                TOTAL,
+                DeliveryInvariants.SKEW_TOLERANCE_MS,
                 maxLateMs);
         System.out.printf(
-                "%n[SOAK scaled] total=%d: exactly-once OK (%d keys); never-early violations=%d (worst early %dms, "
-                        + "tol %dms); maxLate=%dms. Full 100M/24h/ZGC lane: see SoakPerfIT javadoc.%n",
-                TOTAL, byKey.size(), earlyViolations, worstEarlyMs, SKEW_TOLERANCE_MS, maxLateMs);
-
-        if (earlyViolations > 0) {
-            fail("not-before-time invariant violated for " + earlyViolations + " record(s); worst early by "
-                    + worstEarlyMs + "ms (skew tolerance " + SKEW_TOLERANCE_MS + "ms)");
-        }
+                "%n[SOAK scaled] total=%d: exactly-once OK; never-early OK (tol %dms); maxLate=%dms. "
+                        + "Full 100M/24h/ZGC lane: see SoakPerfIT javadoc.%n",
+                TOTAL, DeliveryInvariants.SKEW_TOLERANCE_MS, maxLateMs);
         harness.stop();
     }
 }

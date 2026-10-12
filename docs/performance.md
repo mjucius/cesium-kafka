@@ -405,7 +405,7 @@ the build forwards every `-Dperf.*` and `-Dsoak.*` property to the forked test J
 ```bash
 # Scaled-down soak (a few hundred k entries / ~2 min) — proves harness + invariant checker.
 # Runs ONLY through the dedicated soakPerf task (@Tag("soak") is excluded everywhere else).
-./gradlew :cesium-kafka-it:soakPerf
+./gradlew :cesium-kafka-it:soakPerf --tests '*SoakPerfIT'
 
 # Full dedicated lane — 100 M pending, 12 GB heap, ZGC generational, 24 h (see SoakPerfIT javadoc).
 # Run on a sized host (16+ GB RAM, fast local disk for the broker).
@@ -418,7 +418,7 @@ the build forwards every `-Dperf.*` and `-Dsoak.*` property to the forked test J
 # flags.
 JAVA_TOOL_OPTIONS="-XX:+UseZGC -XX:+ZGenerational \
     -XX:+AlwaysPreTouch -XX:StartFlightRecording=filename=soak.jfr,dumponexit=true" \
-./gradlew :cesium-kafka-it:soakPerf \
+./gradlew :cesium-kafka-it:soakPerf --tests '*SoakPerfIT' \
     -Dsoak.maxHeap=12g -Dsoak.minHeap=12g \
     -Dsoak.total=100000000 -Dsoak.windowMs=86400000 -Dsoak.partitions=64 -Dsoak.timeoutMin=1560
 ```
@@ -450,8 +450,47 @@ keys, 0 never-early violations.
 > there is no earliness and no exactly-once violation (earliness = 0). The dedicated 100 M / 24 h
 > lane is where steady lateness is characterised against the full GC-pause-p99 < 5 ms target.
 
-`nightly.yml` runs the `benchmarks` (JMH), `macro-perf`, and `soak` (incl. `soakPerf`) jobs; the JMH
-job is `continue-on-error` (non-gating).
+### Crash-loop soak (design §11.3-12)
+
+```bash
+# Three app JVMs under delayed load, SIGKILLed and crash-point-halted; ~7.5 min at the defaults.
+./gradlew :cesium-kafka-it:soakPerf --tests '*CrashLoopSoakIT'
+```
+
+`CrashLoopSoakIT` forks three engine processes (`CrashLoopChild`: the production `CesiumApp.main`
+with an optional crash point armed) on the `integrationTest` runtime classpath, which `soakPerf`
+passes in as `soak.childClasspath`. Every 5–20 s it SIGKILLs one and restarts it after 0–10 s;
+half the restarts arm a random §3.9 crash point that halts the child (exit 86). All three boot
+together on a fresh deployment under live load, and the kill loop starts without waiting for
+dispatch to commit. When the load and the kills stop, it drains the destination, checks the same
+two invariants as `SoakPerfIT`, and checks that the DLQ is empty. If a child the test did not
+kill exits with anything but its armed crash point's code, the run fails and names that child's
+log under `cesium-kafka-it/build/reports/tests/soak-children/`.
+
+| Knob (default) | Effect | Measured at the defaults |
+|---|---|---|
+| `-Dsoak.crashloop.rate=200` | records produced per second, each due 2–60 s later | 72.1 k–74.7 k records |
+| `-Dsoak.crashloop.minutes=6` | how long the kill loop runs under load | 20–25 SIGKILLs, 24–32 restarts |
+| `-Dsoak.crashloop.crashProb=0.02` | chance an armed crash point halts the child each time it fires | 4–9 halts from 8–15 armed restarts |
+| `-Dsoak.crashloop.drainMin=5` | bound on the final drain once the load and kills stop | drained in 66–67 s |
+
+Five default runs on the §1 dev box, 2026-10-12, all green:
+
+| Run | Records | SIGKILLs | Crash-point halts | Restarts (armed) | Took | `maxLate` |
+|---|---|---|---|---|---|---|
+| 1 | 74,660 | 25 | 7 | 32 (15) | 439 s | 94 s |
+| 2 | 73,800 | 20 | 4 | 24 (8) | 435 s | 132 s |
+| 3 | 72,820 | 22 | 7 | 29 (11) | 430 s | 77 s |
+| 4 | 72,100 | 23 | 5 | 28 (9) | 427 s | 72 s |
+| 5 | 74,460 | 22 | 9 | 31 (13) | 439 s | 78 s |
+
+In run 1 a rebalance moved two tracker partitions before their first cursor commit, and their new
+owner replayed them from the beginning
+([ADR-0022](adr/0022-tracker-partition-without-cursor-replays-from-beginning.md)). `maxLate` is
+lateness, which the at-or-after-requested-time contract permits.
+
+`nightly.yml` runs the `benchmarks` (JMH), `macro-perf`, and `soak` (incl. both `soakPerf` ITs, as
+separate invocations) jobs; the JMH job is `continue-on-error` (non-gating).
 
 ---
 

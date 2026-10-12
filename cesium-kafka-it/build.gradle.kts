@@ -2,7 +2,7 @@ plugins {
     id("cesium.java-conventions")
 }
 
-description = "Integration tests against real Kafka 4.x (Testcontainers, KRaft); cesium instances run in-JVM"
+description = "Integration tests against real Kafka 4.x (Testcontainers, KRaft); cesium instances run in-JVM, except in the crash-loop soak"
 
 testing {
     suites {
@@ -67,10 +67,11 @@ tasks.withType<Test>().configureEach {
 
 // The macro/soak performance lane (design §11.4). The @Tag("nightly") perf ITs (ingest/dispatch/
 // burst/large-payload/heterogeneous-replay) run on the ordinary `integrationTest` task with
-// -PincludeNightly=true (nightly.yml's perf batch). The @Tag("soak") SoakPerfIT is NEVER on that
-// lane — it runs only through this dedicated `soakPerf` task, which the java-conventions plugin
-// configures to includeTags("soak") on the integrationTest source set. The full 100M/24h/ZGC run is
-// a manual dedicated-host invocation (see SoakPerfIT javadoc for the exact command + JVM flags).
+// -PincludeNightly=true (nightly.yml's perf batch). The @Tag("soak") SoakPerfIT and CrashLoopSoakIT
+// are NEVER on that lane — they run only through this dedicated `soakPerf` task, which the
+// java-conventions plugin configures to includeTags("soak") on the integrationTest source set. The
+// full 100M/24h/ZGC run is a manual dedicated-host invocation (see SoakPerfIT javadoc for the exact
+// command + JVM flags).
 tasks.register<Test>("soakPerf") {
     description = "Runs @Tag(\"soak\") macro/soak performance ITs against real Kafka (design §11.4)."
     group = "verification"
@@ -90,6 +91,11 @@ tasks.register<Test>("soakPerf") {
     maxHeapSize = providers.systemProperty("soak.maxHeap").getOrElse("1536m")
     providers.systemProperty("soak.minHeap").orNull?.let { minHeapSize = it }
     jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
+    // CrashLoopSoakIT forks engine JVMs running CrashLoopChild, which lives in this source set, so
+    // they need this same classpath. Resolved at execution time, which keeps the configuration
+    // cache valid.
+    val childClasspath = integrationTest.runtimeClasspath
+    jvmArgumentProviders.add(CommandLineArgumentProvider { listOf("-Dsoak.childClasspath=${childClasspath.asPath}") })
     // Same never-cache rule as the integrationTest task above: a broker-backed run has unmodelled
     // inputs (Docker, the container, wall-clock), so a cache hit would silently skip the soak.
     outputs.upToDateWhen { false }
