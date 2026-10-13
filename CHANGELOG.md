@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-12
+
+Minor release. One new metric, two fixes for bugs present since 1.0, and a nightly crash-loop soak
+that kills real processes. Config keys, headers and the tracker wire format are unchanged from
+2.0.0.
+
 ### Added
 - `cesium_pending_oldest_deadline_seconds`, an untagged gauge: how long the most overdue pending
   entry on an ACTIVE shard has been due, or `0` when nothing is due. `cesium_dispatch_lag_seconds`
@@ -590,7 +596,8 @@ delivery as observed by `read_committed` consumers of the destination.
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/mjucius/cesium-kafka/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/mjucius/cesium-kafka/compare/v1.1.5...v2.0.0
 [1.1.5]: https://github.com/mjucius/cesium-kafka/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/mjucius/cesium-kafka/compare/v1.1.3...v1.1.4
