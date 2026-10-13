@@ -151,6 +151,9 @@ says why. This removes the PoC's `Properties(defaults)` config drift.
 | `delay.on-over-max` | `DLQ` | Policy when a requested delay exceeds `delay.max`: `DLQ` (default), `CLAMP` (pin to `now + delay.max`, stamp `cesium-clamped: true`), or `FAIL`. |
 | `delay.on-malformed-header` | `DLQ` | Policy when a control header fails the value grammar: `DLQ` (default), `RELAY_IMMEDIATE`, or `FAIL`. |
 
+A `cesium-delay-ms` delay counts from the source record timestamp, and a record already due when
+ingest reads it is relayed at once ([header-protocol.md](header-protocol.md) §1.2, §1.5).
+
 Delivering early a message someone intended to delay is a business hazard, so both default to DLQ:
 the violation is visible and the pipeline stays alive (D3). DLQ policies require
 `route.dlq.topic` to be configured.

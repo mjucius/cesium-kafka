@@ -318,8 +318,8 @@ public final class KafkaTrackerStore implements TrackerBackedStore {
                 w.index.applyComplete(partition, TrackerWireFormat.decodeKey(key));
             }
             case TrackerDecodeResult.Cancel ignored -> {
-                // Reserved type 0x02 (D15): no cancellation support — counted no-op, not
-                // corruption (supportsCancellation=false).
+                // Reserved type 0x02 (D15): nothing writes it, because cancellation is deferred
+                // (design open question 3) — counted no-op, not corruption.
                 w.cancelRecords.increment();
             }
             case TrackerDecodeResult.Invalid(String detail) -> recordInvalid(w, partition, trackerOffset, detail);

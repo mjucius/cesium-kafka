@@ -39,12 +39,15 @@ import org.slf4j.LoggerFactory;
  *   <li><strong>{@link #dispatchLagP99ForIdleArrivals()}</strong> — a sparse trickle of arrivals,
  *       each made pending ~2 s before its due instant (relay timestamp = DISPATCH, D8). The 2 s lead
  *       fully absorbs the ingest&rarr;pending pipeline floor (ingest-commit + tracker-consume +
- *       {@code read_committed} LSO visibility, OQ#5 ~100–500 ms), which therefore contributes ZERO
- *       lateness; p50 = 2 ms confirms an already-pending entry dispatches almost immediately. The
- *       p99 tail (~480 ms on this single-broker dev box) is thus NOT that floor — a floor would lift
- *       p50 too — but an <em>occasional dispatch-side stall</em> (single-broker EOS transaction
- *       commit / broker fsync / GC pause). p99 is measured end to end and reported against the 250 ms
- *       SLO; see docs/performance.md §3.
+ *       {@code read_committed} LSO visibility; in {@link SubSecondDelayIT}, records with only a
+ *       50 ms lead are visible ~5–18 ms late at p50), which therefore contributes ZERO lateness;
+ *       p50 = 2 ms confirms an already-pending entry dispatches almost immediately. The p99 tail
+ *       (~480 ms on this dev box) is thus NOT that floor — a floor would lift p50 too — but the
+ *       payload fetch waiting for the seek consumer's in-flight fetch, which the broker holds for
+ *       {@code fetch.max.wait.ms} (500 ms by default) once the source partition goes quiet at the end
+ *       of the trickle. p99 is read off the relay timestamp, taken when a dispatch batch starts, so
+ *       it leaves out that batch's own fetch and commit; it is reported against the 250 ms SLO; see
+ *       docs/performance.md §3.
  * </ul>
  *
  * <p>{@code @Tag("nightly")}. Numbers are logged and reported honestly (R9); the hard assertions are
@@ -147,8 +150,9 @@ class DispatchThroughputPerfIT extends KafkaIT {
 
         // A sparse trickle — idle arrivals, NOT a backlog: each entry is scheduled ~2 s ahead so it is
         // pending long before it comes due. The 2 s lead absorbs the ingest->pending pipeline floor
-        // (OQ#5 ~100-500 ms), so steady-state lateness is dispatch-side; the p99 tail is an occasional
-        // commit/IO/GC stall, not that floor (which would also lift p50). See docs/performance.md §3.
+        // (SubSecondDelayIT: even a 50 ms lead is ~5-18 ms late at p50), so steady-state lateness is
+        // dispatch-side; the p99 tail is the seek consumer's fetch.max.wait.ms once the source goes
+        // quiet, not that floor (which would also lift p50). See docs/performance.md §3.
         int count = Integer.getInteger("perf.lag.count", 300);
         long lead = 2_000;
         Map<String, Long> deliverAtByKey = new HashMap<>();

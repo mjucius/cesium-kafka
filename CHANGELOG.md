@@ -19,6 +19,11 @@ All notable changes to this project will be documented in this file. The format 
   and never early, and that the DLQ is empty. It runs nightly in the `soak` job, which now calls
   `soakPerf` once per soak IT. `SoakPerfIT` shares its invariant checker. Commands and knobs are in
   performance.md §8.
+- Test infrastructure: `SubSecondDelayIT` measures sub-second delays where a consumer sees them.
+  A trickle asks for `cesium-delay-ms` 0, 50, 300 and 900, and a `read_committed` consumer stamps
+  when it first sees each relay. The test asserts exactly-once and never-early, logs p50/p99/max
+  lateness per delay, and asserts no latency bound. It is untagged, so it runs on the PR lane;
+  performance.md §3.4 has the numbers.
 
 ### Changed
 - Design §9 drops four metrics that were specified but never emitted: `cesium_lso_lag`,
@@ -33,6 +38,17 @@ All notable changes to this project will be documented in this file. The format 
   the commit the `v7.0.2` tag resolves to.
 - Core (internal): `DispatchAdmin.groupHasCommittedOffsets` is removed, and `KafkaDispatchAdmin`
   no longer takes the dispatch group id.
+- Design open questions 3, 5 and 6 are resolved (revision 6). There is no cancellation API for now;
+  the `CANCEL 0x02` reservation stays, and design.md records a minimal design for later.
+  Sub-second delays are best-effort and never early, with no early-relay threshold:
+  delivery-semantics.md, performance.md §3.4, migration-from-poc.md, configuration.md and
+  header-protocol.md now say so, with measured lateness in place of the unmeasured ~100–500 ms
+  estimate. There is no admin endpoint; operations stays metrics-only. design.md §8 and §9 no
+  longer list store type or store capabilities in `/info`.
+- performance.md traces the `dispatch_lag` p99 miss (~480 ms against the 250 ms SLO) to the seek
+  consumer's `fetch.max.wait.ms`, which defaults to 500 ms, instead of commit, fsync or GC stalls.
+  With it at 50 ms, two diagnostic runs measured p99 at 53–55 ms. The default is unchanged. The
+  operations.md precision alert now names this cause first.
 
 ### Fixed
 - Since 1.0, setting `CESIUM_KAFKA_OPTS`, which the Dockerfile and operations.md advertise for JVM

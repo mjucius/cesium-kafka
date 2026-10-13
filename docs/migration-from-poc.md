@@ -116,10 +116,12 @@ millions of pending messages fit in a modest heap. See
 
 ### 3.7 Delivery is at-or-after, never before
 
-cesium-kafka delivers at or after the requested instant (bounded lateness), never early. The
-sub-second floor (ingest-commit + tracker-consume + `read_committed` visibility) is documented in
-[performance.md](performance.md). If your PoC use relied on near-instant sub-second precision, measure
-against the new floor before cutover.
+cesium-kafka delivers at or after the requested instant (bounded lateness), never early. Sub-second
+delays are best-effort. A record already due when ingest reads it is relayed at once, and none is
+relayed before its time. [performance.md](performance.md) §3.4 has the measured lateness: 5–19 ms at
+p50 on a dev box, and up to about 1 s for records that come due after their source partition has
+gone quiet. If your PoC use relied on near-instant sub-second precision, measure on your own cluster
+before cutover.
 
 ---
 

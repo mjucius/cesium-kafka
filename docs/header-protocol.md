@@ -68,6 +68,10 @@ clock.
 - A request whose relay time is `now` or earlier (a `cesium-delay-ms` of `0`, or a
   `cesium-deliver-at` already elapsed) is not an error: the record relays immediately (a past-due relay). A past
   `cesium-deliver-at` is valid.
+- `now` is when ingest reads the record, but a `cesium-delay-ms` delay counts from the source record
+  timestamp (§1.2), so a record that reaches ingest after its relay time also relays immediately.
+  No record relays before its relay time; sub-second delays are best-effort
+  ([performance.md](performance.md) §3.4).
 - A value failing the grammar of §1.1 is malformed and handled by the malformed-header policy
   (§4.1).
 - A value exceeding the range above is over-max and handled by the over-max policy (§4.2).

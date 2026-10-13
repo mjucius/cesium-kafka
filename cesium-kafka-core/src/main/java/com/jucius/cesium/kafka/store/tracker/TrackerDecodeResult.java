@@ -25,10 +25,10 @@ public sealed interface TrackerDecodeResult {
     record Add(long dispatchAtMs, boolean clamped) implements TrackerDecodeResult {}
 
     /**
-     * A structurally valid v1 record of the reserved type {@code 0x02 CANCEL} (D15). No v1 writer
-     * produces it; decoding it distinctly (rather than as {@link Invalid}) lets the caller treat it
-     * as not-yet-supported — e.g. count under a dedicated metric — without misclassifying a future
-     * cancellation API's records as corruption.
+     * A structurally valid v1 record of the reserved type {@code 0x02 CANCEL} (D15). No writer
+     * produces it (cancellation is deferred, design open question 3); decoding it distinctly (rather
+     * than as {@link Invalid}) lets the caller treat it as not-yet-supported — e.g. count under a
+     * dedicated metric — without misclassifying a future cancellation API's records as corruption.
      */
     record Cancel() implements TrackerDecodeResult {
         /** Shared instance — the variant carries no data. */

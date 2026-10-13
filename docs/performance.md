@@ -34,7 +34,8 @@ There are two classes of number, kept separate:
 > structures and (b) `read_committed` end-to-end delay-path latency. These are the classes that
 > diverge most between this box and the target hardware. The nightly macro gate targets the
 > server-x86, multi-broker setup, and that re-measurement is still pending. The misses below are
-> reported at their dev-box values.
+> reported at their dev-box values. §3 has since traced the delay-path miss to a Kafka client
+> setting.
 
 ---
 
@@ -158,26 +159,30 @@ per-instance ceiling; that is the dedicated lane's job (§9).
 ### The `dispatch_lag` p99 miss (~480 ms vs the 250 ms SLO)
 
 p50 is 2 ms: an already-pending entry dispatches almost immediately. The miss is in the tail, and
-the ingest→pending pipeline floor does not cause it. The test (`dispatchLagP99ForIdleArrivals`)
-pre-schedules every entry at `now + 2000 ms`, so the OQ#5 floor (`ingest-commit` +
-`tracker-consume` + `read_committed` LSO visibility, sized at ~100–500 ms) is absorbed by the 2 s
-lead and contributes zero lateness. For the pipeline to cause 472 ms of lateness it would have to
-occasionally exceed the 2 s lead (a > 2.4 s spike), which is far outside a ~100–500 ms floor. A
-systematic floor would also lift p50; here p50 = 2 ms while p99 = 472 ms (reproduced: p99 = 472,
-max = 496). A tight body with an occasional spike points to an occasional dispatch-side stall: a
-single-broker EOS transaction commit, broker fsync, or GC pause landing on the few records that come
-due during it. On a dedicated multi-broker cluster with lower, smoother commit latency this is
-expected to fall under 250 ms. Until it is measured there, the SLO carries this annotation:
+the ingest→pending pipeline does not cause it. The test (`dispatchLagP99ForIdleArrivals`)
+pre-schedules every entry at `now + 2000 ms`, so ingest commit, tracker consume and
+`read_committed` LSO visibility (in §3.4, records with only a 50 ms lead were visible 5–18 ms late
+at p50) are absorbed by the 2 s lead and add no lateness. A systematic floor would also lift p50;
+here p50 = 2 ms while p99 = 472 ms (reproduced: p99 = 472, max = 496; on 2026-10-12, p99 = 474,
+max = 498).
 
-> **`dispatch_lag` p99 ≤ 250 ms**: *idle-arrival end-to-end; p50 = 2 ms; ~480 ms p99 on a
-> single-broker dev box from occasional commit/IO/GC tails (p50 stays at 2 ms, so this is not a
-> systematic floor); expected to meet on a dedicated multi-broker cluster.*
+The tail is the payload fetch. After a due batch's fetch, the seek consumer leaves a fetch in flight
+at the end of the source partition, and the broker holds it until new data arrives or
+`fetch.max.wait.ms` (Kafka default 500 ms) passes. While the source still receives writes, that
+takes milliseconds. Once it goes quiet, as it does at the end of the test's trickle, the next due
+batch waits up to 500 ms before its own fetch can go out. Two diagnostic runs with
+`fetch.max.wait.ms` at 50 ms on the seek consumer (`kafka.seek-consumer.properties`) brought p99
+down to 53–55 ms (max 62–63 ms), inside the SLO. The default is unchanged, so the SLO carries this
+annotation:
 
-If your route uses sub-second delays, see OQ#5: document them as best-effort, or relay immediately
-below a threshold. The precision SLO holds for the steady-state path (already-pending entries:
-p50 = 2 ms); the ~480 ms is a tail stall, to be re-measured on the dedicated lane (§9). Because the
-2 s lead absorbs the pre-pending pipeline, this metric is measured end to end from the requested
-instant, and the test does not isolate pure dispatch-scheduling latency.
+> **`dispatch_lag` p99 ≤ 250 ms**: *idle-arrival; p50 = 2 ms; ~480 ms p99 at the default
+> seek-consumer `fetch.max.wait.ms` (500 ms), from batches that come due after the source partition
+> goes quiet; ~55 ms p99 with it at 50 ms.*
+
+`cesium_dispatch_lag_seconds`, and the relay timestamp this test reads, are taken when a dispatch
+batch starts, before the payload fetch and the transaction commit. They leave out that batch's fetch
+and commit and the destination's `read_committed` visibility; a batch that waited behind a slow
+fetch still shows the wait. §3.4 measures lateness where a consumer sees it.
 
 ### 3.3 The burst's membership-stability assertion is a sanity check, not an R2 proof
 
@@ -196,6 +201,44 @@ trips `max.poll.interval.ms`*) is tested where the drain is forced to outlast th
 `BarrierOrderingI8IT` (evicts an intentionally stalled member at `max.poll.interval.ms = 7 s` with a
 matching `drain.max-slice`) and `RebalanceScaleIT` (assignment churn). The §11.1 unit suite also has a
 fake-clock due-storm poll-gap test.
+
+### 3.4 Sub-second delays: best-effort, never early
+
+`SubSecondDelayIT` measures what a downstream consumer sees. Each round produces one record each
+with `cesium-delay-ms` 0, 50, 300 and 900, and rounds are at least 15 ms apart. A `read_committed`
+consumer stamps the moment it first sees each relay. Lateness is that moment minus the requested
+time (source record timestamp + delay), so for a scheduled record it includes ingest, tracker
+consume, the payload fetch, both transaction commits and the consumer's own fetch. The test asserts
+exactly-once and that no record is visible before its requested time. It asserts no latency bound
+and is untagged, so it runs on the PR lane. To run it alone, use
+`./gradlew :cesium-kafka-it:integrationTest --tests "com.jucius.cesium.kafka.it.SubSecondDelayIT"`
+(`-Dperf.subsecond.rounds` changes the 200 measured rounds).
+
+Four runs on 2026-10-12, on the Apple M3 dev box (8 cores, 24 GB) with Corretto 21.0.3 and one
+`apache/kafka:4.3.0` broker under Testcontainers, 200 measured records per delay. Three runs landed
+at the low end of each range; the fourth gave the high p50s and maxima.
+
+| Delay | p50 | p99 | max | relayed by ingest |
+|---|---|---|---|---|
+| 0 ms | 9–19 ms | 19–217 ms | 90–280 ms | 200 of 200 |
+| 50 ms | 5–18 ms | 16–158 ms | 36–215 ms | 1–30 of 200 |
+| 300 ms | 5–16 ms | 18–74 ms | 19–143 ms | 0 |
+| 900 ms | 5–15 ms | 21–80 ms | 24–137 ms | 0 |
+
+No record was early. A record already due when ingest reads it, which is every 0 ms record and a
+few 50 ms records that ingest read late, is relayed straight from ingest; at any delay, nothing is
+relayed before its requested time. Sub-second delays are best-effort, and cesium makes no latency
+promise for them.
+
+The percentiles leave out two stretches that the test still checks:
+
+* **Warm-up**: the first 25 rounds, about the first second after the engine starts. Worst
+  lateness 0.53–0.79 s.
+* **Drain**: the rounds after the measured ones, which keep the source busy until the last measured
+  record is due. Their last records come due after the source goes quiet, so each due batch waits
+  for the seek consumer's in-flight fetch (the `dispatch_lag` p99 section above). Worst lateness
+  1.00–1.01 s. One diagnostic run with the seek consumer's `fetch.max.wait.ms` at 50 ms cut it to
+  0.11 s.
 
 ---
 
@@ -502,8 +545,8 @@ Open items, tracked against design `§15` risk #9:
    (2.45 M vs 8 M; 6.30 M vs 10 M). Both are memory-latency bound. Re-measure on server x86 with a
    large L3. The re-baselined floors (≥ 2.4 M / ≥ 6 M) are the dev-box values, and the original
    projections are kept for the server run.
-2. `dispatch_lag` p99 ~480 ms vs the 250 ms SLO on a single broker. Re-measure on a dedicated
-   multi-broker cluster with warm LSO; expected to meet 250 ms (design OQ#5).
+2. `dispatch_lag` p99 ~480 ms vs the 250 ms SLO. It comes from the seek consumer's default
+   `fetch.max.wait.ms` (500 ms) once a source partition goes quiet (§3). Decide whether cesium should set a lower default; at 50 ms, p99 was ~55 ms.
 3. Sustained scattered-due dispatch ≈ 826 rec/s is below the 10 k CI target (§3.1). The
    single-thread re-fetch goes random-seek under sparse due-sets (risk #8) and per-transaction
    batches shrink. Re-measure on a dedicated multi-broker cluster (warm fetch sessions, real disk

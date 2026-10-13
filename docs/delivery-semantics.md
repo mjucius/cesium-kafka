@@ -291,9 +291,15 @@ Delivery is never early, and late by a bounded amount. Within a partition, due e
 `(dispatchAtMs, arrival)` order; across partitions, in effective-deadline order. Sources of bounded
 lateness:
 
-- The pipeline floor for a freshly-arrived delayed record: ingest-commit + tracker-consume +
-  `read_committed` LSO visibility (~100–500 ms). For a record scheduled comfortably ahead of its due
-  time this is fully absorbed; for sub-second delays it dominates (best-effort below a threshold).
+- The pipeline a freshly-arrived delayed record passes through first: ingest commit, tracker
+  consume and `read_committed` LSO visibility. Sub-second delays are best-effort. A delay counts
+  from the source record timestamp, and a record already due when ingest reads it is relayed at
+  once; no delay is short enough to be relayed early. Under a steady trickle on a dev box,
+  records asking for 0–900 ms became visible to a `read_committed` consumer 5–19 ms late at p50 and
+  at most 0.3 s late; in the first second after startup, up to 0.8 s
+  ([`performance.md`](performance.md) §3.4).
+- A source partition with no new writes. Back-to-back due batches on it can each wait up to the
+  seek consumer's `fetch.max.wait.ms` (500 ms by default) for the payload fetch.
 - Due-storms drain in due order, time-sliced, late but exactly once. The loop interleaves polls to
   keep membership alive instead of dropping records.
 - Clock skew between dispatch workers shifts firing by the skew; NTP is assumed, and the

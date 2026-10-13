@@ -53,7 +53,7 @@ public final class TrackerWireFormat {
     /** Value type: schedule the keyed source offset for dispatch. */
     public static final byte TYPE_ADD = 0x01;
 
-    /** Value type reserved for a future cancellation API (D15); never written in v1. */
+    /** Value type reserved for a future cancellation API (D15, design open question 3); never written. */
     public static final byte TYPE_CANCEL = 0x02;
 
     /**

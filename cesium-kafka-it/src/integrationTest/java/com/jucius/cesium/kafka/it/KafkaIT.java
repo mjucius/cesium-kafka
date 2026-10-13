@@ -283,7 +283,8 @@ abstract class KafkaIT {
         }
     }
 
-    private static Consumer<byte[], byte[]> newAssignedConsumer(String topic, String isolation) {
+    /** A consumer assigned every partition of {@code topic} from the beginning; caller closes it. */
+    static Consumer<byte[], byte[]> newAssignedConsumer(String topic, String isolation) {
         Properties props = new Properties();
         props.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap());
         props.setProperty(ConsumerConfig.ISOLATION_LEVEL_CONFIG, isolation);
