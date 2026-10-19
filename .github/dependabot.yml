@@ -9,6 +9,16 @@
 #     pins keep pace with upstream patch releases and SCA advisories.
 #
 # Weekly cadence keeps PR churn low; grouped minor/patch PRs reduce noise.
+#
+# Cooldown: a release must have aged before Dependabot proposes it, so upstream regressions and
+# pulled releases surface first. For Maven artifacts Dependabot dates a release by its Maven
+# Central directory listing, and for Apache projects that is the day the release candidate was
+# staged, not the day the vote passed: kafka-clients 4.4.0 is listed 2026-10-06, was promoted to
+# Central 2026-10-13, and was still unannounced on 2026-10-18 when PR #34 opened. Minor and major
+# bumps therefore wait 21 days from that date (for 4.4.0, two weeks after the vote passed);
+# patches and GitHub Actions (dated by their release) wait 7. Cooldown never delays Dependabot
+# security updates, but those are disabled on this repository, so a security fix waits too:
+# bump it by hand.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -18,6 +28,8 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
@@ -30,6 +42,10 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "build"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 21
+      semver-major-days: 21
     groups:
       gradle-minor-patch:
         update-types:

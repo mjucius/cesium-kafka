@@ -43,6 +43,13 @@ All notable changes to this project will be documented in this file. The format 
   installed last so it stays `JAVA_HOME`, and no `cache:` input. The PR's CI lanes resolved the same
   JDKs as main (21.0.12+1 and 25.0.4+1). `release.yml`'s `verify-signature: true` runs only when a
   JDK is downloaded, and that code is unchanged; the comment above it now reads "Since v6.0.1".
+- Dependabot now waits before proposing a release (`cooldown` in `.github/dependabot.yml`): 21 days
+  for gradle minor and major bumps, 7 for gradle patches and GitHub Actions. For Maven artifacts
+  Dependabot dates a release by its Maven Central directory listing, which for Apache projects is
+  the day the release candidate was staged. kafka-clients 4.4.0 is listed 2026-10-06, was promoted
+  2026-10-13 and was still unannounced when [#34] opened on 2026-10-18, so a 7-day window would not
+  have held it. Security fixes wait too, because Dependabot security updates are disabled on this
+  repository; bump those by hand.
 
 ### Security
 - lz4-java and snappy-java, the compression codecs kafka-clients pulls in, are now required at
