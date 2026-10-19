@@ -14,8 +14,9 @@ logback = "1.6.5"
 # snappy-java >= 1.1.10.9 clears CVE-2026-108106 (unbounded allocation in SnappyInputStream when
 # decompressing third-party snappy batches). Kafka chose the same versions on its own branches
 # (KAFKA-21174; snappy 1.1.10.12 on 4.4). Stay on lz4-java 1.11.x until kafka-clients moves:
-# 1.12.0 tightens input validation and Kafka has not adopted it. Drop both once kafka-clients
-# declares these versions or newer.
+# 1.12.0 tightens input validation and Kafka has not adopted it (.github/dependabot.yml ignores
+# minor/major bumps of both). Drop both, and those ignore entries, once kafka-clients declares
+# these versions or newer.
 lz4-java = "1.11.4"
 snappy-java = "1.1.10.12"
 jspecify = "1.0.1"

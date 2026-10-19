@@ -46,6 +46,15 @@ updates:
       default-days: 7
       semver-minor-days: 21
       semver-major-days: 21
+    # lz4-java and snappy-java are in the catalog only as constraints that raise kafka-clients'
+    # transitive codecs to the lines Kafka itself ships (see gradle/libs.versions.toml). Patch
+    # releases still come through; minor and major bumps wait for kafka-clients to adopt them
+    # (Kafka has not adopted lz4-java 1.12.0, PR #36). Remove these entries with the constraints.
+    ignore:
+      - dependency-name: "at.yawk.lz4:lz4-java"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "org.xerial.snappy:snappy-java"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       gradle-minor-patch:
         update-types:

@@ -50,6 +50,10 @@ All notable changes to this project will be documented in this file. The format 
   2026-10-13 and was still unannounced when [#34] opened on 2026-10-18, so a 7-day window would not
   have held it. Security fixes wait too, because Dependabot security updates are disabled on this
   repository; bump those by hand.
+- Dependabot ignores minor and major bumps of lz4-java and snappy-java while `cesium-kafka-core`
+  constrains them, so the codecs stay on the lines Kafka itself ships; patch releases still arrive.
+  Dependabot PR [#36] (lz4-java 1.11.4 → 1.12.0) was closed for this reason: 1.12.0 tightens input
+  validation, and Kafka has not adopted it. The ignore entries go when the constraints do.
 
 ### Security
 - lz4-java and snappy-java, the compression codecs kafka-clients pulls in, are now required at
