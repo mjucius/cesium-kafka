@@ -8,7 +8,8 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Classifies a produce-send failure as a <em>permanent, record-level</em> destination rejection —
- * the {@link UnrelayablePolicy} trigger (design §3.8, M5-verified against kafka-clients 4.3.0).
+ * the {@link UnrelayablePolicy} trigger (design §3.8, verified against kafka-clients 4.3.0
+ * at M5 and re-checked against 4.4.0).
  *
  * <p>The taxonomy is deliberately narrow: only failures that are intrinsic to the offending record
  * and that <em>no</em> retry can clear qualify, so the {@code on-unrelayable} policy never drops a

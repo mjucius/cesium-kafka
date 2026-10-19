@@ -106,7 +106,7 @@ variant is `@Tag("kip848")`. Verified on `apache/kafka:4.3.0` (KRaft):
 
 Building the lane exposed a production bug, now fixed: `KafkaClientFactory`
 strips the classic-only consumer keys (`partition.assignment.strategy`, `session.timeout.ms`,
-`heartbeat.interval.ms`) under `group.protocol=consumer`, because kafka-clients 4.3 rejects them
+`heartbeat.interval.ms`) under `group.protocol=consumer`, because kafka-clients 4.3 and later reject them
 (`"… cannot be set when group.protocol=CONSUMER"`). Without this the engine could not start under the
 consumer protocol when the §8 tuning or the K8s static-membership recipe sets those keys. Covered by
 `KafkaClientFactoryTest.groupProtocolConsumerStripsClassicOnlyConsumerKeys`.

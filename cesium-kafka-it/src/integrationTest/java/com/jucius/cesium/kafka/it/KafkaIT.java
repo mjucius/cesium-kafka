@@ -59,7 +59,7 @@ import org.testcontainers.utility.DockerImageName;
  */
 abstract class KafkaIT {
 
-    /** Latest 4.x KRaft image (verified available; matches the kafka-clients 4.3.0 in the catalog). */
+    /** KRaft broker image; stays on 4.3.0, behind the catalog's kafka-clients, until 4.4.0 is published. */
     static final DockerImageName KAFKA_IMAGE = DockerImageName.parse("apache/kafka:4.3.0");
 
     // The broker's own log is piped into the test log so a metadata/propagation anomaly leaves

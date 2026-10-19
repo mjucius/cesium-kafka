@@ -113,7 +113,8 @@ import org.slf4j.LoggerFactory;
  * carry-over restored via {@code onBatchAborted} (truncate-and-carry-over, §3.2/§7);
  * {@code committedCursor} proposals always ride the very next commit.
  *
- * <p><strong>Error taxonomy (§3.8, with the M5-verified kafka-clients 4.3.0 facts):</strong>
+ * <p><strong>Error taxonomy (§3.8, with the kafka-clients 4.3.0 facts verified at M5 and
+ * re-checked against 4.4.0):</strong>
  *
  * <ul>
  *   <li><em>Definitively abortable</em> (any non-fatal failure before the commit call, a
@@ -1365,7 +1366,7 @@ public final class DispatchLoop implements Runnable {
 
     /**
      * §3.8 fatal classification, walking the cause chain (clients wrap fenced errors). Per the
-     * verified 4.3.0 facts: coordinator-path epoch errors surface as
+     * verified 4.3.0 facts (unchanged in 4.4.0): coordinator-path epoch errors surface as
      * {@link ProducerFencedException} (fatal); produce-path {@code InvalidProducerEpochException}
      * is abortable (KIP-588) and deliberately NOT listed; the KIP-1050
      * {@code ApplicationRecoverableException} hierarchy is taxonomic, not behavioral, and is not

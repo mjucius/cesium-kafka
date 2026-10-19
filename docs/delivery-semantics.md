@@ -178,9 +178,13 @@ bites and tunable by raising the sidecar budget. The store's contract tests
 ## 7. In-doubt commits and the error taxonomy
 
 A single three-way classification governs every transactional failure
-([`design.md` §3.8](design.md#38-producer-error-taxonomy--in-doubt-commits)). It was re-verified
-against the `kafka-clients` 4.3.0 client with MockProducer fault injection (the build now pins
-4.3.1), and the LSO/barrier integration scenarios run against an `apache/kafka:4.3.0` broker.
+([`design.md` §3.8](design.md#38-producer-error-taxonomy--in-doubt-commits)). It was verified
+against the `kafka-clients` 4.3.0 client with MockProducer fault injection, then re-checked against
+the 4.4.0 source the build now pins: every exception class keeps its hierarchy and the transaction
+state machine is unchanged. Against a 4.4 broker the offset commit uses TxnOffsetCommit v6, whose
+new `GROUP_ID_NOT_FOUND` and `STALE_MEMBER_EPOCH` errors surface as the abortable
+`CommitFailedException` that `ILLEGAL_GENERATION` already produces. The LSO/barrier integration
+scenarios run against an `apache/kafka:4.3.0` broker.
 
 1. **Definitively aborted**: any non-fatal failure before the commit call (for example
    `CommitFailedException` at `sendOffsetsToTransaction` or a fenced-member offset commit), a

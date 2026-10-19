@@ -6,6 +6,44 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+- Runtime dependency (Dependabot PR [#34]): kafka-clients 4.3.1 → 4.4.0. It brings zstd-jni 1.5.6-10
+  → 1.5.7-17 and lz4-java 1.10.2 → 1.11.2 into the distribution archives, and it bundles a shaded
+  Apache Commons Net 3.13.0, which NOTICE now records. Per
+  [ADR-0017](docs/adr/0017-kafka-4-floor-and-repo-only-publishing.md) only the distribution is
+  published, so for cesium this is a patch-level change. The jar on Maven Central is the voted
+  4.4.0-rc4 build. Its embedded commit id is `1156b27`, and its sha512 and the release manager's
+  signature check out. Upstream had not yet pushed a final `4.4.0` git tag or announced the release
+  when this merged.
+- The §3.8 error taxonomy was re-checked against the 4.4.0 source. Every exception class it names
+  keeps its superclass chain, the `Producer` and `MockProducer` APIs are unchanged, and the
+  transaction manager's begin, commit, abort and init paths are untouched. Two transactional changes
+  reach cesium. `sendOffsetsToTransaction` now waits for producer metadata on the offsets' topics
+  before it sends, inside the same `max.block.ms` budget; a timeout there is a failure before the
+  commit call, so the transaction aborts as before. Against a 4.4 broker, which finalizes
+  `transaction.version=2` by default, the offset commit uses TxnOffsetCommit v6 (KIP-1319). Its new
+  `GROUP_ID_NOT_FOUND` and `STALE_MEMBER_EPOCH` errors surface as the abortable
+  `CommitFailedException` that `ILLEGAL_GENERATION` already produces. Under
+  `group.protocol=consumer` the classic-only keys are still rejected, and the member epoch still
+  reaches `ConsumerGroupMetadata` the same way
+  ([ADR-0006](docs/adr/0006-classic-protocol-default-and-kip-848-promotion.md)). Every lane in
+  `ci.yml` and `nightly.yml` passed locally against the `apache/kafka:4.3.0` broker the ITs pin, and
+  the broker-backed lanes (Batches A–C, macro perf, KIP-848, `SoakPerfIT`, `CrashLoopSoakIT`) also
+  passed against `apache/kafka:4.4.0-rc4`, which negotiates TxnOffsetCommit v6. The IT image stays
+  on 4.3.0 until `apache/kafka:4.4.0` is published. **Operator note:** kafka-clients 4.4 logs
+  `Connection to node … is throttled` at WARN instead of TRACE when a principal hits a broker quota.
+- Build/test only ([#34]): jqwik 1.10.1 → 1.10.2 and Spotless 8.10.3 → 8.10.4. Apart from the
+  version string in `module-info`, jqwik's engine classes are byte-identical (the release adds Error
+  Prone's `@Keep` to `@Provide`), so generation, shrinking and the `@Example` regression cases
+  behave as before. Spotless's new default formatter versions don't apply here, because
+  palantir-java-format stays pinned at 2.68.0; `spotlessCheck` passes without reformatting.
+- SHA-pinned `actions/setup-java` v6.0.1 → v6.1.0 (Dependabot PR [#35]). The lightweight `v6.1.0`
+  tag and the floating `v6` both resolve to `b843ebf`, a nine-commit fast-forward from v6.0.1.
+  Nothing in it reaches this repo's usage: Temurin 21 and 25 from the hosted tool cache, 21
+  installed last so it stays `JAVA_HOME`, and no `cache:` input. The PR's CI lanes resolved the same
+  JDKs as main (21.0.12+1 and 25.0.4+1). `release.yml`'s `verify-signature: true` runs only when a
+  JDK is downloaded, and that code is unchanged; the comment above it now reads "Since v6.0.1".
+
 ## [2.1.0] - 2026-10-12
 
 Minor release. One new metric, two fixes for bugs present since 1.0, and a nightly crash-loop soak
