@@ -13,6 +13,12 @@ dependencies {
     implementation(libs.fastutil.core)
     implementation(libs.slf4j.api)
 
+    constraints {
+        // kafka-clients' transitive codecs, raised to fixed versions; the catalog says why.
+        implementation(libs.lz4.java)
+        implementation(libs.snappy.java)
+    }
+
     testImplementation(libs.jqwik)
     testImplementation(libs.jol.core)
 }

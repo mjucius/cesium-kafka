@@ -44,6 +44,24 @@ All notable changes to this project will be documented in this file. The format 
   JDKs as main (21.0.12+1 and 25.0.4+1). `release.yml`'s `verify-signature: true` runs only when a
   JDK is downloaded, and that code is unchanged; the comment above it now reads "Since v6.0.1".
 
+### Security
+- lz4-java and snappy-java, the compression codecs kafka-clients pulls in, are now required at
+  1.11.4 and 1.1.10.12, above the 1.11.2 and 1.1.10.7 that kafka-clients 4.4.0 declares. lz4-java
+  before 1.11.4 extracts its JNI library to a predictable path in the temp directory, so another
+  local user who can write there can race the extraction and get native code loaded into cesium
+  (CVE-2026-106451). cesium's producers compress with lz4, so every deployment loads that library.
+  The Docker image runs as the single `cesium` user with a container-private `/tmp`; a distribution
+  archive on a shared host is the exposed case. snappy-java before 1.1.10.9 lets a few crafted bytes
+  force allocations of up to 2 GB through `SnappyInputStream` (CVE-2026-108106), which kafka-clients
+  uses to decompress snappy batches that other producers write to a source topic. Neither came with
+  the 4.4.0 bump: 2.1.0 shipped lz4-java 1.10.2 and the same snappy-java 1.1.10.7. Kafka chose these
+  versions on its own branches (lz4-java 1.11.4 in KAFKA-21174, snappy-java 1.1.10.12 on 4.4). The
+  constraints sit in `cesium-kafka-core` and set a floor, so a later kafka-clients that declares
+  newer versions wins; the catalog comment says when to drop them. zstd, lz4, snappy and gzip
+  batches written by the 4.3.1 and 4.4.0 client jars decode with the pinned codecs on macOS and in
+  the `eclipse-temurin:21-jre` runtime image on linux/arm64 and linux/amd64, and every lane in
+  `ci.yml` and `nightly.yml` passed locally.
+
 ## [2.1.0] - 2026-10-12
 
 Minor release. One new metric, two fixes for bugs present since 1.0, and a nightly crash-loop soak
