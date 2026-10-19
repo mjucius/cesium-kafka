@@ -16,7 +16,7 @@ logback = "1.6.5"
 # (KAFKA-21174; snappy 1.1.10.12 on 4.4). Stay on lz4-java 1.11.x until kafka-clients moves:
 # 1.12.0 tightens input validation and Kafka has not adopted it. Drop both once kafka-clients
 # declares these versions or newer.
-lz4-java = "1.11.4"
+lz4-java = "1.12.0"
 snappy-java = "1.1.10.12"
 jspecify = "1.0.1"
 junit = "6.1.3"
