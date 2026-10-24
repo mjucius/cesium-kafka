@@ -184,7 +184,7 @@ the 4.4.0 source the build now pins: every exception class keeps its hierarchy a
 state machine is unchanged. Against a 4.4 broker the offset commit uses TxnOffsetCommit v6, whose
 new `GROUP_ID_NOT_FOUND` and `STALE_MEMBER_EPOCH` errors surface as the abortable
 `CommitFailedException` that `ILLEGAL_GENERATION` already produces. The LSO/barrier integration
-scenarios run against an `apache/kafka:4.3.0` broker.
+scenarios run against an `apache/kafka:4.4.0` broker.
 
 1. **Definitively aborted**: any non-fatal failure before the commit call (for example
    `CommitFailedException` at `sendOffsetsToTransaction` or a fenced-member offset commit), a

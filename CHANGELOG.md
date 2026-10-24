@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file. The format 
   published, so for cesium this is a patch-level change. The jar on Maven Central is the voted
   4.4.0-rc4 build. Its embedded commit id is `1156b27`, and its sha512 and the release manager's
   signature check out. Upstream had not yet pushed a final `4.4.0` git tag or announced the release
-  when this merged.
+  when this merged; the `4.4.0` tag that followed points at the same commit.
 - The §3.8 error taxonomy was re-checked against the 4.4.0 source. Every exception class it names
   keeps its superclass chain, the `Producer` and `MockProducer` APIs are unchanged, and the
   transaction manager's begin, commit, abort and init paths are untouched. Two transactional changes
@@ -29,9 +29,13 @@ All notable changes to this project will be documented in this file. The format 
   ([ADR-0006](docs/adr/0006-classic-protocol-default-and-kip-848-promotion.md)). Every lane in
   `ci.yml` and `nightly.yml` passed locally against the `apache/kafka:4.3.0` broker the ITs pin, and
   the broker-backed lanes (Batches A–C, macro perf, KIP-848, `SoakPerfIT`, `CrashLoopSoakIT`) also
-  passed against `apache/kafka:4.4.0-rc4`, which negotiates TxnOffsetCommit v6. The IT image stays
-  on 4.3.0 until `apache/kafka:4.4.0` is published. **Operator note:** kafka-clients 4.4 logs
+  passed against `apache/kafka:4.4.0-rc4`, which negotiates TxnOffsetCommit v6.
+  **Operator note:** kafka-clients 4.4 logs
   `Connection to node … is throttled` at WARN instead of TRACE when a principal hits a broker quota.
+- Test and quickstart broker: `apache/kafka:4.3.0` → `4.4.0`, in the integration tests and the
+  digest-pinned `config/docker-compose.yaml`. Kafka published the `4.4.0` image as the same image as
+  `4.4.0-rc4` (index digest `833b867a`), and every lane in `ci.yml` and `nightly.yml` passed locally
+  against it.
 - Build/test only ([#34]): jqwik 1.10.1 → 1.10.2 and Spotless 8.10.3 → 8.10.4. Apart from the
   version string in `module-info`, jqwik's engine classes are byte-identical (the release adds Error
   Prone's `@Keep` to `@Provide`), so generation, shrinking and the `@Example` regression cases

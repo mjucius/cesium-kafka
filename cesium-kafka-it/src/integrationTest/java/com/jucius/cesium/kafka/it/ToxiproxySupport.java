@@ -75,7 +75,7 @@ import org.testcontainers.utility.DockerImageName;
 final class ToxiproxySupport {
 
     /** Matches {@link KafkaIT#KAFKA_IMAGE} — same broker the rest of the suite validates against. */
-    static final DockerImageName KAFKA_IMAGE = DockerImageName.parse("apache/kafka:4.3.0");
+    static final DockerImageName KAFKA_IMAGE = DockerImageName.parse("apache/kafka:4.4.0");
 
     /** Toxiproxy image (GHCR mirror; the testcontainers module accepts both Docker Hub and GHCR). */
     static final DockerImageName TOXIPROXY_IMAGE = DockerImageName.parse("ghcr.io/shopify/toxiproxy:2.5.0")

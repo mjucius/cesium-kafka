@@ -59,8 +59,8 @@ import org.testcontainers.utility.DockerImageName;
  */
 abstract class KafkaIT {
 
-    /** KRaft broker image; stays on 4.3.0, behind the catalog's kafka-clients, until 4.4.0 is published. */
-    static final DockerImageName KAFKA_IMAGE = DockerImageName.parse("apache/kafka:4.3.0");
+    /** KRaft broker image, kept on the same Kafka release as the catalog's kafka-clients. */
+    static final DockerImageName KAFKA_IMAGE = DockerImageName.parse("apache/kafka:4.4.0");
 
     // The broker's own log is piped into the test log so a metadata/propagation anomaly leaves
     // broker-side evidence in the archived CI report. Without it, a client that sees
