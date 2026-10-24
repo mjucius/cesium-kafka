@@ -125,6 +125,30 @@ says why. This removes the PoC's `Properties(defaults)` config drift.
 > The locked `auto.offset.reset=none` is why a brand-new deployment needs a one-time explicit
 > offset seed for the ingest group. See the [first-run / offset-reset runbook](operations.md).
 
+### Passthrough keys that need care
+
+These kafka-clients settings are accepted in any `properties` map, but they interact with cesium:
+
+- **`bootstrap.resolve.timeout.ms`: leave it at the default `0`.** With `0`, each client resolves
+  `bootstrap.servers` while it is being built, so a name that does not resolve stops cesium at
+  startup with exit 1, as it did before kafka-clients 4.4. A positive value turns on Kafka's
+  asynchronous bootstrap resolution, which Kafka marks as evolving. The client then retries DNS from
+  its first network call until the timeout, and after that throws `BootstrapResolutionException`
+  from every call until it is closed and rebuilt. cesium does not treat that exception as fatal, so
+  the loop that owns the client retries with backoff indefinitely (for example
+  `tracker poll failed; backing off`) instead of exiting, and only a restart recovers it. Passing
+  startup validation does not rule this out: each client starts its own timer, and the seek
+  consumer's first fetch can come long after startup.
+- **Keep `connections.max.idle.ms` at or above `max.poll.interval.ms`.** Since kafka-clients 4.4, a
+  consumer on the classic group protocol (the default, and always the group-less seek consumer) logs
+  a WARN at startup when it is lower: *Configuration 'connections.max.idle.ms' with value '…' is
+  lower than configuration 'max.poll.interval.ms' with value '…'*. The client can then close its
+  idle connection to the group coordinator during a rebalance, which can slow or disrupt the rejoin.
+  The consumer defaults (`connections.max.idle.ms` 540000 ms, `max.poll.interval.ms` 300000 ms)
+  don't trigger it. If you raise `max.poll.interval.ms` past 540000, for
+  example to allow a `dispatch.drain.max-slice` above `PT3M` ([§9](#9-dispatch-loop-dispatch)), raise
+  `connections.max.idle.ms` to at least the same value in the same `properties` map.
+
 ---
 
 ## 4. Route (`route.*`)

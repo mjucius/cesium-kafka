@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+- configuration.md §3 has a new "Passthrough keys that need care" subsection for two kafka-clients
+  4.4 settings. `bootstrap.resolve.timeout.ms` should stay at its default `0`: a positive value makes
+  a DNS failure that outlasts the timeout permanent for that client, and cesium does not treat the
+  resulting `BootstrapResolutionException` as fatal, so the owning loop retries with backoff until
+  the process is restarted. Classic-protocol consumers now log a WARN when `connections.max.idle.ms`
+  is below `max.poll.interval.ms`; the defaults don't trigger it, but raising `max.poll.interval.ms`
+  past 9 minutes, for example to allow a `dispatch.drain.max-slice` above `PT3M`, does unless
+  `connections.max.idle.ms` is raised with it.
+
 ### Changed
 - Runtime dependency (Dependabot PR [#34]): kafka-clients 4.3.1 → 4.4.0. It brings zstd-jni 1.5.6-10
   → 1.5.7-17 and lz4-java 1.10.2 → 1.11.2 into the distribution archives, and it bundles a shaded
