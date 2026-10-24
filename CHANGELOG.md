@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-23
+
+Patch release. kafka-clients moves to 4.4.0, lz4-java and snappy-java move past two CVEs, and
+configuration.md covers two new kafka-clients settings. Apache Kafka had tagged 4.4.0 and published
+it to Maven Central and Docker Hub, but had not yet announced it, when 2.1.1 shipped. Config keys,
+headers and the tracker wire format are unchanged from 2.1.0.
+
 ### Added
 - configuration.md §3 has a new "Passthrough keys that need care" subsection for two kafka-clients
   4.4 settings. `bootstrap.resolve.timeout.ms` should stay at its default `0`: a positive value makes
@@ -677,7 +684,8 @@ delivery as observed by `read_committed` consumers of the destination.
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/mjucius/cesium-kafka/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/mjucius/cesium-kafka/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/mjucius/cesium-kafka/compare/v1.1.5...v2.0.0
 [1.1.5]: https://github.com/mjucius/cesium-kafka/compare/v1.1.4...v1.1.5
