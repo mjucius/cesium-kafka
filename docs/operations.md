@@ -422,6 +422,12 @@ Re-validation may report the count mismatch while you work
    ingest would then deliver everything still retained on them a second time. This is the
    [§14.3](#143-runtime-fail-fast-exit-1-readiness-false) first-run offset reset, scoped to the new
    partitions.
+
+   Kafka confirms step 4 before every broker knows the new partitions. If the reset fails with
+   `UnknownTopicOrPartitionException` ("Failed altering group offsets for the following
+   partitions: ..."), the broker that coordinates the group has not caught up yet; wait a few
+   seconds and run it again. Before step 6, run the ingest group's `--describe` and check that it
+   lists every new partition with a `CURRENT-OFFSET`.
 6. Restart the stopped instances.
 7. Check that every tracker partition, `0` to `<n>-1`, is listed with a `CONSUMER-ID`. A partition
    missing from the output, or shown with `-`, has no owner:

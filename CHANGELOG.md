@@ -17,6 +17,9 @@ All notable changes to this project will be documented in this file. The format 
   `release.yml` uploads them when its integration gate fails. Test failures print the exception
   messages and stack traces instead of only the class and line. PR [#37]'s integration failure
   showed nothing but `UnknownTopicOrPartitionException` and `PartitionGrowthIT.java:79`.
+- operations.md §9, growing partitions: step 5 now says what to do when the offset reset fails with
+  `UnknownTopicOrPartitionException` because a broker has not caught up with the new partitions,
+  and how to check the seeded offsets before restarting.
 
 ### Fixed
 - Since 1.0, the distribution archives and the image built from the `Dockerfile` shipped without
