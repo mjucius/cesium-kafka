@@ -35,6 +35,8 @@ WORKDIR /src
 # Copy the wrapper and build scripts first so dependency resolution layers cache
 # independently of source churn.
 COPY gradlew gradlew.bat settings.gradle.kts build.gradle.kts gradle.properties ./
+# The distribution ships these at its root; Gradle skips a missing file silently, so keep this COPY.
+COPY LICENSE NOTICE ./
 COPY gradle/ gradle/
 COPY build-logic/ build-logic/
 

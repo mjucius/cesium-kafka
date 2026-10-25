@@ -23,6 +23,18 @@ application {
     applicationName = "cesium-kafka"
 }
 
+// LICENSE and NOTICE sit at the distribution root beside bin/ and lib/. This one spec feeds distTar,
+// distZip and installDist, so the Docker image (built from installDist) carries them too.
+distributions {
+    main {
+        contents {
+            from(rootProject.layout.projectDirectory) {
+                include("LICENSE", "NOTICE")
+            }
+        }
+    }
+}
+
 // Build-info resource for the /info endpoint (design §9): version (the Gradle project version) and
 // the short git commit when available. Read at runtime by com.jucius.cesium.kafka.app.metrics.BuildInfo
 // from the classpath; a clean fallback to "unknown" keeps the app runnable when

@@ -59,12 +59,6 @@ Copyright (c) 2012-2026 Gil Tene, Michael Barker, Matt Warren, and contributors
 (transitive via micrometer-core)
 
 -------------------------------------------------------------------------------
-LatencyUtils (org.latencyutils:LatencyUtils)
-License: Public Domain, per Creative Commons CC0 1.0
-Copyright (c) 2012-2026 Gil Tene
-(transitive via micrometer-core)
-
--------------------------------------------------------------------------------
 Jackson (com.fasterxml.jackson.dataformat:jackson-dataformat-yaml,
          com.fasterxml.jackson.datatype:jackson-datatype-jdk8,
          and the transitive com.fasterxml.jackson.core artifacts)
@@ -118,8 +112,7 @@ License: dual-licensed under the Eclipse Public License v1.0
 Copyright (C) 1999-2026 QOS.ch Sarl (Switzerland)
 
 -------------------------------------------------------------------------------
-Build-time only (not redistributed in the runtime distribution)
-
-JSpecify annotations (org.jspecify:jspecify) — Apache License, Version 2.0,
-Copyright The JSpecify Authors — are a compile-only dependency used for
-nullness annotations and are not bundled in the distribution archives.
+JSpecify (org.jspecify:jspecify)
+License: Apache License, Version 2.0
+Copyright The JSpecify Authors
+(transitive via micrometer-commons)

@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+- Since 1.0, the distribution archives and the image built from the `Dockerfile` shipped without
+  `LICENSE` and `NOTICE`; both files were only in the repository. They now sit at the distribution
+  root beside `bin/` and `lib/` (`/opt/cesium` in the image). zstd-jni's BSD 2-Clause notice
+  reaches binary users only through NOTICE, because its jar carries no license file.
+- NOTICE listed LatencyUtils as bundled and JSpecify as compile-only. The archives contain no
+  LatencyUtils jar but do contain `jspecify-1.0.1.jar`, which micrometer-commons pulls in at
+  runtime. NOTICE now matches `lib/`.
+
 ## [2.1.1] - 2026-10-23
 
 Patch release. kafka-clients moves to 4.4.0, lz4-java and snappy-java move past two CVEs, and
