@@ -1,5 +1,6 @@
 package com.jucius.cesium.kafka.it;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
@@ -160,6 +161,11 @@ class CompactionIT extends KafkaIT {
                         Long.toString(Duration.ofHours(1).toMillis()),
                         TopicConfig.MAX_COMPACTION_LAG_MS_CONFIG,
                         Long.toString(Duration.ofDays(1).toMillis())));
+        // The alter is acknowledged before the broker serves it (see KafkaIT.createNamedTopic), and
+        // start() reads the topic configs once, so wait until the startup checks see the restored floor.
+        await("startup checks pass on the restored tracker configs")
+                .atMost(WAIT)
+                .until(() -> harness.validate().report(), report -> !report.hasErrors());
 
         // Restart: recovery seeds the late pins and replays the compacted log. Tombstones for the
         // compacted-away early ADDs apply as R2 no-ops; the late lone ADDs survive and dispatch.

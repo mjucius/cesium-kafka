@@ -33,6 +33,11 @@ All notable changes to this project will be documented in this file. The format 
   `KafkaIT.growPartitions` waits until the broker describes the new count, as `createNamedTopic`
   already does for a new topic. With the broker held to a quarter of a CPU, the seeding failed in 1
   of 40 runs against Kafka 4.4.0 (7 of 40 against 4.3.0) and in none of 40 with the wait.
+- Test infrastructure: the nightly `CompactionIT` restarted cesium straight after restoring the
+  tracker's `min.compaction.lag.ms`. The startup checks read the topic configs once, so a broker
+  that had not yet published the change would fail them on the stale `0`. The test now waits until
+  the startup checks pass. It is the same race as the `PartitionGrowthIT` fix, though it has not
+  failed this way so far.
 
 ### Security
 - jackson-databind 2.22.4 fixes CVE-2026-110879 (GHSA-m8xf-2cr7-77ph, critical). From 2.22.0
