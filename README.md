@@ -18,7 +18,7 @@ non-`cesium-*` headers are preserved byte-for-byte.
 
 ## Status
 
-**2.x** (2.0.0 in development), a ground-up rewrite of an earlier
+**2.x**, a ground-up rewrite of an earlier
 proof-of-concept. See the
 [CHANGELOG](CHANGELOG.md) for the release notes and [docs/design.md](docs/design.md) for the complete
 design (architecture, exactly-once transaction/fencing analysis, failure matrix, store SPI).

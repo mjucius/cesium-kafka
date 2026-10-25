@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-10-25
+
+Patch release. The distribution archives and the image built from the `Dockerfile` now carry
+`LICENSE` and `NOTICE`, which no release since 1.0 shipped, and Jackson moves to 2.22.4 for
+CVE-2026-110879, which cesium can't reach. The rest hardens the tests and CI after PR [#37]'s
+one-off integration failure. Config keys, headers and the tracker wire format are unchanged from
+2.1.1.
+
 ### Changed
 - Runtime dependency (Dependabot PR [#37]): Jackson 2.22.3 → 2.22.4. jackson-dataformat-yaml and
   jackson-datatype-jdk8 change only their version. jackson-core's fixes are in its JSON parsers and
@@ -728,7 +736,8 @@ delivery as observed by `read_committed` consumers of the destination.
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.2...HEAD
+[2.1.2]: https://github.com/mjucius/cesium-kafka/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/mjucius/cesium-kafka/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/mjucius/cesium-kafka/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/mjucius/cesium-kafka/compare/v1.1.5...v2.0.0
