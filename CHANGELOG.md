@@ -21,6 +21,13 @@ All notable changes to this project will be documented in this file. The format 
 - NOTICE listed LatencyUtils as bundled and JSpecify as compile-only. The archives contain no
   LatencyUtils jar but do contain `jspecify-1.0.1.jar`, which micrometer-commons pulls in at
   runtime. NOTICE now matches `lib/`.
+- Test infrastructure: `PartitionGrowthIT` could fail with `UNKNOWN_TOPIC_OR_PARTITION` when it
+  seeded the ingest offset of the new source partition, as it did once on CI (PR [#37]'s first run).
+  Kafka acknowledges `createPartitions` when the controller commits it, before the broker serves the
+  new partitions, and the admin client does not retry that error on an offset commit. The new
+  `KafkaIT.growPartitions` waits until the broker describes the new count, as `createNamedTopic`
+  already does for a new topic. With the broker held to a quarter of a CPU, the seeding failed in 1
+  of 40 runs against Kafka 4.4.0 (7 of 40 against 4.3.0) and in none of 40 with the wait.
 
 ### Security
 - jackson-databind 2.22.4 fixes CVE-2026-110879 (GHSA-m8xf-2cr7-77ph, critical). From 2.22.0

@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.NewPartitions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.admin.TopicDescription;
@@ -116,6 +117,21 @@ abstract class KafkaIT {
         // publisher makes a topic we just created look like one the operator forgot. That is a test
         // artifact, not a product defect, so it is fixed here rather than by retrying in production.
         await("topic " + name + " describable").atMost(WAIT).until(() -> topicExists(name));
+    }
+
+    /** Grows {@code topic} to {@code partitions} and waits until the cluster serves the new count. */
+    static void growPartitions(String topic, int partitions) {
+        get(ADMIN.createPartitions(Map.of(topic, NewPartitions.increaseTo(partitions)))
+                .all());
+        // The createNamedTopic race again: an offset commit for a partition the broker has not yet
+        // published fails with UNKNOWN_TOPIC_OR_PARTITION, and the admin client does not retry it.
+        await("topic " + topic + " at " + partitions + " partitions")
+                .atMost(WAIT)
+                .until(() -> get(ADMIN.describeTopics(List.of(topic)).allTopicNames())
+                                .get(topic)
+                                .partitions()
+                                .size()
+                        == partitions);
     }
 
     /** True when the cluster will describe {@code topic}; false when it reports it unknown. */

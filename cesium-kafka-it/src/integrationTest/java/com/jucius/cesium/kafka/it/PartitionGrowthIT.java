@@ -9,7 +9,6 @@ import com.jucius.cesium.kafka.api.headers.CesiumHeaders;
 import com.jucius.cesium.kafka.core.config.Role;
 import java.util.List;
 import java.util.Map;
-import org.apache.kafka.clients.admin.NewPartitions;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -74,8 +73,8 @@ class PartitionGrowthIT extends KafkaIT {
         // must empty so the restart is a fresh join that assigns the new tracker partition.
         awaitEmpty(harness.ingestGroupId());
         awaitEmpty(harness.dispatchGroupId());
-        get(ADMIN.createPartitions(Map.of(tracker, NewPartitions.increaseTo(2))).all());
-        get(ADMIN.createPartitions(Map.of(source, NewPartitions.increaseTo(2))).all());
+        growPartitions(tracker, 2);
+        growPartitions(source, 2);
         get(ADMIN.alterConsumerGroupOffsets(
                         harness.ingestGroupId(), Map.of(new TopicPartition(source, 1), new OffsetAndMetadata(0L)))
                 .all());
