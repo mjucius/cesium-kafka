@@ -27,9 +27,11 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.ToxiproxyContainer.ContainerProxy;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -129,7 +131,9 @@ final class ToxiproxySupport {
                 .withListener(KAFKA_NETWORK_ALIAS + ":" + PROXIED_LISTENER_PORT, () -> advertisedProxyEndpoint)
                 .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")
                 // Let the multi-instance suites evict a killed static member in seconds.
-                .withEnv("KAFKA_GROUP_MIN_SESSION_TIMEOUT_MS", "1000");
+                .withEnv("KAFKA_GROUP_MIN_SESSION_TIMEOUT_MS", "1000")
+                // Broker-side evidence in the test report, as KafkaIT.KAFKA does.
+                .withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger("kafka-broker-toxiproxy")));
         kafka.start();
 
         this.directBootstrap = kafka.getBootstrapServers();

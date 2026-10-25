@@ -558,8 +558,10 @@ public final class IngestLoop implements Runnable {
      * I-7 (§3.9): producing an ADD to a nonexistent tracker partition means the source partition
      * count grew past the tracker — a fail-fast with the R-7 runbook, never a generic retry loop
      * (the produce would otherwise surface as a metadata-wait {@link TimeoutException} and park
-     * the loop forever without naming the problem). Live metadata is re-checked once before
-     * failing so an operator who already grew the tracker is not false-positived.
+     * the loop forever without naming the problem). The producer's metadata is checked once before
+     * failing, to spare an operator who already grew the tracker. That metadata can be stale: the
+     * producer refreshes it every {@code metadata.max.age.ms}, so a tracker grown since the last
+     * refresh can still fail here.
      */
     private void ensureTrackerPartition(int partition) {
         if (partition < trackerPartitions) {

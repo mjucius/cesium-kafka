@@ -16,7 +16,9 @@ All notable changes to this project will be documented in this file. The format 
   broker log, as the `integration-reports` artifact; the `nightly.yml` jobs already did this.
   `release.yml` uploads them when its integration gate fails. Test failures print the exception
   messages and stack traces instead of only the class and line. PR [#37]'s integration failure
-  showed nothing but `UnknownTopicOrPartitionException` and `PartitionGrowthIT.java:79`.
+  showed nothing but `UnknownTopicOrPartitionException` and `PartitionGrowthIT.java:79`. The broker
+  that the nightly Toxiproxy suites start (`ToxiproxySupport`) now writes its log into the test
+  reports too, like the shared `KafkaIT` broker.
 - operations.md §9, growing partitions: step 5 now says what to do when the offset reset fails with
   `UnknownTopicOrPartitionException` because a broker has not caught up with the new partitions,
   and how to check the seeded offsets before restarting.
