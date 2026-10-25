@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+- Runtime dependency (Dependabot PR [#37]): Jackson 2.22.3 → 2.22.4. jackson-dataformat-yaml and
+  jackson-datatype-jdk8 change only their version. jackson-core's fixes are in its JSON parsers and
+  its filtering generator; cesium parses only the YAML config and writes its JSON log lines and the
+  `/health` and `/info` bodies with the JSON generators, which are unchanged. Apart from the security
+  fix below, jackson-databind adds null checks and thread-safety fixes that leave binding unchanged.
+
 ### Fixed
 - Since 1.0, the distribution archives and the image built from the `Dockerfile` shipped without
   `LICENSE` and `NOTICE`; both files were only in the repository. They now sit at the distribution
@@ -14,6 +21,12 @@ All notable changes to this project will be documented in this file. The format 
 - NOTICE listed LatencyUtils as bundled and JSpecify as compile-only. The archives contain no
   LatencyUtils jar but do contain `jspecify-1.0.1.jar`, which micrometer-commons pulls in at
   runtime. NOTICE now matches `lib/`.
+
+### Security
+- jackson-databind 2.22.4 fixes CVE-2026-110879 (GHSA-m8xf-2cr7-77ph, critical). From 2.22.0
+  through 2.22.3, the type parameters and array element types inside a class-name polymorphic type
+  id skipped the `PolymorphicTypeValidator`. cesium can't reach it, because it enables no
+  polymorphic typing (no `@JsonTypeInfo`, no default typing), but scanners flag 2.22.3 anyway.
 
 ## [2.1.1] - 2026-10-23
 
