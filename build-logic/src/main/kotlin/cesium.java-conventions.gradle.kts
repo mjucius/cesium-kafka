@@ -1,5 +1,6 @@
 import net.ltgt.gradle.errorprone.errorprone
 import org.gradle.api.artifacts.VersionCatalogsExtension
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 
 plugins {
     java
@@ -93,6 +94,8 @@ tasks.withType<Test>().configureEach {
         events("failed", "skipped")
         showExceptions = true
         showCauses = true
+        // SHORT, the default, prints exception class names without their messages.
+        exceptionFormat = TestExceptionFormat.FULL
     }
 }
 

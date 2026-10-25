@@ -12,6 +12,11 @@ All notable changes to this project will be documented in this file. The format 
   its filtering generator; cesium parses only the YAML config and writes its JSON log lines and the
   `/health` and `/info` bodies with the JSON generators, which are unchanged. Apart from the security
   fix below, jackson-databind adds null checks and thread-safety fixes that leave binding unchanged.
+- CI: the integration job in `ci.yml` now uploads its test reports and JUnit XML, which hold the
+  broker log, as the `integration-reports` artifact; the `nightly.yml` jobs already did this.
+  `release.yml` uploads them when its integration gate fails. Test failures print the exception
+  messages and stack traces instead of only the class and line. PR [#37]'s integration failure
+  showed nothing but `UnknownTopicOrPartitionException` and `PartitionGrowthIT.java:79`.
 
 ### Fixed
 - Since 1.0, the distribution archives and the image built from the `Dockerfile` shipped without

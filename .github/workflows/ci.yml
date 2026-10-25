@@ -59,3 +59,12 @@ jobs:
         # deterministic, and fast enough for PR. The heavy lanes run nightly (nightly.yml); opt them
         # back in locally with -PincludeNightly / -PincludeKip848 / -Pkip848Only.
         run: ./gradlew :cesium-kafka-it:integrationTest
+      - name: Upload integration reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
