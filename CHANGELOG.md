@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-11-05
+
+Patch release. Micrometer moves to 1.17.2, and Gradle 9.8.2 and NullAway 0.14.3 change only the
+build. Every CI and nightly lane passed on these versions. Config keys, headers and the tracker wire
+format are unchanged from 2.1.2.
+
 ### Changed
 - Runtime dependency (Dependabot PR [#38]): Micrometer 1.17.1 → 1.17.2. Only the four Micrometer
   jars change on the runtime classpath; the Prometheus client stays at 1.7.0 and `NOTICE` is
@@ -748,7 +754,8 @@ delivery as observed by `read_committed` consumers of the destination.
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.2...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.3...HEAD
+[2.1.3]: https://github.com/mjucius/cesium-kafka/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/mjucius/cesium-kafka/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/mjucius/cesium-kafka/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/mjucius/cesium-kafka/compare/v2.0.0...v2.1.0
