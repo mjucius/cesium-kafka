@@ -6,6 +6,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+- Runtime dependency (Dependabot PR [#38]): Micrometer 1.17.1 → 1.17.2. Only the four Micrometer
+  jars change on the runtime classpath; the Prometheus client stays at 1.7.0 and `NOTICE` is
+  unchanged. Test meters named and shaped like cesium's produce identical scrape output on both
+  versions in the Prometheus text and OpenMetrics formats. 1.17.2 also fixes a scrape failure when a
+  `MultiGauge` updates mid-scrape, which can't happen here because cesium has no `MultiGauge`.
+- Build only ([#38]): Gradle 9.8.1 → 9.8.2 and NullAway 0.14.2 → 0.14.3. The distribution and the
+  committed `gradle-wrapper.jar` match Gradle's published SHA-256 checksums. NullAway 0.14.3 can
+  report new warnings, but it runs at error level on main sources and the build passes, so it found
+  none there. Dependabot again left the `gradle-wrapper.properties` comment describing the old
+  version, so the comment no longer names one.
+
 ## [2.1.2] - 2026-10-25
 
 Patch release. The distribution archives and the image built from the `Dockerfile` now carry
