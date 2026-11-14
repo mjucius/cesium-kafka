@@ -7,7 +7,7 @@ micrometer = "1.17.2"
 # by scanners. Kept current via Dependabot's gradle ecosystem (.github/dependabot.yml).
 jackson = "2.22.4"
 slf4j = "2.0.20"
-logback = "1.6.5"
+logback = "1.6.6"
 # kafka-clients' lz4/snappy codecs, required above the 1.11.2/1.1.10.7 that kafka-clients 4.4.0
 # declares (SCA hygiene, constraints in cesium-kafka-core): lz4-java 1.11.4 clears CVE-2026-106451
 # (JNI library extracted to a predictable temp path; producers here compress with lz4), and
