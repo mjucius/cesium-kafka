@@ -6,6 +6,26 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-11-13
+
+Patch release. Logback moves to 1.6.6 with logging fixes, and the Gradle setup action moves to
+6.4.1 to include an upstream security fix. No configuration keys, headers, or tracker wire formats
+change.
+
+### Changed
+- Runtime dependency (Dependabot PR [#40]): Logback 1.6.5 → 1.6.6. The app uses console appenders,
+  so the syslog socket and rolling-file fixes do not affect its configured logging paths. The
+  default date pattern and `%replace` control-character filter are covered by `LogbackConfigTest`;
+  the JSON encoder sorts MDC keys itself, so Logback's new insertion ordering does not change JSON
+  output. The release also rejects cyclic or shared throwable-proxy graphs when deserializing
+  socket-received events, while preserving normal in-process exception rendering. Build and unit
+  checks on JDK 21 and 25 and the representative Kafka integration lane pass.
+- CI action (Dependabot PR [#39]): `gradle/actions/setup-gradle` 6.4.0 → 6.4.1 at its immutable
+  commit pin. This includes the upstream fix for GHSA-chpw-2mqm-95cc, where crafted dependency
+  graph artifacts could alter an authenticated submission request in `download-and-submit` mode.
+  This repository does not configure dependency graph submission, but the action pin now includes
+  the fix. Build/unit and representative integration checks pass on the updated workflows.
+
 ## [2.1.3] - 2026-11-05
 
 Patch release. Micrometer moves to 1.17.2, and Gradle 9.8.2 and NullAway 0.14.3 change only the
