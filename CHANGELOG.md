@@ -6,6 +6,26 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.1.5] - 2026-11-18
+
+Patch release. Error Prone 2.51.0 changes only the build, and two GitHub Actions move to newer
+releases. The distribution's classpath, configuration keys, headers and tracker wire format are the
+same as in 2.1.4. Every CI and nightly lane passed on these versions, locally and in a nightly run
+on the merged head.
+
+### Changed
+- Build only (Dependabot PR [#41]): Error Prone 2.50.0 → 2.51.0. It runs at compile time and never
+  reaches the distribution. 2.51.0 makes `CompareToZero` an error and turns `IfChainToSwitch` on as
+  a warning; neither reports anything in the main, test, integration-test or JMH sources. Its new
+  `ReferenceEquality` exemptions don't cover `Throwable`, so the two self-referential-cause
+  suppressions stay.
+- CI actions (Dependabot PR [#42]): `actions/setup-java` 6.1.0 → 6.2.0 and
+  `softprops/action-gh-release` 3.0.3 → 3.0.4, each pinned to the commit its release tag names.
+  setup-java's changes are for Corretto, Liberica and generated Maven settings; the Temurin install
+  these workflows use behaves as before. action-gh-release 3.0.4 only updates its bundled
+  dependencies, among them glob 13 → 14, the library that matches the release archive patterns;
+  the v2.1.5 release run is the first to use it.
+
 ## [2.1.4] - 2026-11-13
 
 Patch release. Logback moves to 1.6.6 with logging fixes, and the Gradle setup action moves to
@@ -774,7 +794,9 @@ delivery as observed by `read_committed` consumers of the destination.
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.3...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.5...HEAD
+[2.1.5]: https://github.com/mjucius/cesium-kafka/compare/v2.1.4...v2.1.5
+[2.1.4]: https://github.com/mjucius/cesium-kafka/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/mjucius/cesium-kafka/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/mjucius/cesium-kafka/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/mjucius/cesium-kafka/compare/v2.1.0...v2.1.1
