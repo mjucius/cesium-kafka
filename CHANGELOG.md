@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+- Release workflow: `release.yml` can also be run manually on `main` with a `version` input. The
+  run checks that the version has a CHANGELOG section and no tag yet, runs the same build, tests and
+  archive steps, and only then creates the annotated `v<version>` tag on the built commit and
+  publishes the Release. These tags come from github-actions[bot] and are unsigned. Pushing a tag
+  still starts a release as before.
+
 ## [2.1.6] - 2026-11-27
 
 Patch release. Logback moves to 1.6.7, and `actions/setup-java` moves to 6.3.0. The app's config
