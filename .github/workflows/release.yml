@@ -15,19 +15,30 @@ name: Release
 #     `packages: write` added to the permissions block below and a `ghcr.io/<owner>/cesium-kafka` tag.
 # Neither requires changes to the build's correctness posture; they are purely additive jobs/steps.
 #
-# TWO WAYS TO START A RELEASE:
-#   * Push a `v<version>` tag (e.g. a signed tag from a maintainer's machine). The run builds that tag.
+# THREE WAYS TO START A RELEASE (the `detect` job works out which one, and whether to release):
+#   * AUTOMATIC, on a push to `main` that changes CHANGELOG.md: if the top dated section,
+#     `## [X.Y.Z] - <date>`, names a version newer than every existing `v*` tag, the run builds that
+#     `main` commit and releases X.Y.Z. Any other push to main (no new section, or a version that is
+#     not newer than the latest tag) is a no-op: `detect` passes and `release` is skipped. So cutting
+#     the changelog section on main IS the release step; the section is also the Release body.
 #   * Run this workflow manually (Actions tab, or the API's workflow_dispatch) on `main` with a
-#     `version` input such as `2.1.6`. The run builds the current `main` head, and only after every
-#     check passes does it create the annotated tag `v<version>` on that commit and publish the
-#     Release. A failed run leaves no tag behind. These tags are created by github-actions[bot] and
-#     are not signed. A tag pushed with the workflow's GITHUB_TOKEN does not trigger other workflows,
-#     so it does not start a second, tag-triggered run of this workflow.
+#     `version` input such as `2.1.6`; CHANGELOG.md must have a section for it.
+#   * Push a `v<version>` tag (e.g. a signed tag from a maintainer's machine). The run builds that tag.
+# In the first two cases the run creates the annotated tag `v<version>` on the built commit only
+# after the build, both test lanes and the archives succeed, so a failed run leaves no tag behind.
+# Those tags are created by github-actions[bot] and are not signed. A tag pushed with the workflow's
+# GITHUB_TOKEN does not trigger other workflows, so it does not start a second, tag-triggered run.
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+    # Branch pushes only start a run when the changelog changed. GitHub doesn't apply path filters
+    # to tag pushes, so a pushed v* tag always starts one.
+    paths:
+      - CHANGELOG.md
   workflow_dispatch:
     inputs:
       version:
@@ -35,22 +46,103 @@ on:
         required: true
         type: string
 
-# contents: write is required to create the GitHub Release, upload the archive assets, and (for a
-# manual run) push the release tag. No `packages: write` — there is no image push (see the header note).
+# contents: write is required to create the GitHub Release, upload the archive assets, and push the
+# release tag. No `packages: write` — there is no image push (see the header note).
 permissions:
   contents: write
 
-concurrency:
-  # Never cancel an in-flight release: a tag build is a one-shot artifact we want to complete.
-  # Keyed on the version so a manual run and a tag push for the same version cannot overlap.
-  group: release-${{ inputs.version || github.ref_name }}
-  cancel-in-progress: false
-
 jobs:
+  detect:
+    name: Decide whether this run releases, and which version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      version: ${{ steps.decide.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
+      create_tag: ${{ steps.decide.outputs.create_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history and tags, to compare the changelog version against every existing tag.
+          fetch-depth: 0
+      - name: Decide
+        id: decide
+        env:
+          # Read the ref/input from the environment (never interpolated as a ${{ }} expression into
+          # the shell body) so a hostile tag or input string cannot break out of the quoting.
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          skip() { echo "No release: $1"; echo "release=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::A manual release must run on main, not $GITHUB_REF"
+              exit 1
+            fi
+            tag="v${INPUT_VERSION}"
+            create_tag=true
+          elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            # The top dated section; `## [Unreleased]` doesn't match the numeric pattern.
+            version=$(grep -m1 -oE '^## \[[0-9][0-9.]*\]' CHANGELOG.md | sed -E 's/^## \[(.*)\]$/\1/' || true)
+            [ -n "$version" ] || skip "CHANGELOG.md has no dated version section"
+            latest=$(git tag -l 'v[0-9]*' | sed 's/^v//' | sort -V | tail -n1)
+            if [ -n "$latest" ]; then
+              newest=$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n1)
+              if [ "$version" = "$latest" ] || [ "$newest" != "$version" ]; then
+                skip "top CHANGELOG.md version $version is not newer than the latest tag v$latest"
+              fi
+            fi
+            tag="v${version}"
+            create_tag=true
+          else
+            tag="${GITHUB_REF_NAME}"
+            create_tag=false
+          fi
+          # A git tag may legally contain shell metacharacters ($ ( ) ` ; & | { }). Reject any tag
+          # that is not a clean `v<NUMBER[.NUMBER...]>` string BEFORE the derived version is ever
+          # interpolated into a -PcesiumVersion shell argument downstream (defence against tag-driven
+          # template/command injection — audit L10). Fail the job loudly otherwise.
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9][0-9.]*$'; then
+            echo "::error::Refusing to release: tag '$tag' is not of the form v<NUMBER[.NUMBER...]>"
+            exit 1
+          fi
+          version="${tag#v}"
+          if [ "$create_tag" = true ]; then
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "::error::Tag $tag already exists; pick a new version"
+              exit 1
+            fi
+            if ! grep -Fq "## [$version]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md has no '## [$version]' section; cut it on main first"
+              exit 1
+            fi
+          fi
+          {
+            echo "release=true"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "create_tag=$create_tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing cesium-kafka $version (tag $tag) from $(git rev-parse HEAD)"
+
   release:
     name: Build, verify, and publish GitHub Release (repo-only)
+    needs: detect
+    if: needs.detect.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      # Never cancel an in-flight release: a release build is a one-shot artifact we want to complete.
+      # Keyed on the version so runs releasing the same version cannot overlap.
+      group: release-${{ needs.detect.outputs.version }}
+      cancel-in-progress: false
+    env:
+      # detect validated these against ^v[0-9][0-9.]*$, so they are safe to use in the steps below.
+      VERSION: ${{ needs.detect.outputs.version }}
+      TAG: ${{ needs.detect.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,64 +157,22 @@ jobs:
           verify-signature: true
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
-      - name: Derive version from tag or input
-        id: version
-        # Tag `v2.0.0` -> project version `2.0.0`, threaded into every Gradle invocation via
-        # -PcesiumVersion (the property the java-conventions plugin reads; gradle.properties default
-        # is the -SNAPSHOT dev version). This stamps the dist archive names and the /info build-info.
-        # A manual run takes the tag from the `version` input instead (`2.1.6` -> `v2.1.6`).
-        env:
-          # Read the tag/input from the environment (never interpolated as a ${{ }} expression into
-          # the shell body) so a hostile tag or input string cannot break out of the quoting.
-          EVENT_NAME: ${{ github.event_name }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          INPUT_VERSION: ${{ inputs.version }}
+      - name: Re-check the tag is still free
+        # Two pushes close together can both pass detect before either run creates the tag; the
+        # concurrency group serialises them, and this stops the later one before a wasted build.
+        if: needs.detect.outputs.create_tag == 'true'
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            tag="v${INPUT_VERSION}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
-          # A git tag may legally contain shell metacharacters ($ ( ) ` ; & | { }). Reject any tag
-          # that is not a clean `v<NUMBER[.NUMBER...]>` string BEFORE the derived version is ever
-          # interpolated into a -PcesiumVersion shell argument downstream (defence against tag-driven
-          # template/command injection — audit L10). Fail the job loudly otherwise.
-          if ! printf '%s' "$tag" | grep -Eq '^v[0-9][0-9.]*$'; then
-            echo "::error::Refusing to release: tag '$tag' is not of the form v<NUMBER[.NUMBER...]>"
-            exit 1
-          fi
-          version="${tag#v}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Releasing cesium-kafka $version (tag $tag)"
-
-      - name: Check a manual release before building
-        # A manual run releases the head of main only, for a version that has a curated CHANGELOG
-        # section and no tag yet. All of this is checked before the (long) build so a mistake fails fast.
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GITHUB_REF: ${{ github.ref }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::A manual release must run on main, not $GITHUB_REF"
-            exit 1
-          fi
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
-            echo "::error::Tag $TAG already exists; pick a new version"
+            echo "::error::Tag $TAG was created by an earlier run while this one waited"
             exit 1
           fi
-          if ! grep -Fq "## [$VERSION]" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md has no '## [$VERSION]' section; cut it on main first"
-            exit 1
-          fi
-          echo "Manual release of $TAG from main at $(git rev-parse HEAD)"
+
+      # The version is threaded into every Gradle invocation via -PcesiumVersion (the property the
+      # java-conventions plugin reads; gradle.properties default is the -SNAPSHOT dev version). This
+      # stamps the dist archive names and the /info build-info. VERSION comes from the job env.
 
       # Full build + unit tests on the release version across the whole repo.
       - name: Build + unit tests
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: ./gradlew build -PcesiumVersion="$VERSION"
 
       # The representative integration lane. Per ci.yml / design §13 this single lane already runs the
@@ -130,8 +180,6 @@ jobs:
       # the I8 barrier-ordering test (§11.3-5), both single-broker, deterministic, and fast. The heavy
       # @Tag("nightly")/@Tag("soak")/@Tag("kip848") lanes are nightly signal, not a release gate.
       - name: Integration tests (representative lane, incl. the two hazard tests)
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: ./gradlew :cesium-kafka-it:integrationTest -PcesiumVersion="$VERSION"
       - name: Upload integration reports
         if: failure()
@@ -144,8 +192,6 @@ jobs:
           if-no-files-found: ignore
 
       - name: Build distribution archives (distTar + distZip)
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: >-
           ./gradlew :cesium-kafka-app:distTar :cesium-kafka-app:distZip
           -PcesiumVersion="$VERSION"
@@ -155,8 +201,6 @@ jobs:
         # Pull the body under `## [<version>]` up to (but not including) the next `## [` header, so the
         # Release body is the curated Keep-a-Changelog entry. Fall back to a pointer if the tag has no
         # matching section yet (e.g. a pre-release cut before CHANGELOG.md is updated).
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           version="$VERSION"
           awk -v ver="$version" '
@@ -171,13 +215,10 @@ jobs:
           echo "----- release-notes.md -----"
           cat release-notes.md
 
-      - name: Create and push the release tag (manual run only)
+      - name: Create and push the release tag (automatic and manual runs)
         # Runs only after the build, both test lanes and the archives have succeeded, so a failed
-        # manual run never leaves a tag behind. The tag points at the exact commit that was built.
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+        # run never leaves a tag behind. The tag points at the exact commit that was built.
+        if: needs.detect.outputs.create_tag == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -187,11 +228,11 @@ jobs:
       - name: Create the GitHub Release with the distribution archives
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
-          # Needed for a manual run, whose github.ref is a branch; equals the pushed tag otherwise.
-          tag_name: ${{ steps.version.outputs.tag }}
+          # Needed when github.ref is a branch (automatic/manual runs); equals the pushed tag otherwise.
+          tag_name: ${{ needs.detect.outputs.tag }}
           # An action `with:` input is passed as an argument (never shell-evaluated), and the version
-          # was already validated against ^v[0-9][0-9.]*$ in the derive step, so the expression is safe here.
-          name: cesium-kafka ${{ steps.version.outputs.version }}
+          # was already validated against ^v[0-9][0-9.]*$ in the detect job, so the expression is safe here.
+          name: cesium-kafka ${{ needs.detect.outputs.version }}
           # Curated CHANGELOG section first; GitHub appends the auto-generated commit/PR list below it.
           body_path: release-notes.md
           generate_release_notes: true

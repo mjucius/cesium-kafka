@@ -8,8 +8,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [2.1.6] - 2026-11-27
 
-Patch release. Logback moves to 1.6.7, `actions/setup-java` moves to 6.3.0, and a release can now
-be started by running the release workflow manually. The app's config keys, headers and tracker wire
+Patch release. Logback moves to 1.6.7, `actions/setup-java` moves to 6.3.0, and cutting a new
+changelog section on `main` now publishes the release automatically. The app's config keys, headers and tracker wire
 format are the same as in 2.1.5.
 
 ### Changed
@@ -23,11 +23,13 @@ format are the same as in 2.1.5.
   diagnostics stop appearing as inline PR annotations. They still show in the build logs, and
   compile errors still fail the build. No workflow depends on those annotations. The v2.1.6
   release run is the first release run to use 6.3.0.
-- Release workflow: `release.yml` can also be run manually on `main` with a `version` input. The
-  run checks that the version has a CHANGELOG section and no tag yet, runs the same build, tests and
-  archive steps, and only then creates the annotated `v<version>` tag on the built commit and
-  publishes the Release. These tags come from github-actions[bot] and are unsigned; v2.1.6 is the
-  first. Pushing a tag still starts a release as before.
+- Release workflow: a push to `main` now releases automatically when the top dated
+  `## [X.Y.Z]` section of this file names a version newer than every existing tag. Other pushes to
+  `main` don't release. `release.yml` can also be run manually on `main` with a `version` input.
+  Either way, the run checks that the version has a CHANGELOG section and no tag yet, runs the same
+  build, tests and archive steps, and only then creates the annotated `v<version>` tag on the built
+  commit and publishes the Release. These tags come from github-actions[bot] and are unsigned;
+  v2.1.6 is the first. Pushing a tag still starts a release as before.
 
 ## [2.1.5] - 2026-11-18
 
