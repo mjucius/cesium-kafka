@@ -6,6 +6,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.1.6] - 2026-11-27
+
+Patch release. Logback moves to 1.6.7, and `actions/setup-java` moves to 6.3.0. The app's config
+keys, headers and tracker wire format are the same as in 2.1.5.
+
+### Changed
+- Runtime dependency (Dependabot PR [#44]): Logback 1.6.6 → 1.6.7. Its one behavior change is how
+  the `scan` attribute on `<propertiesConfigurator>` works. The app's Logback configuration doesn't
+  use that element, so its logging works as before. The new `logback-*-kryo` modules are separate
+  artifacts that aren't on the classpath. Build and unit checks on JDK 21 and 25 and the
+  representative Kafka integration lane pass.
+- CI action (Dependabot PR [#43]): `actions/setup-java` 6.2.0 → 6.3.0, pinned to the commit its
+  release tag names. 6.3.0 no longer registers the Java problem matcher by default, so compiler
+  diagnostics stop appearing as inline PR annotations. They still show in the build logs, and
+  compile errors still fail the build. No workflow depends on those annotations. The v2.1.6
+  release run is the first release run to use 6.3.0.
+
 ## [2.1.5] - 2026-11-18
 
 Patch release. Error Prone 2.51.0 changes only the build, and two GitHub Actions move to newer
@@ -794,7 +811,8 @@ delivery as observed by `read_committed` consumers of the destination.
   records are duplicate-injection / data-loss primitives. See [`SECURITY.md`](SECURITY.md) and the
   operations guide.
 
-[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.5...HEAD
+[Unreleased]: https://github.com/mjucius/cesium-kafka/compare/v2.1.6...HEAD
+[2.1.6]: https://github.com/mjucius/cesium-kafka/compare/v2.1.5...v2.1.6
 [2.1.5]: https://github.com/mjucius/cesium-kafka/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/mjucius/cesium-kafka/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/mjucius/cesium-kafka/compare/v2.1.2...v2.1.3
